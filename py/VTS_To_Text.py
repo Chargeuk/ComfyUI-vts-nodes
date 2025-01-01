@@ -103,6 +103,9 @@ class VTS_To_Text:
             print(f"input_data is a single value of type {type(input_data).__name__}")
             merged_text = str(input_data)
 
+        # trim the merged text
+        merged_text = merged_text.strip()
+
         return (merged_text,)
 
 
