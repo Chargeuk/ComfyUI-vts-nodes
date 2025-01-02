@@ -1,3 +1,5 @@
+import torch
+
 def conditioning_set_values(conditioning, values={}):
     c = []
     for t in conditioning:
@@ -15,13 +17,15 @@ class VTS_Conditioning_Set_Batch_Mask:
                               "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01}),
                               "set_cond_area": (["default", "mask bounds"],),
                              }}
+    INPUT_IS_LIST = True
+
     RETURN_TYPES = (
         "CONDITIONING",
     )
 
-    # OUTPUT_IS_LIST = (
-    #     True
-    # )
+    OUTPUT_IS_LIST = (
+        False,
+    )
 
     FUNCTION = "apply_batch_masks"
 
@@ -34,7 +38,7 @@ class VTS_Conditioning_Set_Batch_Mask:
             # iterate through each item and call this method
             for i, d in enumerate(data):
                 VTS_Conditioning_Set_Batch_Mask.printConditioningInfo(d, f"{name}[{i}]")
-        if isinstance(data, dict):
+        elif isinstance(data, dict):
             # print out the keys
             print(f"!!!VTS_Conditioning_Set_Batch_Mask item '{name}' contains a dict with keys {data.keys()}.")
             # iterate through each item and call this method
@@ -47,6 +51,10 @@ class VTS_Conditioning_Set_Batch_Mask:
 
     @staticmethod
     def get_conditionings_from_shape_masks(masks, conditioning, set_area_to_bounds, strength):
+        print("\n")
+        VTS_Conditioning_Set_Batch_Mask.printConditioningInfo(conditioning, "conditioning")
+        print("Mask shape=", masks.shape)
+
         conditionings = []
         # Check if masks is a batch (4D tensor)
         if len(masks.shape) == 4:
@@ -76,15 +84,19 @@ class VTS_Conditioning_Set_Batch_Mask:
         return isinstance(masks, list) and len(masks) > 0 and isinstance(masks[0], torch.Tensor)
 
     def apply_batch_masks(self, conditioning, masks, set_cond_area, strength):
+        if isinstance(set_cond_area, list):
+            set_cond_area = set_cond_area[0]
+        if isinstance(strength, list):
+            strength = strength[0]
+
         set_area_to_bounds = False
         if set_cond_area != "default":
             set_area_to_bounds = True
-        
-
-        VTS_Conditioning_Set_Batch_Mask.printConditioningInfo(conditioning, "conditioning")
 
         is_list_of_multiple_conditionings = VTS_Conditioning_Set_Batch_Mask.is_list_of_multiple_conditionings(conditioning)
         is_list_of_masks = VTS_Conditioning_Set_Batch_Mask.is_list_of_masks(masks)
+        print(f"!!!VTS_Conditioning_Set_Batch_Mask is_list_of_multiple_conditionings: {is_list_of_multiple_conditionings}, is_list_of_masks: {is_list_of_masks}")
+        VTS_Conditioning_Set_Batch_Mask.printConditioningInfo(conditioning, "conditioningRoot")
 
         if is_list_of_multiple_conditionings != is_list_of_masks:
             raise Exception(f"Conditioning and masks must both be lists of multiple items or not, but got conditioning: {is_list_of_multiple_conditionings} and masks: {is_list_of_masks}.")
@@ -95,12 +107,12 @@ class VTS_Conditioning_Set_Batch_Mask:
             masks_length = len(masks)
             if conditioning_length != masks_length:
                 raise Exception(f"Conditioning length {conditioning_length} does not match masks length {masks_length}.")
-            for conditioning_item, masks_item in zip(conditioning, masks):
+            for conditioning_item, masks_item in zip(conditioning[0], masks):
                 all_conditionings.append(VTS_Conditioning_Set_Batch_Mask.get_conditionings_from_shape_masks(masks_item, conditioning_item, set_area_to_bounds, strength))
             return all_conditionings
         
         conditionings = VTS_Conditioning_Set_Batch_Mask.get_conditionings_from_shape_masks(masks, conditioning, set_area_to_bounds, strength)
-        return conditionings
+        return (conditionings, )
 
 # A dictionary that contains all nodes you want to export with their names
 # NOTE: names should be globally unique
@@ -112,3 +124,31 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "VTS Conditioning Set Batch Mask": "Conditioning Set Batch Mask"
 }
+
+
+# based off
+
+# class ConditioningSetMask:
+#     @classmethod
+#     def INPUT_TYPES(s):
+#         return {"required": {"conditioning": ("CONDITIONING", ),
+#                               "mask": ("MASK", ),
+#                               "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01}),
+#                               "set_cond_area": (["default", "mask bounds"],),
+#                              }}
+#     RETURN_TYPES = ("CONDITIONING",)
+#     FUNCTION = "append"
+
+#     CATEGORY = "conditioning"
+
+#     def append(self, conditioning, mask, set_cond_area, strength):
+#         set_area_to_bounds = False
+#         if set_cond_area != "default":
+#             set_area_to_bounds = True
+#         if len(mask.shape) < 3:
+#             mask = mask.unsqueeze(0)
+
+#         c = node_helpers.conditioning_set_values(conditioning, {"mask": mask,
+#                                                                 "set_area_to_bounds": set_area_to_bounds,
+#                                                                 "mask_strength": strength})
+#         return (c, )
