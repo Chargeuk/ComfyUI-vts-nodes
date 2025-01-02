@@ -79,6 +79,11 @@ class VTS_To_Text:
 
 
     def notify(self, delimiter, input_data):
+
+        # if either delimiter or input_data is None, return empty text
+        if delimiter is None or input_data is None:
+            return ("",)
+
         # Replace all occurrences of "\n" (literal newline) in the delimiter with an actual newline character.
         delimiter = delimiter.replace("\\n", "\n")
 
@@ -102,6 +107,9 @@ class VTS_To_Text:
             # Convert the single value to a string
             print(f"input_data is a single value of type {type(input_data).__name__}")
             merged_text = str(input_data)
+
+        if merged_text is None:
+            return ("",)
 
         # trim the merged text
         merged_text = merged_text.strip()
