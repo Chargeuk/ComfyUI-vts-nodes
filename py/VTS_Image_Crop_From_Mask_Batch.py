@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 from PIL import Image
-from torchvision.transforms.v2 import Resize, CenterCrop
+from torchvision.transforms.v2 import Resize, CenterCrop, Resize
 from torchvision.transforms.v2.functional import crop
 
 # taken from comfyUi samplers.py to match the behavior of the sampler function
@@ -27,7 +27,6 @@ def get_mask_aabb(masks):
         bounding_boxes[i, 3] = torch.max(y)
 
     return bounding_boxes, is_empty
-
 
 class VTS_Images_Crop_From_Masks:
     @classmethod
@@ -56,6 +55,18 @@ class VTS_Images_Crop_From_Masks:
 
         bounds_mask = torch.max(torch.abs(masks),dim=0).values.unsqueeze(0)
         print(f"VTS_Images_Crop_From_Masks bounds.shape={bounds_mask.shape}")
+
+        # Get the size of the first image in the original_images batch
+        first_image_size = original_images[0].shape[:2]  # (height, width)
+        print(f"VTS_Images_Crop_From_Masks first_image_size={first_image_size}")
+        bounds_mask_size = bounds_mask.shape[1:]  # (height, width)
+        print(f"VTS_Images_Crop_From_Masks bounds_mask_size={bounds_mask_size}")
+
+        if not all(x == y for x, y in zip(first_image_size, bounds_mask_size)):
+            # Rescale bounds_mask to match the size of the first image
+            bounds_mask = Resize(first_image_size)(bounds_mask)
+            print(f"VTS_Images_Crop_From_Masks rescaled bounds.shape={bounds_mask.shape}")
+
         boxes, is_empty = get_mask_aabb(bounds_mask)
         if is_empty[0]:
             # Use the minimum possible size for efficiency reasons. (Since the mask is all-0, this becomes a noop anyway)
@@ -83,7 +94,7 @@ class VTS_Images_Crop_From_Masks:
             print(f"VTS_Images_Crop_From_Masks - permuted cropped image[{img_count}] shape={cropped_img.shape}.")
             cropped_images.append(cropped_img)
 
-        # Calculate the bounding box in the same format as cropimageOLD
+        # Calculate the bounding box in a format that can be visualised by other nodes
         min_x = area[3]
         min_y = area[2]
         max_x = min_x + area[1]
