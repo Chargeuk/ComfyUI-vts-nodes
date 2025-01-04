@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 from PIL import Image
-from torchvision.transforms.v2 import Resize, CenterCrop, Resize
+from torchvision.transforms.v2 import Resize
 from torchvision.transforms.v2.functional import crop
 
 # taken from comfyUi samplers.py to match the behavior of the sampler function
