@@ -34,15 +34,16 @@ class VTS_Images_Crop_From_Masks:
         return {
           "required": {
               "image": ("IMAGE",),
-              "mask": ("MASK",),
+              "mask_list": ("MASK",),
           },
         }
 
     RETURN_TYPES = ("IMAGE", "MASK", "BBOX",)
     RETURN_NAMES = ("crop_image", "crop_mask", "bboxes",)
+    INPUT_IS_LIST = True
     OUTPUT_IS_LIST = (
-        False,
-        False,
+        True,
+        True,
         False
     )
     FUNCTION = "crop"
@@ -104,12 +105,24 @@ class VTS_Images_Crop_From_Masks:
         return cropped_images, area, bounds_mask, bounding_box
 
 
-    def crop(self, image, mask):
-      print(f"VTS_Images_Crop_From_Masks image.shape={image.shape}, mask.shape={mask.shape}")
-      cropped_images, area, bounds_mask, bounding_box = self.cropimage(image, mask)
-      cropped_image_out = torch.stack(cropped_images, dim=0)
-      print(f"VTS_Images_Crop_From_Masks cropped_image_out.shape={cropped_image_out.shape}, bounds_mask.shape={bounds_mask.shape}, bounding_box={bounding_box}")
-      return (cropped_image_out, bounds_mask, [bounding_box])
+    def crop(self, image, mask_list):
+        # as INPUT_IS_LIST = True, every input is a list
+        # however, the only one we want to be a list is the mask_list
+        # so get the first element of every other input and set as the input value
+        image = image[0]
+        output_cropped_images = []
+        output_bounds_masks = []
+        output_bounding_boxes = []
+        for mask_count, mask in enumerate(mask_list):
+            print(f"VTS_Images_Crop_From_Masks[{mask_count}] image.shape={image.shape}, mask.shape={mask.shape}")
+            cropped_images, area, bounds_mask, bounding_box = self.cropimage(image, mask)
+            cropped_image_out = torch.stack(cropped_images, dim=0)
+            print(f"VTS_Images_Crop_From_Masks[{mask_count}] cropped_image_out.shape={cropped_image_out.shape}, bounds_mask.shape={bounds_mask.shape}, bounding_box={bounding_box}")
+            output_cropped_images.append(cropped_image_out)
+            output_bounds_masks.append(bounds_mask)
+            output_bounding_boxes.append(bounding_box)
+
+        return (output_cropped_images, output_bounds_masks, output_bounding_boxes)
 
 
 # A dictionary that contains all nodes you want to export with their names
