@@ -2,6 +2,7 @@ import torch
 import webcolors
 import numpy as np
 import cv2
+import json
 
 def make_3d_mask(mask):
     if len(mask.shape) == 4:
@@ -58,7 +59,7 @@ class VTS_Color_Mask_To_Mask:
         return {
             "required": {
                 "color_mask": ("IMAGE",),
-                "mask_colors": ("STRING", {"multiline": False, "default": "#FFFFFF"}),
+                "mask_colors": ("STRING", {"multiline": True, "default": "#FFFFFF"}),
             },
             "optional": {
                 "dilation": ("INT", {"default": 0, "min": -512, "max": 512, "step": 1}),
@@ -67,17 +68,36 @@ class VTS_Color_Mask_To_Mask:
 
     RETURN_TYPES = ("MASK",)
     FUNCTION = "doit"
+    OUTPUT_IS_LIST = (
+        True,
+    )
 
     CATEGORY = "VTS"
 
     @staticmethod
-    def doit(color_mask, mask_colors, dilation=0):
-        mask = color_to_mask(color_mask, mask_colors)
+    def doit(color_mask, mask_colors: str, dilation=0):
+        # for the first step, try to treat the mask_colors as a json representation of a list of color lists
+        # eg: ["#FFFFFF, #00FFFF", "#000000, #FF0000"]
+        print(f"VTS_Color_Mask_To_Mask mask_colors={mask_colors}")
+        try:
+            mask_colors_list = json.loads(mask_colors)
+            print(f"VTS_Color_Mask_To_Mask JSON mask_colors_list={mask_colors_list}")
+        except Exception:
+            # if it fails, then treat it as a string with comma separated colors
+            # eg: "#FFFFFF, #000000" and just remove the whitespaces and newlines
+            mask_color_strings = mask_colors.replace(" ", "").replace("\r", "").replace("\n", "")
+            mask_colors_list = [mask_color_strings]
+            print(f"VTS_Color_Mask_To_Mask STRING mask_colors_list={mask_colors_list}")
 
-        if dilation != 0:
-            mask = dilate_mask(mask, dilation)
+        masks = []
+        for count, mask_colors_string in enumerate(mask_colors_list):
+            print(f"VTS_Color_Mask_To_Mask mask_colors_string[{count}]={mask_colors_string}")
+            mask = color_to_mask(color_mask, mask_colors_string)
+            if dilation != 0:
+                mask = dilate_mask(mask, dilation)
+            masks.append(mask)
 
-        return (mask, )
+        return (masks, )
 
 # A dictionary that contains all nodes you want to export with their names
 # NOTE: names should be globally unique
