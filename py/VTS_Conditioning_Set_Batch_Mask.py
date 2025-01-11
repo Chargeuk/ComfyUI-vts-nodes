@@ -23,9 +23,9 @@ class VTS_Conditioning_Set_Batch_Mask:
         "CONDITIONING",
     )
 
-    OUTPUT_IS_LIST = (
-        False,
-    )
+    # OUTPUT_IS_LIST = (
+    #     True,
+    # )
 
     FUNCTION = "apply_batch_masks"
 
@@ -47,7 +47,7 @@ class VTS_Conditioning_Set_Batch_Mask:
         elif hasattr(data, 'shape'):
             print(f"!!!VTS_Conditioning_Set_Batch_Mask item '{name}' contains a conditioning shape[{len(data.shape)}]={data.shape}.")
         else:
-            print(f"!!!VTS_Conditioning_Set_Batch_Mask item '{name}' contains an unexpected type: {type(data)}.")
+            print(f"!!!VTS_Conditioning_Set_Batch_Mask item '{name}' contains type: {type(data)}.")
 
     @staticmethod
     def get_conditionings_from_shape_masks(masks, conditioning, set_area_to_bounds, strength):
@@ -64,7 +64,8 @@ class VTS_Conditioning_Set_Batch_Mask:
                 c = conditioning_set_values(conditioning, {"mask": mask,
                                                             "set_area_to_bounds": set_area_to_bounds,
                                                             "mask_strength": strength})
-                conditionings.append(c)
+                # conditionings.append(c)
+                conditionings += c
         else:
             # Handle the case where masks is not a batch
             if len(masks.shape) < 3:
@@ -72,7 +73,9 @@ class VTS_Conditioning_Set_Batch_Mask:
             c = conditioning_set_values(conditioning, {"mask": masks,
                                                         "set_area_to_bounds": set_area_to_bounds,
                                                         "mask_strength": strength})
-            conditionings.append(c)
+            # conditionings.append(c)
+            conditionings += c
+
         return conditionings
 
     @staticmethod
@@ -84,10 +87,10 @@ class VTS_Conditioning_Set_Batch_Mask:
         return isinstance(masks, list) and len(masks) > 0 and isinstance(masks[0], torch.Tensor)
 
     def apply_batch_masks(self, conditioning, masks, set_cond_area, strength):
-        if isinstance(set_cond_area, list):
-            set_cond_area = set_cond_area[0]
-        if isinstance(strength, list):
-            strength = strength[0]
+        print("\nVTS_Conditioning_Set_Batch_Mask:")
+        set_cond_area = set_cond_area[0]
+        strength = strength[0]
+        conditioning = conditioning[0]
 
         set_area_to_bounds = False
         if set_cond_area != "default":
@@ -102,14 +105,17 @@ class VTS_Conditioning_Set_Batch_Mask:
             raise Exception(f"Conditioning and masks must both be lists of multiple items or not, but got conditioning: {is_list_of_multiple_conditionings} and masks: {is_list_of_masks}.")
 
         if is_list_of_multiple_conditionings and is_list_of_masks:
-            all_conditionings = []
+            out_conditionings = []
             conditioning_length = len(conditioning)
             masks_length = len(masks)
             if conditioning_length != masks_length:
                 raise Exception(f"Conditioning length {conditioning_length} does not match masks length {masks_length}.")
-            for conditioning_item, masks_item in zip(conditioning[0], masks):
-                all_conditionings.append(VTS_Conditioning_Set_Batch_Mask.get_conditionings_from_shape_masks(masks_item, conditioning_item, set_area_to_bounds, strength))
-            return all_conditionings
+            for conditioning_item, masks_item in zip(conditioning, masks):
+                # all_conditionings.append(VTS_Conditioning_Set_Batch_Mask.get_conditionings_from_shape_masks(masks_item, conditioning_item, set_area_to_bounds, strength))
+                out_conditionings += VTS_Conditioning_Set_Batch_Mask.get_conditionings_from_shape_masks(masks_item, conditioning_item, set_area_to_bounds, strength)
+            print("\n")
+            VTS_Conditioning_Set_Batch_Mask.printConditioningInfo(out_conditionings, "out_conditionings")
+            return (out_conditionings, )
         
         conditionings = VTS_Conditioning_Set_Batch_Mask.get_conditionings_from_shape_masks(masks, conditioning, set_area_to_bounds, strength)
         return (conditionings, )
