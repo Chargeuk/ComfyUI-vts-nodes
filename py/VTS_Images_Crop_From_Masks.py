@@ -33,7 +33,7 @@ class VTS_Images_Crop_From_Masks:
     def INPUT_TYPES(s):
         return {
           "required": {
-              "image": ("IMAGE",),
+              "image_list": ("IMAGE",),
               "mask_list": ("MASK",),
           },
         }
@@ -105,15 +105,18 @@ class VTS_Images_Crop_From_Masks:
         return cropped_images, area, bounds_mask, bounding_box
 
 
-    def crop(self, image, mask_list):
+    def crop(self, image_list, mask_list):
         # as INPUT_IS_LIST = True, every input is a list
         # however, the only one we want to be a list is the mask_list
         # so get the first element of every other input and set as the input value
-        image = image[0]
+        
         output_cropped_images = []
         output_bounds_masks = []
         output_bounding_boxes = []
         for mask_count, mask in enumerate(mask_list):
+            image_index = mask_count % len(image_list)
+            image = image_list[image_index]
+
             print(f"VTS_Images_Crop_From_Masks[{mask_count}] image.shape={image.shape}, mask.shape={mask.shape}")
             cropped_images, area, bounds_mask, bounding_box = self.cropimage(image, mask)
             cropped_image_out = torch.stack(cropped_images, dim=0)
