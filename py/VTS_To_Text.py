@@ -91,21 +91,22 @@ class VTS_To_Text:
         if isinstance(input_data, str):
             try:
                 input_data = json.loads(input_data)
-                print("input_data successfully converted from string to list or dict")
+                #print("input_data successfully converted from string to list or dict")
             except json.JSONDecodeError:
-                print("input_data is a string but not a valid JSON, proceeding as a single string value")
+                pass
+                #print("input_data is a string but not a valid JSON, proceeding as a single string value")
 
         if isinstance(input_data, list):
-            print("input_data is a list")
+            #print("input_data is a list")
             # Convert each element to a string and join them with the delimiter
             merged_text = delimiter.join(str(item) for item in input_data)
         elif isinstance(input_data, dict):
-            print("input_data is a dict")
+           # print("input_data is a dict")
             # Convert each value to a string and join them with the delimiter
             merged_text = delimiter.join(str(value) for value in input_data.values())
         else:
             # Convert the single value to a string
-            print(f"input_data is a single value of type {type(input_data).__name__}")
+            #print(f"input_data is a single value of type {type(input_data).__name__}")
             merged_text = str(input_data)
 
         if merged_text is None:

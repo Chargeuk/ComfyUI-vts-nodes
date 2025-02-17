@@ -78,20 +78,20 @@ class VTS_Color_Mask_To_Mask:
     def doit(color_mask, mask_colors: str, dilation=0):
         # for the first step, try to treat the mask_colors as a json representation of a list of color lists
         # eg: ["#FFFFFF, #00FFFF", "#000000, #FF0000"]
-        print(f"VTS_Color_Mask_To_Mask mask_colors={mask_colors}")
+        #print(f"VTS_Color_Mask_To_Mask mask_colors={mask_colors}")
         try:
             mask_colors_list = json.loads(mask_colors)
-            print(f"VTS_Color_Mask_To_Mask JSON mask_colors_list={mask_colors_list}")
+            #print(f"VTS_Color_Mask_To_Mask JSON mask_colors_list={mask_colors_list}")
         except Exception:
             # if it fails, then treat it as a string with comma separated colors
             # eg: "#FFFFFF, #000000" and just remove the whitespaces and newlines
             mask_color_strings = mask_colors.replace(" ", "").replace("\r", "").replace("\n", "")
             mask_colors_list = [mask_color_strings]
-            print(f"VTS_Color_Mask_To_Mask STRING mask_colors_list={mask_colors_list}")
+            #print(f"VTS_Color_Mask_To_Mask STRING mask_colors_list={mask_colors_list}")
 
         masks = []
         for count, mask_colors_string in enumerate(mask_colors_list):
-            print(f"VTS_Color_Mask_To_Mask mask_colors_string[{count}]={mask_colors_string}")
+            #print(f"VTS_Color_Mask_To_Mask mask_colors_string[{count}]={mask_colors_string}")
             mask = color_to_mask(color_mask, mask_colors_string)
             if dilation != 0:
                 mask = dilate_mask(mask, dilation)

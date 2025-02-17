@@ -79,19 +79,19 @@ class VTS_Merge_Delimited_Text:
         
         # Split the input strings by the delimiter
         list1 = input_string1.split(delimiter)
-        print(f"\nlist1: ", list1)
+        #print(f"\nlist1: ", list1)
 
         list2 = input_string2.split(delimiter)
-        print(f"\nlist2: ", list2)
+        #print(f"\nlist2: ", list2)
         
         # Merge the lists at corresponding indexes, placing merge_delimiter between the merged strings if both are non-empty
         merged_list = [a + (merge_delimiter if a and b else '') + b for a, b in zip_longest(list1, list2, fillvalue='')]
-        print(f"\nmerged_list: {merged_list}")
+        #print(f"\nmerged_list: {merged_list}")
         
         # Join the merged list back into a single string with the delimiter
         result_string = delimiter.join(merged_list)
 
-        print(f"\nresult_string: {result_string}")
+        #print(f"\nresult_string: {result_string}")
         
         return (result_string,)
 

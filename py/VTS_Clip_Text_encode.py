@@ -26,15 +26,15 @@ class VTS_Clip_Text_Encode:
     def encode(self, clip, text):
 
         if isinstance(clip, list):
-            print(f"!VTS - clip is a list of length: {len(clip)}")
+            #print(f"!VTS - clip is a list of length: {len(clip)}")
             clip = clip[0]
         # if text is a list, then process each individually and return a list of conditionings
         if isinstance(text, list):
-            print(f"!VTS - text is a list: {text}")
+            #print(f"!VTS - text is a list: {text}")
             return ([VTS_Clip_Text_Encode.encode_text(clip, t) for t in text], )
 
         # tokenize the text and encode it using the CLIP model
-        print(f"!VTS - text is a string: {text}")
+        #print(f"!VTS - text is a string: {text}")
         return (VTS_Clip_Text_Encode.encode_text(clip, text), )
 
 # A dictionary that contains all nodes you want to export with their names

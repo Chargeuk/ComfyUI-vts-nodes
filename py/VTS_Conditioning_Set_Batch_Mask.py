@@ -33,6 +33,7 @@ class VTS_Conditioning_Set_Batch_Mask:
 
     @staticmethod
     def printConditioningInfo(data, name: str):
+        return
         if isinstance(data, list):
             print(f"!!!VTS_Conditioning_Set_Batch_Mask item '{name}' contains a list of length [{len(data)}].")
             # iterate through each item and call this method
@@ -51,9 +52,9 @@ class VTS_Conditioning_Set_Batch_Mask:
 
     @staticmethod
     def get_conditionings_from_shape_masks(masks, conditioning, set_area_to_bounds, strength):
-        print("\n")
+        #print("\n")
         VTS_Conditioning_Set_Batch_Mask.printConditioningInfo(conditioning, "conditioning")
-        print("Mask shape=", masks.shape)
+        #print("Mask shape=", masks.shape)
 
         conditionings = []
         # Check if masks is a batch (4D tensor)
@@ -87,7 +88,7 @@ class VTS_Conditioning_Set_Batch_Mask:
         return isinstance(masks, list) and len(masks) > 0 and isinstance(masks[0], torch.Tensor)
 
     def apply_batch_masks(self, conditioning, masks, set_cond_area, strength):
-        print("\nVTS_Conditioning_Set_Batch_Mask:")
+        #print("\nVTS_Conditioning_Set_Batch_Mask:")
         set_cond_area = set_cond_area[0]
         strength = strength[0]
         conditioning = conditioning[0]
@@ -98,7 +99,7 @@ class VTS_Conditioning_Set_Batch_Mask:
 
         is_list_of_multiple_conditionings = VTS_Conditioning_Set_Batch_Mask.is_list_of_multiple_conditionings(conditioning)
         is_list_of_masks = VTS_Conditioning_Set_Batch_Mask.is_list_of_masks(masks)
-        print(f"!!!VTS_Conditioning_Set_Batch_Mask is_list_of_multiple_conditionings: {is_list_of_multiple_conditionings}, is_list_of_masks: {is_list_of_masks}")
+        #print(f"!!!VTS_Conditioning_Set_Batch_Mask is_list_of_multiple_conditionings: {is_list_of_multiple_conditionings}, is_list_of_masks: {is_list_of_masks}")
         VTS_Conditioning_Set_Batch_Mask.printConditioningInfo(conditioning, "conditioningRoot")
 
         if is_list_of_multiple_conditionings != is_list_of_masks:
@@ -113,7 +114,7 @@ class VTS_Conditioning_Set_Batch_Mask:
             for conditioning_item, masks_item in zip(conditioning, masks):
                 # all_conditionings.append(VTS_Conditioning_Set_Batch_Mask.get_conditionings_from_shape_masks(masks_item, conditioning_item, set_area_to_bounds, strength))
                 out_conditionings += VTS_Conditioning_Set_Batch_Mask.get_conditionings_from_shape_masks(masks_item, conditioning_item, set_area_to_bounds, strength)
-            print("\n")
+            #print("\n")
             VTS_Conditioning_Set_Batch_Mask.printConditioningInfo(out_conditionings, "out_conditionings")
             return (out_conditionings, )
         

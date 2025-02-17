@@ -51,22 +51,22 @@ class VTS_Images_Crop_From_Masks:
 
     def cropimage(self, original_images, masks):
         if len(masks.shape) == 2:
-                print(f"VTS_Images_Crop_From_Masks - len(mask.shape) == 2. mask.shape={masks.shape}. Unsqueezing the mask.")
+                #print(f"VTS_Images_Crop_From_Masks - len(mask.shape) == 2. mask.shape={masks.shape}. Unsqueezing the mask.")
                 masks = masks.unsqueeze(0)
 
         bounds_mask = torch.max(torch.abs(masks),dim=0).values.unsqueeze(0)
-        print(f"VTS_Images_Crop_From_Masks bounds.shape={bounds_mask.shape}")
+        #print(f"VTS_Images_Crop_From_Masks bounds.shape={bounds_mask.shape}")
 
         # Get the size of the first image in the original_images batch
         first_image_size = original_images[0].shape[:2]  # (height, width)
-        print(f"VTS_Images_Crop_From_Masks first_image_size={first_image_size}")
+        #print(f"VTS_Images_Crop_From_Masks first_image_size={first_image_size}")
         bounds_mask_size = bounds_mask.shape[1:]  # (height, width)
-        print(f"VTS_Images_Crop_From_Masks bounds_mask_size={bounds_mask_size}")
+        #print(f"VTS_Images_Crop_From_Masks bounds_mask_size={bounds_mask_size}")
 
         if not all(x == y for x, y in zip(first_image_size, bounds_mask_size)):
             # Rescale bounds_mask to match the size of the first image
             bounds_mask = Resize(first_image_size)(bounds_mask)
-            print(f"VTS_Images_Crop_From_Masks rescaled bounds.shape={bounds_mask.shape}")
+            #print(f"VTS_Images_Crop_From_Masks rescaled bounds.shape={bounds_mask.shape}")
 
         boxes, is_empty = get_mask_aabb(bounds_mask)
         if is_empty[0]:
@@ -78,21 +78,21 @@ class VTS_Images_Crop_From_Masks:
             H = max(8, H)
             W = max(8, W)
             area = (int(H), int(W), int(Y), int(X))
-            print(f"VTS_Images_Crop_From_Masks - calculated ares. area={area}. H, W, Y, X = {H, W, Y, X}")
+            #print(f"VTS_Images_Crop_From_Masks - calculated ares. area={area}. H, W, Y, X = {H, W, Y, X}")
 
         # now crop the provided original_images using the calculated area
         cropped_images = []
         for img_count, img in enumerate(original_images):
-            print(f"\nVTS_Images_Crop_From_Masks - image[{img_count}] to be cropped shape={img.shape}.")
+            #print(f"\nVTS_Images_Crop_From_Masks - image[{img_count}] to be cropped shape={img.shape}.")
             # Permute the image to (colors, height, width)
             img_permuted = img.permute(2, 0, 1)
-            print(f"VTS_Images_Crop_From_Masks - permuted image[{img_count}] to be cropped shape={img_permuted.shape}.")
+            #print(f"VTS_Images_Crop_From_Masks - permuted image[{img_count}] to be cropped shape={img_permuted.shape}.")
             # Crop the image
             cropped_img = crop(img_permuted, area[2], area[3], area[0], area[1])
-            print(f"VTS_Images_Crop_From_Masks - cropped image[{img_count}] shape={cropped_img.shape}.")
+            #print(f"VTS_Images_Crop_From_Masks - cropped image[{img_count}] shape={cropped_img.shape}.")
             # Permute the cropped image back to (height, width, colors)
             cropped_img = cropped_img.permute(1, 2, 0)
-            print(f"VTS_Images_Crop_From_Masks - permuted cropped image[{img_count}] shape={cropped_img.shape}.")
+            #print(f"VTS_Images_Crop_From_Masks - permuted cropped image[{img_count}] shape={cropped_img.shape}.")
             cropped_images.append(cropped_img)
 
         # Calculate the bounding box in a format that can be visualised by other nodes
@@ -117,10 +117,10 @@ class VTS_Images_Crop_From_Masks:
             image_index = mask_count % len(image_list)
             image = image_list[image_index]
 
-            print(f"VTS_Images_Crop_From_Masks[{mask_count}] image.shape={image.shape}, mask.shape={mask.shape}")
+            #print(f"VTS_Images_Crop_From_Masks[{mask_count}] image.shape={image.shape}, mask.shape={mask.shape}")
             cropped_images, area, bounds_mask, bounding_box = self.cropimage(image, mask)
             cropped_image_out = torch.stack(cropped_images, dim=0)
-            print(f"VTS_Images_Crop_From_Masks[{mask_count}] cropped_image_out.shape={cropped_image_out.shape}, bounds_mask.shape={bounds_mask.shape}, bounding_box={bounding_box}")
+            #print(f"VTS_Images_Crop_From_Masks[{mask_count}] cropped_image_out.shape={cropped_image_out.shape}, bounds_mask.shape={bounds_mask.shape}, bounding_box={bounding_box}")
             output_cropped_images.append(cropped_image_out)
             output_bounds_masks.append(bounds_mask)
             output_bounding_boxes.append(bounding_box)
