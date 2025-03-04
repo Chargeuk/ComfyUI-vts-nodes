@@ -47,7 +47,7 @@ class VTS_Images_ScaleToMin:
             width = width - (width % divisible_by)
             height = height - (height % divisible_by)
 
-        print(f"VTS_Images_ScaleToMin - final width: {width}, final height: {height}")
+        print(f"VTS_Images_ScaleToMin - scaled from {original_width}x{original_height} to {width}x{height}")
 
         # Move dimensions for processing
         samples = image.movedim(-1, 1)
