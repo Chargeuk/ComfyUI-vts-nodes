@@ -17,11 +17,12 @@ class VTS_Images_ScaleToMin:
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "upscale"
 
-    CATEGORY = "image/upscaling"
+    CATEGORY = "VTS"
 
     def upscale(self, image, upscale_method, smallMaxSize, largeMaxSize, divisible_by, crop):
         # Get the dimensions of the image
-        height, width = image.shape[2], image.shape[3]
+        height, width = image.shape[1], image.shape[2]
+        original_height, original_width = height, width
         
         # Identify the largest and smallest sides
         largest_side = max(height, width)
@@ -36,15 +37,17 @@ class VTS_Images_ScaleToMin:
 
         # Determine final dimensions
         if new_largest_side <= largeMaxSize:
-            width = smallMaxSize if width < height else new_largest_side
-            height = smallMaxSize if height < width else new_largest_side
+            width = smallMaxSize if original_width < original_height else new_largest_side
+            height = smallMaxSize if original_height < original_width else new_largest_side
         else:
-            width = new_smallest_side if width < height else largeMaxSize
-            height = new_smallest_side if height < width else largeMaxSize
+            width = new_smallest_side if original_width < original_height else largeMaxSize
+            height = new_smallest_side if original_height < original_width else largeMaxSize
 
         if divisible_by > 1:
             width = width - (width % divisible_by)
             height = height - (height % divisible_by)
+
+        print(f"VTS_Images_ScaleToMin - final width: {width}, final height: {height}")
 
         # Move dimensions for processing
         samples = image.movedim(-1, 1)
