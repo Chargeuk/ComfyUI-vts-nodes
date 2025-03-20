@@ -70,6 +70,7 @@ class VTS_To_Text:
 
     RETURN_TYPES = ("STRING",)
     #RETURN_NAMES = ("image_output_name",)
+    INPUT_IS_LIST = True
 
     FUNCTION = "notify"
 
@@ -80,37 +81,37 @@ class VTS_To_Text:
 
     def notify(self, delimiter, input_data):
 
+        delimiter = delimiter[0]
+
         # if either delimiter or input_data is None, return empty text
         if delimiter is None or input_data is None:
             return ("",)
 
         # Replace all occurrences of "\n" (literal newline) in the delimiter with an actual newline character.
         delimiter = delimiter.replace("\\n", "\n")
+        merged_text = ""
+        for input_data_item in input_data:
+            # Try to convert input_data_item to a list or dict if it's a string
+            if isinstance(input_data_item, str):
+                try:
+                    input_data_item = json.loads(input_data_item)
+                    #print("input_data successfully converted from string to list or dict")
+                except json.JSONDecodeError:
+                    pass
+                    #print("input_data_item is a string but not a valid JSON, proceeding as a single string value")
 
-        # Try to convert input_data to a list or dict if it's a string
-        if isinstance(input_data, str):
-            try:
-                input_data = json.loads(input_data)
-                #print("input_data successfully converted from string to list or dict")
-            except json.JSONDecodeError:
-                pass
-                #print("input_data is a string but not a valid JSON, proceeding as a single string value")
-
-        if isinstance(input_data, list):
-            #print("input_data is a list")
-            # Convert each element to a string and join them with the delimiter
-            merged_text = delimiter.join(str(item) for item in input_data)
-        elif isinstance(input_data, dict):
-           # print("input_data is a dict")
-            # Convert each value to a string and join them with the delimiter
-            merged_text = delimiter.join(str(value) for value in input_data.values())
-        else:
-            # Convert the single value to a string
-            #print(f"input_data is a single value of type {type(input_data).__name__}")
-            merged_text = str(input_data)
-
-        if merged_text is None:
-            return ("",)
+            if isinstance(input_data_item, list):
+                #print("input_data_item is a list")
+                # Convert each element to a string and join them with the delimiter
+                merged_text += delimiter.join(str(item) for item in input_data_item)
+            elif isinstance(input_data_item, dict):
+            # print("input_data_item is a dict")
+                # Convert each value to a string and join them with the delimiter
+                merged_text += delimiter.join(str(value) for value in input_data_item.values())
+            else:
+                # Convert the single value to a string
+                #print(f"input_data_item is a single value of type {type(input_data_item).__name__}")
+                merged_text += str(input_data_item)
 
         # trim the merged text
         merged_text = merged_text.strip()
