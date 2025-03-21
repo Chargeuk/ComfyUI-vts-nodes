@@ -76,7 +76,7 @@ class VTS_Clean_Text:
 
 
     def notify(self, text):
-        cleaned_text = text.replace("\n", ", ").replace("\r", "").replace("\t", ", ")
+        cleaned_text = text.replace(",", ", ").replace(".", ". ").replace("\n", ", ").replace("\r", "").replace("\t", ", ")
 
         needs_cleaning = True
         while needs_cleaning:
