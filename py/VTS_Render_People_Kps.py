@@ -277,6 +277,7 @@ class VTS_Render_People_Kps:
                 "render_body": ("BOOLEAN", {"default": True}),
                 "render_hand": ("BOOLEAN", {"default": True}),
                 "render_face": ("BOOLEAN", {"default": True}),
+                "max_frames": ("INT", { "default": 0, "min": 0, "step": 1, }),
             }
         }
 
@@ -287,7 +288,7 @@ class VTS_Render_People_Kps:
         True,
     )
 
-    def render(self, kps, render_body, render_hand, render_face) -> tuple[np.ndarray]:
+    def render(self, kps, render_body, render_hand, render_face, max_frames) -> tuple[np.ndarray]:
         # ensure we are dealing with a list of frames
         if not isinstance(kps, list):
             kps = [kps]
@@ -304,6 +305,9 @@ class VTS_Render_People_Kps:
                 render_hand,
                 render_face,
             )
+            # Truncate np_images to max_frames if max_frames > 0
+            if max_frames > 0:
+                np_images = np_images[:max_frames]
             results.append(np_images)
             
         # results is an list of image lists, where the first level represents a frame in time
