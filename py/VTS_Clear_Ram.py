@@ -91,8 +91,9 @@ class VTS_Clear_Ram:
                 process = kernel32.GetCurrentProcess()
                 result = kernel32.SetProcessWorkingSetSize(process, -1, -1)
                 return result != 0  # Returns True if successful
-        except:
+        except Exception as e:
             # Fallback for systems that may not support these methods
+            print(f"Trim memory failure: {e}")
             return False
 
     def VRAMdebug(self, gc_collect, empty_cache, unload_all_models, image_pass=None, model_pass=None, any_input=None, any_input2=None, any_input3=None, any_input4=None, any_input5=None):
