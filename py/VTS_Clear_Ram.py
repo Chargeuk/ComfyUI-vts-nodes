@@ -93,12 +93,13 @@ class VTS_Clear_Ram:
                 return result != 0  # Returns True if successful
         except Exception as e:
             # Fallback for systems that may not support these methods
-            print(f"Trim memory failure: {e}")
+            print(f"VTS_Clear_Ram: Trim memory failure: {e}")
             return False
 
     def VRAMdebug(self, gc_collect, empty_cache, unload_all_models, image_pass=None, model_pass=None, any_input=None, any_input2=None, any_input3=None, any_input4=None, any_input5=None):
         freemem_before = model_management.get_free_memory()
-        print("VRAMdebug: free memory before: ", f"{freemem_before:,.0f}")
+        freeram_before = model_management.get_free_memory(torch.device('cpu'))
+        
         if empty_cache:
             model_management.soft_empty_cache()
             # torch.device('cpu').empty_cache()
@@ -113,8 +114,14 @@ class VTS_Clear_Ram:
             self.trim_memory()
 
         freemem_after = model_management.get_free_memory()
-        print("VRAMdebug: free memory after: ", f"{freemem_after:,.0f}")
-        print("VRAMdebug: freed memory: ", f"{freemem_after - freemem_before:,.0f}")
+        freeram_after = model_management.get_free_memory(torch.device('cpu'))
+        print("VTS_Clear_Ram: free vram before: ", f"{freemem_before:,.0f}")
+        print("VTS_Clear_Ram: free vram after: ", f"{freemem_after:,.0f}")
+        print("VTS_Clear_Ram: freed vram: ", f"{freemem_after - freemem_before:,.0f}")
+
+        print("VTS_Clear_Ram: free RAM before: ", f"{freeram_before:,.0f}")
+        print("VTS_Clear_Ram: free RAM after: ", f"{freeram_after:,.0f}")
+        print("VTS_Clear_Ram: freed RAM: ", f"{freeram_after - freeram_before:,.0f}")
         return {"ui": {
             "text": [f"{freemem_before:,.0f}x{freemem_after:,.0f}"]}, 
             "result": (any_input, any_input2, any_input3, any_input4, any_input5, image_pass, model_pass, freemem_before, freemem_after) 
