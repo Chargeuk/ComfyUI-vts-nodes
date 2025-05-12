@@ -64,13 +64,43 @@ class VTS_Clear_Ram:
             "any_input3": (any, {}),
             "any_input4": (any, {}),
             "any_input5": (any, {}),
+            "any_input6": (any, {}),
+            "any_input7": (any, {}),
+            "any_input8": (any, {}),
+            "any_input9": (any, {}),
             "image_pass": ("IMAGE",),
             "model_pass": ("MODEL",),
         }
 	}
         
-    RETURN_TYPES = (any, any, any, any, any, "IMAGE","MODEL","INT", "INT",)
-    RETURN_NAMES = ("any_output", "any_output2", "any_output3", "any_output4", "any_output5", "image_pass", "model_pass", "freemem_before", "freemem_after")
+    RETURN_TYPES = (
+        any,
+        any,
+        any,
+        any,
+        any,
+        any,
+        any,
+        any,
+        any,
+        "IMAGE",
+        "MODEL",
+        "INT",
+        "INT",)
+    RETURN_NAMES = (
+        "any_output",
+        "any_output2",
+        "any_output3",
+        "any_output4",
+        "any_output5",
+        "any_output6",
+        "any_output7",
+        "any_output8",
+        "any_output9",
+        "image_pass",
+        "model_pass",
+        "freemem_before",
+        "freemem_after")
     FUNCTION = "VRAMdebug"
     CATEGORY = "VTS"
     DESCRIPTION = """
@@ -96,7 +126,22 @@ class VTS_Clear_Ram:
             print(f"VTS_Clear_Ram: Trim memory failure: {e}")
             return False
 
-    def VRAMdebug(self, gc_collect, empty_cache, unload_all_models, image_pass=None, model_pass=None, any_input=None, any_input2=None, any_input3=None, any_input4=None, any_input5=None):
+    def VRAMdebug(self,
+        gc_collect,
+        empty_cache,
+        unload_all_models,
+        image_pass=None,
+        model_pass=None,
+        any_input=None,
+        any_input2=None,
+        any_input3=None,
+        any_input4=None,
+        any_input5=None,
+        any_input6=None,
+        any_input7=None,
+        any_input8=None,
+        any_input9=None
+        ):
         freemem_before = model_management.get_free_memory()
         freeram_before = model_management.get_free_memory(torch.device('cpu'))
         
@@ -124,7 +169,20 @@ class VTS_Clear_Ram:
         print("VTS_Clear_Ram: freed RAM: ", f"{freeram_after - freeram_before:,.0f}")
         return {"ui": {
             "text": [f"{freemem_before:,.0f}x{freemem_after:,.0f}"]}, 
-            "result": (any_input, any_input2, any_input3, any_input4, any_input5, image_pass, model_pass, freemem_before, freemem_after) 
+            "result": (
+                any_input,
+                any_input2,
+                any_input3,
+                any_input4,
+                any_input5,
+                any_input6,
+                any_input7,
+                any_input8,
+                any_input9,
+                image_pass,
+                model_pass,
+                freemem_before,
+                freemem_after) 
         }
 
 
