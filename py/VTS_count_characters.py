@@ -8,13 +8,14 @@ class VTS_Count_Characters:
     def INPUT_TYPES(s):
         return {"required": { "string_list": ("STRING",),
                             }}
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("Character_Data",)
+    RETURN_TYPES = ("STRING","STRING",)
+    RETURN_NAMES = ("Character_Positive", "Character_Negative")
     FUNCTION = "upscale"
 
     INPUT_IS_LIST = True
 
     OUTPUT_IS_LIST = (
+        False,
         False,
     )
 
@@ -30,25 +31,34 @@ class VTS_Count_Characters:
         for singleString in string_list:
             lowercaseString = singleString.lower().strip()
             # if the string contains any of the following words:woman, female, lady, set a boolean named isWoman to true
-            isWoman = any(word in lowercaseString for word in ["woman", "female", "lady"])
+            isWoman = any(word in lowercaseString for word in ["woman", "women", "female", "lady"])
             if isWoman:
                 numberOfWomen += 1
             else:
-                numberOfMen += 1
+                isMan = any(word in lowercaseString for word in ["man", "men", "male", "guy", "bloke", "dude"])
+                if isMan:
+                    numberOfMen += 1
 
         finalResult = ""
+        finalNegativeResult = ""
 
         if numberOfWomen > 0:
             womenString = f"There are {numberOfWomen} women in the video."
             finalResult += womenString
+        else:
+            finalNegativeResult += "woman. women, female, lady"
 
         if numberOfMen > 0:
             menString = f"There are {numberOfMen} men in the video."
             if finalResult:  # Add a space if womenString is already included
                 finalResult += " "
             finalResult += menString
+        else:
+            if len(finalNegativeResult) > 0:
+                finalNegativeResult += ", "
+            finalNegativeResult += "man, men, male, guy, bloke, dude, beard, mustache"
 
-        return (finalResult,)
+        return (finalResult,finalNegativeResult,)
 
 
 # A dictionary that contains all nodes you want to export with their names
