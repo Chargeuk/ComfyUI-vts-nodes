@@ -305,9 +305,6 @@ class VTS_Render_People_Kps:
                 render_hand,
                 render_face,
             )
-            # Truncate np_images to max_frames if max_frames > 0
-            if max_frames > 0:
-                np_images = np_images[:max_frames]
             results.append(np_images)
             
         # results is an list of image lists, where the first level represents a frame in time
@@ -328,6 +325,10 @@ class VTS_Render_People_Kps:
                     # If a character is missing in a frame, append an empty image
                     empty_image = np.zeros_like(frame_images[0])
                     character_stacks[char_idx].append(empty_image)
+
+            # Truncate each character's stack to max_frames if max_frames > 0
+        if max_frames > 0:
+            character_stacks = [char_stack[:max_frames] for char_stack in character_stacks]
 
         # Convert the list of character stacks to numpy arrays
         final_result = [torch.from_numpy(np.stack(char_stack, axis=0).astype(np.float32) / 255) for char_stack in character_stacks]

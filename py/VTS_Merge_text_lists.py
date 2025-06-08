@@ -1,4 +1,4 @@
-import re
+import json
 
 # wildcard trick is taken from pythongossss's
 class AnyType(str):
@@ -7,7 +7,7 @@ class AnyType(str):
 
 any_typ = AnyType("*")
 
-class VTS_Clean_Text:
+class VTS_Merge_Text_Lists:
     """
     A example node
 
@@ -63,91 +63,49 @@ class VTS_Clean_Text:
         """
         return {
             "required": {
-                "text": ("STRING", ),
+                "string_list_1": ("STRING",),
+                "string_list_2": ("STRING",),
+                "seperator": ("STRING", {"default": "-----"})
             }
         }
 
-    RETURN_TYPES = ("STRING",)
-    #RETURN_NAMES = ("image_output_name",)
+    RETURN_TYPES = (
+        "STRING",
+    )
+    OUTPUT_IS_LIST = (
+        True, # question answers output is a list of string, 1 item per image
+    )
 
-    FUNCTION = "notify"
+    RETURN_NAMES = (
+        "merged_string_lists", # question answers output
+    )
+    #RETURN_NAMES = ("image_output_name",)
+    INPUT_IS_LIST = True
+
+    FUNCTION = "merge_string_arrays"
 
     #OUTPUT_NODE = False
 
     CATEGORY = "VTS"
 
 
-    def notify(self, text):
-        cleaned_text = text
-        for i in range(2):
-            cleaned_text = re.sub(r'(?<!\d)\.(?!\d)', '. ', cleaned_text)
-            cleaned_text = cleaned_text.replace(",", ", ").replace("\n", ". ").replace("\r", "").replace("\t", ", ")
-            # cleaned_text = text.replace(",", ", ").replace(".", ". ").replace("\n", ", ").replace("\r", "").replace("\t", ", ")
-            needs_cleaning = True
-            while needs_cleaning:
-                needs_cleaning = False
-                # remove tripple ticks
-                while "```" in cleaned_text:
-                    cleaned_text = cleaned_text.replace("```", ".")
-                    needs_cleaning = True
+    def merge_string_arrays(self, string_list_1, string_list_2, seperator):
+        seperator = seperator[0]  # Get the first item from the list, as INPUT_IS_LIST is True
+        # Determine the length of the longer array
+        max_length = max(len(string_list_1), len(string_list_2))
+        
+        # Merge strings at each index or append remaining elements
+        merged_array = []
+        for i in range(max_length):
+            if i < len(string_list_1) and i < len(string_list_2):
+                merged_array.append(f"{string_list_1[i]}{seperator}{string_list_2[i]}")
+            elif i < len(string_list_1):
+                merged_array.append(string_list_1[i])
+            elif i < len(string_list_2):
+                merged_array.append(string_list_2[i])
+        
+        return (merged_array,)
 
-                # Remove double spaces
-                while "  " in cleaned_text:
-                    cleaned_text = cleaned_text.replace("  ", " ")
-                    needs_cleaning = True
-
-                # Remove double commas
-                while ",," in cleaned_text:
-                    cleaned_text = cleaned_text.replace(",,", ",")
-                    needs_cleaning = True
-
-                # Remove commas with only spaces separating them
-                while ", ," in cleaned_text:
-                    cleaned_text = cleaned_text.replace(", ,", ",")
-                    needs_cleaning = True
-
-                # remove double full stops
-                while ".." in cleaned_text:
-                    cleaned_text = cleaned_text.replace("..", ".")
-                    needs_cleaning = True
-
-                # Remove full stops with only spaces separating them
-                while ". ." in cleaned_text:
-                    cleaned_text = cleaned_text.replace(". .", ".")
-                    needs_cleaning = True
-
-                while ",." in cleaned_text:
-                    cleaned_text = cleaned_text.replace(",.", ".")
-                    needs_cleaning = True
-
-                # Remove full stops with only spaces separating them
-                while ", ." in cleaned_text:
-                    cleaned_text = cleaned_text.replace(", .", ".")
-                    needs_cleaning = True
-                
-                while ".," in cleaned_text:
-                    cleaned_text = cleaned_text.replace(".,", ".")
-                    needs_cleaning = True
-
-                # Remove full stops with only spaces separating them
-                while ". ," in cleaned_text:
-                    cleaned_text = cleaned_text.replace(". ,", ".")
-                    needs_cleaning = True
-
-                # Remove duplicated words
-                words = cleaned_text.split()
-                removed_words_cleaned_text = ' '.join([word for i, word in enumerate(words) if i == 0 or word != words[i - 1]])
-                if removed_words_cleaned_text != cleaned_text:
-                    needs_cleaning = True
-                cleaned_text = removed_words_cleaned_text
- 
-        return (cleaned_text,)
-
-
-
-# Add custom API routes, using router
-from aiohttp import web
-from server import PromptServer
 
 # @PromptServer.instance.routes.get("/hello")
 # async def get_hello(request):
@@ -157,10 +115,10 @@ from server import PromptServer
 # A dictionary that contains all nodes you want to export with their names
 # NOTE: names should be globally unique
 NODE_CLASS_MAPPINGS = {
-    "VTS Clean Text": VTS_Clean_Text
+    "VTS Merge Text Lists": VTS_Merge_Text_Lists
 }
 
 # A dictionary that contains the friendly/humanly readable titles for the nodes
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "VTS Clean Text": "Clean Text"
+    "VTS Merge Text Lists": "Merge Text Lists"
 }

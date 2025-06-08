@@ -1,13 +1,13 @@
+# wildcard trick is taken from pythongossss's
 import re
 
-# wildcard trick is taken from pythongossss's
 class AnyType(str):
     def __ne__(self, __value: object) -> bool:
         return False
 
 any_typ = AnyType("*")
 
-class VTS_Clean_Text:
+class VTS_Repeat_Text_As_List:
     """
     A example node
 
@@ -64,90 +64,40 @@ class VTS_Clean_Text:
         return {
             "required": {
                 "text": ("STRING", ),
+                "list_length": ("INT", {"default": 1, "min": 1, "max": 100, "step": 1, "label": "Number of times to repeat text"}),
             }
         }
 
     RETURN_TYPES = ("STRING",)
-    #RETURN_NAMES = ("image_output_name",)
+    OUTPUT_IS_LIST = (
+        True, # question answers output is a list of string, 1 item per image
+    )
+
+    RETURN_NAMES = (
+        "text_list", # question answers output
+    )
 
     FUNCTION = "notify"
+
+    INPUT_IS_LIST = False
 
     #OUTPUT_NODE = False
 
     CATEGORY = "VTS"
 
 
-    def notify(self, text):
-        cleaned_text = text
-        for i in range(2):
-            cleaned_text = re.sub(r'(?<!\d)\.(?!\d)', '. ', cleaned_text)
-            cleaned_text = cleaned_text.replace(",", ", ").replace("\n", ". ").replace("\r", "").replace("\t", ", ")
-            # cleaned_text = text.replace(",", ", ").replace(".", ". ").replace("\n", ", ").replace("\r", "").replace("\t", ", ")
-            needs_cleaning = True
-            while needs_cleaning:
-                needs_cleaning = False
-                # remove tripple ticks
-                while "```" in cleaned_text:
-                    cleaned_text = cleaned_text.replace("```", ".")
-                    needs_cleaning = True
+    def notify(self, text, list_length):
+        text_list = []
 
-                # Remove double spaces
-                while "  " in cleaned_text:
-                    cleaned_text = cleaned_text.replace("  ", " ")
-                    needs_cleaning = True
+        # Append the text to the list list_length times
+        for _ in range(list_length):
+            text_list.append(text)
 
-                # Remove double commas
-                while ",," in cleaned_text:
-                    cleaned_text = cleaned_text.replace(",,", ",")
-                    needs_cleaning = True
-
-                # Remove commas with only spaces separating them
-                while ", ," in cleaned_text:
-                    cleaned_text = cleaned_text.replace(", ,", ",")
-                    needs_cleaning = True
-
-                # remove double full stops
-                while ".." in cleaned_text:
-                    cleaned_text = cleaned_text.replace("..", ".")
-                    needs_cleaning = True
-
-                # Remove full stops with only spaces separating them
-                while ". ." in cleaned_text:
-                    cleaned_text = cleaned_text.replace(". .", ".")
-                    needs_cleaning = True
-
-                while ",." in cleaned_text:
-                    cleaned_text = cleaned_text.replace(",.", ".")
-                    needs_cleaning = True
-
-                # Remove full stops with only spaces separating them
-                while ", ." in cleaned_text:
-                    cleaned_text = cleaned_text.replace(", .", ".")
-                    needs_cleaning = True
-                
-                while ".," in cleaned_text:
-                    cleaned_text = cleaned_text.replace(".,", ".")
-                    needs_cleaning = True
-
-                # Remove full stops with only spaces separating them
-                while ". ," in cleaned_text:
-                    cleaned_text = cleaned_text.replace(". ,", ".")
-                    needs_cleaning = True
-
-                # Remove duplicated words
-                words = cleaned_text.split()
-                removed_words_cleaned_text = ' '.join([word for i, word in enumerate(words) if i == 0 or word != words[i - 1]])
-                if removed_words_cleaned_text != cleaned_text:
-                    needs_cleaning = True
-                cleaned_text = removed_words_cleaned_text
- 
-        return (cleaned_text,)
+        return (text_list,)
 
 
 
-# Add custom API routes, using router
-from aiohttp import web
-from server import PromptServer
+
 
 # @PromptServer.instance.routes.get("/hello")
 # async def get_hello(request):
@@ -157,10 +107,10 @@ from server import PromptServer
 # A dictionary that contains all nodes you want to export with their names
 # NOTE: names should be globally unique
 NODE_CLASS_MAPPINGS = {
-    "VTS Clean Text": VTS_Clean_Text
+    "VTS Repeat Text As List": VTS_Repeat_Text_As_List
 }
 
 # A dictionary that contains the friendly/humanly readable titles for the nodes
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "VTS Clean Text": "Clean Text"
+    "VTS Repeat Text As List": "Repeat Text As List"
 }
