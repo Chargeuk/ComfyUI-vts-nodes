@@ -1,3 +1,5 @@
+import re
+
 # wildcard trick is taken from pythongossss's
 class AnyType(str):
     def __ne__(self, __value: object) -> bool:
@@ -5,7 +7,7 @@ class AnyType(str):
 
 any_typ = AnyType("*")
 
-class VTS_Replace_Text_In_List:
+class VTS_Fix_Image_Tags:
     """
     A example node
 
@@ -61,54 +63,78 @@ class VTS_Replace_Text_In_List:
         """
         return {
             "required": {
-                "text_list": ("STRING", ),
-                "find": ("STRING", ),
-                "replace": ("STRING", ),
-                "start_index": ("INT", {"default": 0, "min": 0, "step": 1}),
+                "tags_list": ("STRING", ),
+                "cutoff": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "Minimum cutoff value for positive tags."}),
+                "cutoff_applied_at": ("INT", {"default": 1, "min": 0, "max": 100, "step": 1, "tooltip": "Minimum number of positive tags before we start to apply the cutoff."}),
             }
         }
 
-    RETURN_TYPES = ("STRING",)
+    RETURN_TYPES = ("STRING","STRING",)
+    RETURN_NAMES = ("positive_tags","negative_tags",)
     OUTPUT_IS_LIST = (
-        True, # question answers output is a list of string, 1 item per image
-    )
-
-    RETURN_NAMES = (
-        "cleaned_text_lists", # question answers output
+        True,
+        True,
     )
 
     FUNCTION = "notify"
-
     INPUT_IS_LIST = True
-
-    #OUTPUT_NODE = False
 
     CATEGORY = "VTS"
 
 
-    def notify(self, text_list, find, replace, start_index):
-        find = find[0]
-        replace = replace[0]
-        start_index = start_index[0]
-        cleaned_text_list = []
+    def notify(self, tags_list, cutoff, cutoff_applied_at):
+        cutoff = cutoff[0]
+        cutoff_applied_at = cutoff_applied_at[0]
+        positive_tags_list = []
+        negative_tags_list = []
+        for text in tags_list:
+            positive_tags = ""
+            negative_tags = ""
 
-        for i, text in enumerate(text_list):
-            if i >= start_index:
-                cleaned_text = text.replace(find, replace)
-            else:
-                cleaned_text = text
-            cleaned_text_list.append(cleaned_text)
+            # Regular expression to match tags in the format (tag:float)
+            tag_pattern = r"\(([^:]+):([-+]?\d*\.\d+|\d+)\)"
+            matches = re.findall(tag_pattern, text)
 
-        return (cleaned_text_list,)
+            positive_list = []
+            negative_list = []
+
+            for tag, value in matches:
+                try:
+                    value = float(value)
+                    if value > 0:
+                        positive_list.append((tag, value))
+                    else:
+                        negative_list.append(f"({tag}:1.0)")
+                except ValueError:
+                    # Ignore invalid values
+                    continue
+
+            # Sort positive tags by value in descending order
+            positive_list.sort(key=lambda x: x[1], reverse=True)
+
+            # Filter positive tags based on cutoff and cutoff_applied_at
+            filtered_positive_list = []
+            for tag, value in positive_list:
+                if value > cutoff or len(filtered_positive_list) < cutoff_applied_at:
+                    filtered_positive_list.append(f"({tag}:{value})")
+
+            positive_tags = ",".join(filtered_positive_list)
+            negative_tags = ",".join(negative_list)
+            if positive_tags:
+                positive_tags_list.append(positive_tags)
+            if negative_tags:
+                negative_tags_list.append(negative_tags)
+
+        return (positive_tags_list, negative_tags_list)
 
 
 # A dictionary that contains all nodes you want to export with their names
 # NOTE: names should be globally unique
 NODE_CLASS_MAPPINGS = {
-    "VTS Replace Text In List": VTS_Replace_Text_In_List
+    "VTS Fix Image Tags": VTS_Fix_Image_Tags
 }
 
 # A dictionary that contains the friendly/humanly readable titles for the nodes
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "VTS Replace Text In List": "Replace Text In List"
+    "VTS Fix Image Tags": "Fix Image Tags"
 }
