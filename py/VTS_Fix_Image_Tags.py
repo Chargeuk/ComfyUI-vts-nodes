@@ -95,22 +95,24 @@ class VTS_Fix_Image_Tags:
             tag_pattern = r"\(([^:]+):([-+]?\d*\.\d+|\d+)\)"
             matches = re.findall(tag_pattern, text)
 
-            positive_list = []
+            positive_dict = {}
             negative_list = []
 
             for tag, value in matches:
                 try:
                     value = float(value)
                     if value > 0:
-                        positive_list.append((tag, value))
+                        # Keep only the highest value for each tag
+                        if tag not in positive_dict or value > positive_dict[tag]:
+                            positive_dict[tag] = value
                     else:
                         negative_list.append(f"({tag}:1.0)")
                 except ValueError:
                     # Ignore invalid values
                     continue
 
-            # Sort positive tags by value in descending order
-            positive_list.sort(key=lambda x: x[1], reverse=True)
+            # Convert positive_dict to a list of tuples and sort by value in descending order
+            positive_list = sorted(positive_dict.items(), key=lambda x: x[1], reverse=True)
 
             # Filter positive tags based on cutoff and cutoff_applied_at
             filtered_positive_list = []

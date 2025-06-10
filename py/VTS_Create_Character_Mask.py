@@ -15,6 +15,7 @@ class VTS_Create_Character_Mask:
         return {"required": {
                               "type": (["character", "face"],),
                               "number_of_characters": ("INT", {"default": 1, "min": 1, "max": 10, "step": 1}),
+                              "merge_to_single_string": ("BOOLEAN", {"default": False, "tooltip": "If true, the output will be an array with a single string containing all colors."}),
                              }}
 
     RETURN_TYPES = (
@@ -32,7 +33,7 @@ class VTS_Create_Character_Mask:
         # the output should be a string like #RRGGBB
         return f"#{red:02x}{green:02x}{blue:02x}"
 
-    def create_character_mask(self, type: str, number_of_characters: int):
+    def create_character_mask(self, type: str, number_of_characters: int, merge_to_single_string: bool):
         red = 255
         green = 0
         blue = 0
@@ -69,8 +70,14 @@ class VTS_Create_Character_Mask:
             character_colours_string = ",".join(characterColors)
             all_character_colors.append(f'"{character_colours_string}"')
 
-        all_character_colors_string = ",".join(all_character_colors)
-        result = f"[{all_character_colors_string}]"
+        if merge_to_single_string:
+            # need to iterate through the list and remove any quotes from each string
+            all_character_colors = [color.strip('"') for color in all_character_colors]
+            all_character_colors_string = ",".join(all_character_colors)
+            result = f'["{all_character_colors_string}"]'
+        else:
+            all_character_colors_string = ",".join(all_character_colors)
+            result = f"[{all_character_colors_string}]"
         return (result, )
 
 # A dictionary that contains all nodes you want to export with their names

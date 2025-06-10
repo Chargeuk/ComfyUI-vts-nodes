@@ -78,7 +78,7 @@ class VTS_Color_Mask_To_Mask:
     def doit(color_mask, mask_colors: str, dilation=0):
         # for the first step, try to treat the mask_colors as a json representation of a list of color lists
         # eg: ["#FFFFFF, #00FFFF", "#000000, #FF0000"]
-        #print(f"VTS_Color_Mask_To_Mask mask_colors={mask_colors}")
+        print(f"VTS_Color_Mask_To_Mask mask_colors={mask_colors}")
         try:
             mask_colors_list = json.loads(mask_colors)
             #print(f"VTS_Color_Mask_To_Mask JSON mask_colors_list={mask_colors_list}")
