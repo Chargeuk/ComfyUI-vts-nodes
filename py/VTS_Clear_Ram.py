@@ -1,6 +1,7 @@
 import json
 import model_management
 import torch
+import gc
 
 
 # wildcard trick is taken from pythongossss's
@@ -153,10 +154,23 @@ class VTS_Clear_Ram:
             model_management.free_memory(1e30, model_management.unet_offload_device())
             model_management.free_memory(1e30, torch.device('cpu'))
         if gc_collect:
+            for _ in range(3):  # Run garbage collection multiple times
+                self.trim_memory()
+                gc.collect()
+            
             self.trim_memory()
-            import gc
-            gc.collect()
-            self.trim_memory()
+
+            # Handle CUDA memory if available
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
+                # More aggressive memory cleanup
+                # Force a synchronization point
+                torch.cuda.synchronize()
+                
+                # Try to defragment memory
+                if hasattr(torch.cuda, 'caching_allocator_delete_caches'):
+                    torch.cuda.caching_allocator_delete_caches()
 
         freemem_after = model_management.get_free_memory()
         freeram_after = model_management.get_free_memory(torch.device('cpu'))
