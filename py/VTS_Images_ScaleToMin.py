@@ -6,6 +6,7 @@ MAX_RESOLUTION = 16384
 class VTS_Images_ScaleToMin:
     upscale_methods = ["nearest-exact", "bilinear", "area", "bicubic", "lanczos"]
     crop_methods = ["disabled", "center"]
+    scale_types = ["small", "large"]
 
     @classmethod
     def INPUT_TYPES(s):
@@ -13,13 +14,16 @@ class VTS_Images_ScaleToMin:
                               "smallMaxSize": ("INT", {"default": 512, "min": 0, "max": MAX_RESOLUTION, "step": 1}),
                               "largeMaxSize": ("INT", {"default": 512, "min": 0, "max": MAX_RESOLUTION, "step": 1}),
                               "divisible_by": ("INT", { "default": 2, "min": 0, "max": 512, "step": 1, }),
-                              "crop": (s.crop_methods,)}}
+                              "crop": (s.crop_methods,),
+                              "scale_type": (s.scale_types, {"default": "small"}),
+                            }
+                }
     RETURN_TYPES = ("IMAGE",)
-    FUNCTION = "upscale"
+    FUNCTION = "scale"
 
     CATEGORY = "VTS"
 
-    def upscale(self, image, upscale_method, smallMaxSize, largeMaxSize, divisible_by, crop):
+    def scale(self, image, upscale_method, smallMaxSize, largeMaxSize, divisible_by, crop, scale_type):
         # Get the dimensions of the image
         height, width = image.shape[1], image.shape[2]
         original_height, original_width = height, width
@@ -36,12 +40,16 @@ class VTS_Images_ScaleToMin:
         new_smallest_side = int(largeMaxSize / aspect_ratio)
 
         # Determine final dimensions
-        if new_largest_side <= largeMaxSize:
-            width = smallMaxSize if original_width < original_height else new_largest_side
-            height = smallMaxSize if original_height < original_width else new_largest_side
+        # if new_largest_side <= largeMaxSize:
+        #     width = smallMaxSize if original_width < original_height else new_largest_side
+        #     height = smallMaxSize if original_height < original_width else new_largest_side
+        # else:
+        #     width = new_smallest_side if original_width < original_height else largeMaxSize
+        #     height = new_smallest_side if original_height < original_width else largeMaxSize
+        if scale_type == "small":
+            width, height = self.getSmallDimensions(original_width, original_height, smallMaxSize, largeMaxSize, new_largest_side, new_smallest_side)
         else:
-            width = new_smallest_side if original_width < original_height else largeMaxSize
-            height = new_smallest_side if original_height < original_width else largeMaxSize
+            width, height = self.getLargeDimensions(original_width, original_height, smallMaxSize, largeMaxSize)
 
         if divisible_by > 1:
             width = width - (width % divisible_by)
@@ -56,12 +64,29 @@ class VTS_Images_ScaleToMin:
 
         # Move dimensions for processing
         samples = image.movedim(-1, 1)
-        
         # Perform the upscale
         s = comfy.utils.common_upscale(samples, width, height, upscale_method, crop)
         s = s.movedim(1, -1)
         
         return (s,)
+
+    def getSmallDimensions(self, original_width, original_height, smallMaxSize, largeMaxSize, new_largest_side, new_smallest_side):
+        if new_largest_side <= largeMaxSize:
+            width = smallMaxSize if original_width < original_height else new_largest_side
+            height = smallMaxSize if original_height < original_width else new_largest_side
+        else:
+            width = new_smallest_side if original_width < original_height else largeMaxSize
+            height = new_smallest_side if original_height < original_width else largeMaxSize
+        return width, height
+
+    def getLargeDimensions(self, original_width, original_height, smallMaxSize, largeMaxSize):
+        if original_width < original_height:
+            width = smallMaxSize
+            height = largeMaxSize
+        else:
+            width = largeMaxSize
+            height = smallMaxSize
+        return width, height
 
 
 # A dictionary that contains all nodes you want to export with their names

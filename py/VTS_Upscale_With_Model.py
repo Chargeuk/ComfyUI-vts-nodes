@@ -6,85 +6,7 @@ from spandrel.__helpers.size_req import pad_tensor
 from comfy import model_management
 import torch
 import comfy.utils
-import folder_paths
-
-
-# class UpscaleModelLoader:
-#     @classmethod
-#     def INPUT_TYPES(s):
-#         return {"required": { "model_name": (folder_paths.get_filename_list("upscale_models"), ),
-#                              }}
-#     RETURN_TYPES = ("UPSCALE_MODEL",)
-#     FUNCTION = "load_model"
-
-#     CATEGORY = "loaders"
-
-#     def load_model(self, model_name):
-#         model_path = folder_paths.get_full_path_or_raise("upscale_models", model_name)
-#         sd = comfy.utils.load_torch_file(model_path, safe_load=True)
-#         if "module.layers.0.residual_group.blocks.0.norm1.weight" in sd:
-#             sd = comfy.utils.state_dict_prefix_replace(sd, {"module.":""})
-#         out = ModelLoader().load_from_state_dict(sd).eval()
-
-#         if not isinstance(out, ImageModelDescriptor):
-#             raise Exception("Upscale model must be a single-image model.")
-
-#         return (out, )
-    
-
-# class CustomImageModelDescriptor:
-#     def __init__(self, original_descriptor: ImageModelDescriptor, scaleOverride: float = None):
-#         self._original_descriptor = original_descriptor
-#         if scaleOverride is not None and scaleOverride > 0:
-#             self.scale = scaleOverride
-
-#     def __getattr__(self, name):
-#         """
-#         Delegate attribute access to the original descriptor.
-#         """
-#         return getattr(self._original_descriptor, name)
-    
-
-
-#     def __call__(self, image: torch.Tensor) -> torch.Tensor:
-#         """
-#         Custom implementation of the __call__ method.
-#         """
-#         if len(image.shape) != 4:
-#             raise ValueError(
-#                 f"Expected image tensor to have 4 dimensions, but got {image.shape}"
-#             )
-
-#         _, _, h, w = image.shape
-
-#         logging.info(f"CustomImageModelDescriptor - Processing image of size {w}x{h} with scale {self.scale}")
-
-
-#         # Example: Custom logic for padding
-#         did_pad, image = pad_tensor(image, self.size_requirements)
-
-#         # Example: Custom inference logic
-#         if self.model.training:
-#             self.model.eval()
-
-#         output = self.model(image)  # Replace with your custom logic
-#         assert isinstance(
-#             output, torch.Tensor
-#         ), f"Expected {type(self.model).__name__} model to return a tensor, but got {type(output)}"
-
-#         # Guarantee range
-#         output = output.clamp_(0, 1)
-
-#         # Remove padding
-#         if did_pad:
-#             newWidth = int(w * self.scale)
-#             newHeight = int(h * self.scale)
-#             output = output[..., : newHeight, : newWidth]
-
-#         logging.info(f"CustomImageModelDescriptor - did_pad= {did_pad}, output shape = {output.shape}")
-
-#         return output
-    
+import folder_paths 
 
 class VTSImageUpscaleWithModel:
     @classmethod
@@ -95,9 +17,6 @@ class VTSImageUpscaleWithModel:
                 "image": ("IMAGE",),
                 "device_preference": (["auto", "cuda", "cpu"],),  # New input type
             },
-            # "optional": {
-            #     "override_upscale_amount": ("FLOAT",),  # Optional parameter to override upscale amount
-            # },
         }
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "upscale"
@@ -145,8 +64,6 @@ class VTSImageUpscaleWithModel:
 
         tile = 512
         overlap = 32
-
-        
 
         oom = True
         while oom:
