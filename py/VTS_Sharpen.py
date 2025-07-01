@@ -1,0 +1,108 @@
+
+
+import logging
+from comfy import model_management
+import torch
+import torch.nn.functional as F
+
+def gaussian_kernel(kernel_size: int, sigma: float, device=None):
+    x, y = torch.meshgrid(torch.linspace(-1, 1, kernel_size, device=device), torch.linspace(-1, 1, kernel_size, device=device), indexing="ij")
+    d = torch.sqrt(x * x + y * y)
+    g = torch.exp(-(d * d) / (2.0 * sigma * sigma))
+    return g / g.sum()
+
+# class VTSImageUpscaleWithModel:
+class VTSSharpen:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "sharpen_radius": ("INT", {
+                    "default": 1,
+                    "min": 1,
+                    "max": 31,
+                    "step": 1
+                }),
+                "sigma": ("FLOAT", {
+                    "default": 1.0,
+                    "min": 0.1,
+                    "max": 10.0,
+                    "step": 0.01
+                }),
+                "alpha": ("FLOAT", {
+                    "default": 1.0,
+                    "min": 0.0,
+                    "max": 5.0,
+                    "step": 0.01
+                }),
+                "batch_size": ("INT", {
+                    "default": 80,
+                    "min": 1,
+                    "max": 1000,
+                    "step": 1
+                }),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "sharpen"
+
+    CATEGORY = "image/postprocessing"
+
+    def sharpen(self, image: torch.Tensor, sharpen_radius: int, sigma: float, alpha: float, batch_size: int):
+        if sharpen_radius == 0:
+            return (image,)
+
+        total_batch_size, height, width, channels = image.shape
+        
+        # Process images in batches to avoid memory issues
+        results = []
+        
+        for i in range(0, total_batch_size, batch_size):
+            # Get current batch
+            end_idx = min(i + batch_size, total_batch_size)
+            batch_images = image[i:end_idx]
+            
+            # Move batch to GPU
+            batch_images = batch_images.to(model_management.get_torch_device())
+
+            kernel_size = sharpen_radius * 2 + 1
+            kernel = gaussian_kernel(kernel_size, sigma, device=batch_images.device) * -(alpha*10)
+            center = kernel_size // 2
+            kernel[center, center] = kernel[center, center] - kernel.sum() + 1.0
+            kernel = kernel.repeat(channels, 1, 1).unsqueeze(1)
+
+            tensor_image = batch_images.permute(0, 3, 1, 2) # Torch wants (B, C, H, W) we use (B, H, W, C)
+            tensor_image = F.pad(tensor_image, (sharpen_radius,sharpen_radius,sharpen_radius,sharpen_radius), 'reflect')
+            sharpened = F.conv2d(tensor_image, kernel, padding=center, groups=channels)[:,:,sharpen_radius:-sharpen_radius, sharpen_radius:-sharpen_radius]
+            sharpened = sharpened.permute(0, 2, 3, 1)
+
+            batch_result = torch.clamp(sharpened, 0, 1)
+            
+            # Move result to intermediate device and add to results
+            results.append(batch_result.to(model_management.intermediate_device()))
+            
+            # Clear GPU memory for this batch
+            del batch_images, tensor_image, sharpened, batch_result
+            if hasattr(torch.cuda, 'empty_cache'):
+                torch.cuda.empty_cache()
+        
+        # Concatenate all batch results
+        final_result = torch.cat(results, dim=0)
+        
+        return (final_result,)
+    
+# A dictionary that contains all nodes you want to export with their names
+# NOTE: names should be globally unique
+NODE_CLASS_MAPPINGS = {
+    "VTS Sharpen": VTSSharpen
+}
+
+# A dictionary that contains the friendly/humanly readable titles for the nodes
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "VTS Sharpen": "Image Sharpen VTS"
+}
