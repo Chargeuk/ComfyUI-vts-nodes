@@ -58,16 +58,19 @@ class VTSSharpen:
             return (image,)
 
         total_batch_size, height, width, channels = image.shape
+        logging.info(f"VTSSharpen - total_batch_size: {total_batch_size}, height: {height}, width: {width}, channels: {channels}, sharpen_radius: {sharpen_radius}, sigma: {sigma}, alpha: {alpha}, batch_size: {batch_size}")
         
         # Process images in batches to avoid memory issues
         results = []
         
         for i in range(0, total_batch_size, batch_size):
+            logging.info(f"Processing batch {i // batch_size + 1} of {total_batch_size // batch_size + 1}")
             # Get current batch
             end_idx = min(i + batch_size, total_batch_size)
             batch_images = image[i:end_idx]
             
             # Move batch to GPU
+            logging.info(f"Moving batch images to device: {model_management.get_torch_device()}")
             batch_images = batch_images.to(model_management.get_torch_device())
 
             kernel_size = sharpen_radius * 2 + 1
@@ -76,6 +79,7 @@ class VTSSharpen:
             kernel[center, center] = kernel[center, center] - kernel.sum() + 1.0
             kernel = kernel.repeat(channels, 1, 1).unsqueeze(1)
 
+            logging.info(f"sharpening batch with kernel size {kernel_size}, sigma {sigma}, alpha {alpha}")
             tensor_image = batch_images.permute(0, 3, 1, 2) # Torch wants (B, C, H, W) we use (B, H, W, C)
             tensor_image = F.pad(tensor_image, (sharpen_radius,sharpen_radius,sharpen_radius,sharpen_radius), 'reflect')
             sharpened = F.conv2d(tensor_image, kernel, padding=center, groups=channels)[:,:,sharpen_radius:-sharpen_radius, sharpen_radius:-sharpen_radius]
@@ -84,14 +88,18 @@ class VTSSharpen:
             batch_result = torch.clamp(sharpened, 0, 1)
             
             # Move result to intermediate device and add to results
+            logging.info(f"Moving batch result to intermediate device: {model_management.intermediate_device()}")
             results.append(batch_result.to(model_management.intermediate_device()))
             
             # Clear GPU memory for this batch
+            logging.info("Clearing GPU memory for this batch")
             del batch_images, tensor_image, sharpened, batch_result
             if hasattr(torch.cuda, 'empty_cache'):
+                logging.info("Emptying CUDA cache")
                 torch.cuda.empty_cache()
         
         # Concatenate all batch results
+        logging.info("Concatenating all batch results")
         final_result = torch.cat(results, dim=0)
         
         return (final_result,)
