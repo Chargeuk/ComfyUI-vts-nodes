@@ -40,12 +40,6 @@ class VTS_Images_ScaleToMin:
         new_smallest_side = int(largeMaxSize / aspect_ratio)
 
         # Determine final dimensions
-        # if new_largest_side <= largeMaxSize:
-        #     width = smallMaxSize if original_width < original_height else new_largest_side
-        #     height = smallMaxSize if original_height < original_width else new_largest_side
-        # else:
-        #     width = new_smallest_side if original_width < original_height else largeMaxSize
-        #     height = new_smallest_side if original_height < original_width else largeMaxSize
         if scale_type == "small":
             width, height = self.getSmallDimensions(original_width, original_height, smallMaxSize, largeMaxSize, new_largest_side, new_smallest_side)
         else:

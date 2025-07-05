@@ -45,6 +45,7 @@ class VTSSharpen:
                     "max": 1000,
                     "step": 1
                 }),
+                "passthrough": ("BOOLEAN", {"default": False, "tooltip": "When true, bypass processing and return images unchanged"}),
             },
         }
 
@@ -53,7 +54,11 @@ class VTSSharpen:
 
     CATEGORY = "image/postprocessing"
 
-    def sharpen(self, image: torch.Tensor, sharpen_radius: int, sigma: float, alpha: float, batch_size: int):
+    def sharpen(self, image: torch.Tensor, sharpen_radius: int, sigma: float, alpha: float, batch_size: int, passthrough: bool = False) -> tuple:
+        if passthrough:
+            logging.info("VTSSharpen - passthrough is True, returning original image without processing")
+            return (image,)
+        
         if sharpen_radius == 0:
             return (image,)
 
@@ -61,13 +66,19 @@ class VTSSharpen:
         logging.info(f"VTSSharpen - total_batch_size: {total_batch_size}, height: {height}, width: {width}, channels: {channels}, sharpen_radius: {sharpen_radius}, sigma: {sigma}, alpha: {alpha}, batch_size: {batch_size}")
         
         # Process images in batches to avoid memory issues
-        results = []
+        # Use in-place processing for maximum memory efficiency
+        if image.device != model_management.intermediate_device():
+            final_result = image.clone()
+            logging.info("VTSSharpen - Input images cloned to intermediate device for processing")
+        else:
+            final_result = image
+            logging.info("VTSSharpen - Processing input images in-place (no clone needed)")
         
         for i in range(0, total_batch_size, batch_size):
             logging.info(f"Processing batch {i // batch_size + 1} of {total_batch_size // batch_size + 1}")
             # Get current batch
             end_idx = min(i + batch_size, total_batch_size)
-            batch_images = image[i:end_idx]
+            batch_images = final_result[i:end_idx]
             
             # Move batch to GPU
             logging.info(f"Moving batch images to device: {model_management.get_torch_device()}")
@@ -87,9 +98,9 @@ class VTSSharpen:
 
             batch_result = torch.clamp(sharpened, 0, 1)
             
-            # Move result to intermediate device and add to results
-            logging.info(f"Moving batch result to intermediate device: {model_management.intermediate_device()}")
-            results.append(batch_result.to(model_management.intermediate_device()))
+            # Write directly back to the result tensor
+            logging.info(f"Writing batch result directly to final tensor")
+            final_result[i:end_idx] = batch_result.to(final_result.device)
             
             # Clear GPU memory for this batch
             logging.info("Clearing GPU memory for this batch")
@@ -97,10 +108,6 @@ class VTSSharpen:
             if hasattr(torch.cuda, 'empty_cache'):
                 logging.info("Emptying CUDA cache")
                 torch.cuda.empty_cache()
-        
-        # Concatenate all batch results
-        logging.info("Concatenating all batch results")
-        final_result = torch.cat(results, dim=0)
         
         return (final_result,)
     
