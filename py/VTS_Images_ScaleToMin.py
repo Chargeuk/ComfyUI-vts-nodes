@@ -10,7 +10,8 @@ class VTS_Images_ScaleToMin:
 
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": { "image": ("IMAGE",), "upscale_method": (s.upscale_methods,),
+        return {"required": { "image": ("IMAGE",),
+                              "upscale_method": (s.upscale_methods,),
                               "smallMaxSize": ("INT", {"default": 512, "min": 0, "max": MAX_RESOLUTION, "step": 1}),
                               "largeMaxSize": ("INT", {"default": 512, "min": 0, "max": MAX_RESOLUTION, "step": 1}),
                               "divisible_by": ("INT", { "default": 2, "min": 0, "max": 512, "step": 1, }),
