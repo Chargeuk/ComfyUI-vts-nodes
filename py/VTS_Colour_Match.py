@@ -7,75 +7,76 @@ from nodes import MAX_RESOLUTION
 def colormatch(image_ref, image_target, method, strength=1.0, editInPlace=False, gc_interval=50):
     try:
         from color_matcher import ColorMatcher
-    except:
+    except ImportError:
         raise Exception("Can't import color-matcher, did you install requirements.txt? Manual install: pip install color-matcher")
     
-    cm = ColorMatcher()
+    # Early validation
+    if image_ref.dim() != 4 or image_target.dim() != 4:
+        raise ValueError("ColorMatch: Expected 4D tensors (batch, height, width, channels)")
     
-    # Move to CPU only once and reuse
+    batch_size = image_target.size(0)
+    ref_batch_size = image_ref.size(0)
+    
+    # Validate batch sizes early
+    if ref_batch_size > 1 and ref_batch_size != batch_size:
+        raise ValueError("ColorMatch: Use either single reference image or a matching batch of reference images.")
+    
+    # Move to CPU efficiently (avoid redundant moves)
     if image_ref.device != torch.device('cpu'):
         image_ref = image_ref.cpu()
     if image_target.device != torch.device('cpu'):
         image_target = image_target.cpu()
     
-    batch_size = image_target.size(0)
-    
     # Handle output tensor allocation
     if editInPlace:
         out = image_target
     else:
-        # Use the same dtype as input to avoid unnecessary conversions
-        out = torch.empty_like(image_target, dtype=image_target.dtype, device='cpu')
+        out = torch.empty_like(image_target, dtype=torch.float32, device='cpu')
     
-    # Re-introduce squeeze logic - this is essential for proper tensor handling
-    images_target = image_target.squeeze()
-    images_ref = image_ref.squeeze()
-
-    image_ref_np = images_ref.numpy()
-    images_target_np = images_target.numpy()
-
-    # Validate batch sizes early
-    if image_ref.size(0) > 1 and image_ref.size(0) != batch_size:
-        raise ValueError("ColorMatch: Use either single reference image or a matching batch of reference images.")
-
+    # Initialize ColorMatcher once
+    cm = ColorMatcher()
+    
+    # Process each image in the batch
     for i in range(batch_size):
-        image_target_np = images_target_np if batch_size == 1 else images_target[i].numpy()
-        image_ref_np_i = image_ref_np if image_ref.size(0) == 1 else images_ref[i].numpy()
+        # Get individual images (avoid squeeze - use direct indexing)
+        target_img = image_target[i]  # Shape: [H, W, C]
+        ref_img = image_ref[0] if ref_batch_size == 1 else image_ref[i]  # Shape: [H, W, C]
+        
+        # Convert to numpy only when needed
+        target_np = target_img.numpy()
+        ref_np = ref_img.numpy()
         
         try:
             # Perform color matching
-            image_result = cm.transfer(src=image_target_np, ref=image_ref_np_i, method=method)
+            result_np = cm.transfer(src=target_np, ref=ref_np, method=method)
             
-            # Apply strength multiplier - optimized version
+            # Apply strength multiplier efficiently
             if strength != 1.0:
-                image_result = image_target_np + strength * (image_result - image_target_np)
+                result_np = target_np + strength * (result_np - target_np)
             
-            # Update the pre-allocated tensor directly
+            # Convert back to tensor and update output
+            result_tensor = torch.from_numpy(result_np)
+            
             if editInPlace:
-                if batch_size == 1:
-                    image_target.copy_(torch.from_numpy(image_result))
-                else:
-                    image_target[i].copy_(torch.from_numpy(image_result))
+                image_target[i].copy_(result_tensor)
             else:
-                if batch_size == 1:
-                    out.copy_(torch.from_numpy(image_result))
-                else:
-                    out[i].copy_(torch.from_numpy(image_result))
+                out[i].copy_(result_tensor)
             
-            # Explicitly clear intermediate variables for memory management
-            del image_target_np, image_ref_np_i, image_result
+            # Clean up intermediate variables
+            del target_np, ref_np, result_np, result_tensor
             
-            # Force garbage collection at specified intervals for large batches
+            # Garbage collection at intervals
             if gc_interval > 0 and (i + 1) % gc_interval == 0:
                 import gc
                 gc.collect()
                 
-        except BaseException as e:
-            print(f"Error occurred during transfer: {e}")
-            break
+        except Exception as e:
+            print(f"Error occurred during transfer for image {i}: {e}")
+            # Continue processing other images rather than breaking
+            continue
     
-    # Convert to float32 and clamp in-place
-    if out.dtype != torch.float32:
+    # Ensure output is float32 and properly clamped
+    if not editInPlace and out.dtype != torch.float32:
         out = out.to(torch.float32)
     out.clamp_(0, 1)
     
