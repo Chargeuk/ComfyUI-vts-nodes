@@ -209,6 +209,37 @@ def draw_poses_separate_canvases(poses: List[PoseResult], H, W, draw_body=True, 
 
     return canvases
 
+def draw_poses_single_canvas(poses: List[PoseResult], H, W, draw_body=True, draw_hand=True, draw_face=True, xinsr_stick_scaling=False) -> np.ndarray:
+    """
+    Draw all detected poses on a single canvas.
+
+    Args:
+        poses (List[PoseResult]): A list of PoseResult objects containing the detected poses.
+        H (int): The height of the canvas.
+        W (int): The width of the canvas.
+        draw_body (bool, optional): Whether to draw body keypoints. Defaults to True.
+        draw_hand (bool, optional): Whether to draw hand keypoints. Defaults to True.
+        draw_face (bool, optional): Whether to draw face keypoints. Defaults to True.
+        xinsr_stick_scaling (bool, optional): Whether to apply xinsr stick scaling. Defaults to False.
+
+    Returns:
+        numpy.ndarray: A 3D numpy array representing the canvas with all poses drawn.
+    """
+    canvas = np.zeros(shape=(H, W, 3), dtype=np.uint8)
+
+    for pose in poses:
+        if draw_body:
+            canvas = draw_bodypose(canvas, pose.body.keypoints, xinsr_stick_scaling)
+
+        if draw_hand:
+            canvas = draw_handpose(canvas, pose.left_hand)
+            canvas = draw_handpose(canvas, pose.right_hand)
+
+        if draw_face:
+            canvas = draw_facepose(canvas, pose.face)
+
+    return canvas
+
 def decode_json_as_poses(
     pose_json: dict,
 ) -> Tuple[List[PoseResult], List[AnimalPoseResult], int, int]:
@@ -278,6 +309,7 @@ class VTS_Render_People_Kps:
                 "render_hand": ("BOOLEAN", {"default": True}),
                 "render_face": ("BOOLEAN", {"default": True}),
                 "max_frames": ("INT", { "default": 0, "min": 0, "step": 1, }),
+                "render_combined": ("BOOLEAN", {"default": False}),
             }
         }
 
@@ -288,7 +320,7 @@ class VTS_Render_People_Kps:
         True,
     )
 
-    def render(self, kps, render_body, render_hand, render_face, max_frames) -> tuple[np.ndarray]:
+    def render(self, kps, render_body, render_hand, render_face, max_frames, render_combined) -> tuple[np.ndarray]:
         # ensure we are dealing with a list of frames
         if not isinstance(kps, list):
             kps = [kps]
@@ -297,41 +329,68 @@ class VTS_Render_People_Kps:
 
         for idx, frame in enumerate(kps):
             poses, _, height, width = decode_json_as_poses(frame)
-            np_images = draw_poses_separate_canvases(
-                poses,
-                height,
-                width,
-                render_body,
-                render_hand,
-                render_face,
-            )
-            results.append(np_images)
             
-        # results is an list of image lists, where the first level represents a frame in time
-        # and the second level represents the images for each person in that frame
-        # now we need to stack the images for each person seperately
-        # Determine the maximum number of characters in any frame
-        max_characters = max(len(frame_images) for frame_images in results)
+            if render_combined:
+                # Render all poses on a single canvas
+                combined_canvas = draw_poses_single_canvas(
+                    poses,
+                    height,
+                    width,
+                    render_body,
+                    render_hand,
+                    render_face,
+                )
+                results.append([combined_canvas])  # Single canvas per frame
+            else:
+                # Original behavior: separate canvases for each person
+                np_images = draw_poses_separate_canvases(
+                    poses,
+                    height,
+                    width,
+                    render_body,
+                    render_hand,
+                    render_face,
+                )
+                results.append(np_images)
+            
+        if render_combined:
+            # For combined rendering, we have one image per frame
+            # Stack all frames into a single tensor
+            combined_frames = [frame_images[0] for frame_images in results]
+            
+            # Truncate to max_frames if specified
+            if max_frames > 0:
+                combined_frames = combined_frames[:max_frames]
+            
+            # Convert to tensor
+            final_result = [torch.from_numpy(np.stack(combined_frames, axis=0).astype(np.float32) / 255)]
+        else:
+            # Original character separation logic
+            # results is an list of image lists, where the first level represents a frame in time
+            # and the second level represents the images for each person in that frame
+            # now we need to stack the images for each person seperately
+            # Determine the maximum number of characters in any frame
+            max_characters = max(len(frame_images) for frame_images in results)
 
-        # Initialize a list to hold the stacked images for each character
-        character_stacks = [[] for _ in range(max_characters)]
+            # Initialize a list to hold the stacked images for each character
+            character_stacks = [[] for _ in range(max_characters)]
 
-        # Stack images for each character across all frames
-        for frame_images in results:
-            for char_idx in range(max_characters):
-                if char_idx < len(frame_images):
-                    character_stacks[char_idx].append(frame_images[char_idx])
-                else:
-                    # If a character is missing in a frame, append an empty image
-                    empty_image = np.zeros_like(frame_images[0])
-                    character_stacks[char_idx].append(empty_image)
+            # Stack images for each character across all frames
+            for frame_images in results:
+                for char_idx in range(max_characters):
+                    if char_idx < len(frame_images):
+                        character_stacks[char_idx].append(frame_images[char_idx])
+                    else:
+                        # If a character is missing in a frame, append an empty image
+                        empty_image = np.zeros_like(frame_images[0])
+                        character_stacks[char_idx].append(empty_image)
 
-            # Truncate each character's stack to max_frames if max_frames > 0
-        if max_frames > 0:
-            character_stacks = [char_stack[:max_frames] for char_stack in character_stacks]
+                # Truncate each character's stack to max_frames if max_frames > 0
+            if max_frames > 0:
+                character_stacks = [char_stack[:max_frames] for char_stack in character_stacks]
 
-        # Convert the list of character stacks to numpy arrays
-        final_result = [torch.from_numpy(np.stack(char_stack, axis=0).astype(np.float32) / 255) for char_stack in character_stacks]
+            # Convert the list of character stacks to numpy arrays
+            final_result = [torch.from_numpy(np.stack(char_stack, axis=0).astype(np.float32) / 255) for char_stack in character_stacks]
 
         return (final_result,)
 
