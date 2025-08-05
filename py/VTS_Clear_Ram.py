@@ -54,7 +54,6 @@ class VTS_Clear_Ram:
     def INPUT_TYPES(s):
       return {
         "required": {
-            
             "empty_cache": ("BOOLEAN", {"default": True}),
             "gc_collect": ("BOOLEAN", {"default": True}),
             "unload_all_models": ("BOOLEAN", {"default": False}),

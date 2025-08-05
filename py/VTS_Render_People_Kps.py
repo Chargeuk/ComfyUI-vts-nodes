@@ -175,7 +175,7 @@ def draw_facepose(canvas: np.ndarray, keypoints: Union[List[Keypoint], None]) ->
     return canvas
 
 
-def draw_poses_separate_canvases(poses: List[PoseResult], H, W, draw_body=True, draw_hand=True, draw_face=True, xinsr_stick_scaling=False) -> List[np.ndarray]:
+def draw_poses_separate_canvases(poses: List[PoseResult], H, W, draw_body=True, draw_hand=True, draw_face=True, xinsr_stick_scaling=False, provided_canvases=None) -> List[np.ndarray]:
     """
     Draw the detected poses on separate canvases.
 
@@ -186,14 +186,20 @@ def draw_poses_separate_canvases(poses: List[PoseResult], H, W, draw_body=True, 
         draw_body (bool, optional): Whether to draw body keypoints. Defaults to True.
         draw_hand (bool, optional): Whether to draw hand keypoints. Defaults to True.
         draw_face (bool, optional): Whether to draw face keypoints. Defaults to True.
+        xinsr_stick_scaling (bool, optional): Whether to apply xinsr stick scaling. Defaults to False.
+        provided_canvases (List[np.ndarray], optional): Pre-existing canvases to draw on. If None, creates new ones.
 
     Returns:
         List[numpy.ndarray]: A list of 3D numpy arrays representing the canvases with the drawn poses.
     """
     canvases = []
 
-    for pose in poses:
-        canvas = np.zeros(shape=(H, W, 3), dtype=np.uint8)
+    for i, pose in enumerate(poses):
+        # Use provided canvas if available, otherwise create a new one
+        if provided_canvases is not None and i < len(provided_canvases):
+            canvas = provided_canvases[i].copy()  # Make a copy to avoid modifying the original
+        else:
+            canvas = np.zeros(shape=(H, W, 3), dtype=np.uint8)
 
         if draw_body:
             canvas = draw_bodypose(canvas, pose.body.keypoints, xinsr_stick_scaling)
@@ -242,6 +248,8 @@ def draw_poses_single_canvas(poses: List[PoseResult], H, W, draw_body=True, draw
 
 def decode_json_as_poses(
     pose_json: dict,
+    widthOverride: Optional[int] = None,
+    heightOverride: Optional[int] = None,
 ) -> Tuple[List[PoseResult], List[AnimalPoseResult], int, int]:
     """Decode the json_string complying with the openpose JSON output format
     to poses that controlnet recognizes.
@@ -258,6 +266,11 @@ def decode_json_as_poses(
     """
     height = pose_json["canvas_height"]
     width = pose_json["canvas_width"]
+
+    if heightOverride is not None:
+        height = heightOverride
+    if widthOverride is not None:
+        width = widthOverride
 
     def chunks(lst, n):
         """Yield successive n-sized chunks from lst."""
@@ -310,6 +323,9 @@ class VTS_Render_People_Kps:
                 "render_face": ("BOOLEAN", {"default": True}),
                 "max_frames": ("INT", { "default": 0, "min": 0, "step": 1, }),
                 "render_combined": ("BOOLEAN", {"default": False}),
+            },
+            "optional": {
+                "draw_canvas": ("IMAGE",)
             }
         }
 
@@ -320,29 +336,76 @@ class VTS_Render_People_Kps:
         True,
     )
 
-    def render(self, kps, render_body, render_hand, render_face, max_frames, render_combined) -> tuple[np.ndarray]:
+    def render(self, kps, render_body, render_hand, render_face, max_frames, render_combined, draw_canvas=None) -> tuple[np.ndarray]:
         # ensure we are dealing with a list of frames
         if not isinstance(kps, list):
             kps = [kps]
 
         results = []
 
+        # Handle draw_canvas if provided
+        canvas_frames = None
+        canvas_height = None
+        canvas_width = None
+        
+        if draw_canvas is not None:
+            # draw_canvas is expected to be a tensor with shape (B, H, W, C) or (B, H, W)
+            canvas_frames = (draw_canvas * 255).byte().numpy()  # Convert from float [0,1] to uint8 [0,255]
+            
+            # Handle both grayscale (B, H, W) and color (B, H, W, C) inputs
+            if len(canvas_frames.shape) == 3:  # Grayscale (B, H, W)
+                canvas_height, canvas_width = canvas_frames.shape[1], canvas_frames.shape[2]
+                # Expand grayscale to 3 channels by repeating the single channel
+                canvas_frames = np.repeat(canvas_frames[:, :, :, np.newaxis], 3, axis=3)
+            else:  # Color (B, H, W, C)
+                _, canvas_height, canvas_width, channels = canvas_frames.shape
+                # If single channel, expand to 3 channels
+                if channels == 1:
+                    canvas_frames = np.repeat(canvas_frames, 3, axis=3)
+
         for idx, frame in enumerate(kps):
-            poses, _, height, width = decode_json_as_poses(frame)
+            # Use canvas dimensions if provided, otherwise use default from pose data
+            width_override = canvas_width if canvas_width is not None else None
+            height_override = canvas_height if canvas_height is not None else None
+            
+            poses, _, height, width = decode_json_as_poses(frame, width_override, height_override)
             
             if render_combined:
+                # Get canvas for this frame if available
+                frame_canvas = None
+                if canvas_frames is not None and idx < len(canvas_frames):
+                    frame_canvas = canvas_frames[idx]
+                
                 # Render all poses on a single canvas
-                combined_canvas = draw_poses_single_canvas(
-                    poses,
-                    height,
-                    width,
-                    render_body,
-                    render_hand,
-                    render_face,
-                )
+                if frame_canvas is not None:
+                    # Use provided canvas as base
+                    combined_canvas = frame_canvas.copy()
+                    for pose in poses:
+                        if render_body:
+                            combined_canvas = draw_bodypose(combined_canvas, pose.body.keypoints, False)
+                        if render_hand:
+                            combined_canvas = draw_handpose(combined_canvas, pose.left_hand)
+                            combined_canvas = draw_handpose(combined_canvas, pose.right_hand)
+                        if render_face:
+                            combined_canvas = draw_facepose(combined_canvas, pose.face)
+                else:
+                    # Use default behavior
+                    combined_canvas = draw_poses_single_canvas(
+                        poses,
+                        height,
+                        width,
+                        render_body,
+                        render_hand,
+                        render_face,
+                    )
                 results.append([combined_canvas])  # Single canvas per frame
             else:
                 # Original behavior: separate canvases for each person
+                frame_canvases = None
+                if canvas_frames is not None and idx < len(canvas_frames):
+                    # Create separate canvases for each pose from the frame canvas
+                    frame_canvases = [canvas_frames[idx] for _ in range(len(poses))]
+                
                 np_images = draw_poses_separate_canvases(
                     poses,
                     height,
@@ -350,6 +413,7 @@ class VTS_Render_People_Kps:
                     render_body,
                     render_hand,
                     render_face,
+                    provided_canvases=frame_canvases
                 )
                 results.append(np_images)
             
