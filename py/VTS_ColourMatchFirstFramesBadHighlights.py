@@ -83,7 +83,7 @@ def colormatch(image_ref, image_target, method, strength=1.0, editInPlace=False,
     return (out,)
 
 
-class VTS_ColourMatchFirstFrames:
+class VTS_ColourMatchFirstFramesBadHighlights:
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -547,10 +547,10 @@ Anti-Banding Features:
 # A dictionary that contains all nodes you want to export with their names
 # NOTE: names should be globally unique
 NODE_CLASS_MAPPINGS = {
-    "VTS Colour Match First Frames": VTS_ColourMatchFirstFrames
+    "VTS Colour Match First Frames Bad Highlights": VTS_ColourMatchFirstFramesBadHighlights
 }
 
 # A dictionary that contains the friendly/humanly readable titles for the nodes
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "VTS Colour Match First Frames": "VTS Colour Match First Frames"
+    "VTS Colour Match First Frames Bad Highlights": "VTS Colour Match First Frames Bad Highlights"
 }
