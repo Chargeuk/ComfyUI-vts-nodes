@@ -111,7 +111,7 @@ class VTS_ColourMatchAdvanced:
                 "color_match_adaptive": ("BOOLEAN", {"default": True, "tooltip": "Use adaptive color matching strength"}),
                 "temporal_smoothing": ("FLOAT", {"default": 0.1, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "Temporal smoothing factor"}),
                 "color_reference_method": (["first_frame", "rolling_average", "previous_frame", "firstFramesHistogram"], {"default": "rolling_average"}),
-                "numberOfFirstFrames": ("INT", {"default": 20, "min": 1, "max": 100, "step": 1, "tooltip": "Number of first frames to use as brightness reference library (only used with firstFramesHistogram method)"}),
+                "numberOfFirstFrames": ("INT", {"default": 20, "min": 1, "step": 1, "tooltip": "Number of first frames to use as brightness reference library (only used with firstFramesHistogram method)"}),
                 "color_correction_method": (["frame_by_frame", "advanced"], {"default": "frame_by_frame", "tooltip": "Choose color correction method: frame_by_frame (original) or advanced (luminance-preserving)"}),
                 "requiredTotalCorrection": ("FLOAT", {"default": 0.1, "min": 0.0, "max": 10.0, "step": 0.01, "tooltip": "Minimum total correction needed to apply advanced color correction"}),
                 "whiteBalanceMultiply": ("FLOAT", {"default": 0.8, "min": 0.0, "max": 10.0, "step": 0.01, "tooltip": "Multiplier for white balance correction strength"}),
