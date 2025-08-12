@@ -108,7 +108,8 @@ class VTS_ColourMatchFirstFrames:
                 "contrast_stabilization": ("BOOLEAN", {"default": False, "tooltip": "Enable contrast stabilization to prevent shadow/highlight drift"}),
                 "shadow_threshold": ("FLOAT", {"default": 0.3, "min": 0.1, "max": 0.5, "step": 0.05, "tooltip": "Luminance threshold to define shadow areas"}),
                 "highlight_threshold": ("FLOAT", {"default": 0.7, "min": 0.5, "max": 0.9, "step": 0.05, "tooltip": "Luminance threshold to define highlight areas"}),
-                "contrast_strength": ("FLOAT", {"default": 0.8, "min": 0.0, "max": 100.0, "step": 0.1, "tooltip": "Strength of contrast stabilization"}),
+                "shadow_strength": ("FLOAT", {"default": 0.8, "min": 0.0, "max": 2.0, "step": 0.1, "tooltip": "Strength of shadow correction - automatically brightens dark shadows and restores saturation. 0.0=no correction, 1.0=full correction, >1.0=over-correction"}),
+                "highlight_strength": ("FLOAT", {"default": 0.8, "min": 0.0, "max": 2.0, "step": 0.1, "tooltip": "Strength of highlight correction - automatically tones down blown highlights and restores detail. 0.0=no correction, 1.0=full correction, >1.0=over-correction"}),
                 "editInPlace": ("BOOLEAN", {"default": False, "tooltip": "When true, modify the input image_target tensor directly instead of creating a new tensor"}),
                 "gc_interval": ("INT", {"default": 50, "min": 0, "max": 1000, "step": 1, "tooltip": "Garbage collection interval. Set to 0 to disable automatic garbage collection. For large batches, lower values can help manage memory"}),
             }
@@ -129,6 +130,7 @@ Key Features:
 - Histogram-based brightness matching for robust frame selection
 - Consistent color correction using actual reference frames
 - Optional contrast stabilization to prevent shadow/highlight drift
+- Separate strength controls for shadows and highlights
 - Addresses temporal contrast expansion and shadow desaturation
 - Ideal for maintaining temporal color and tonal stability in video sequences
 
@@ -139,12 +141,15 @@ Contrast Stabilization (Optional):
 - Prevents shadows from getting darker and losing saturation over time
 - Prevents highlights from becoming blown out
 - Uses the same proven first-frames approach for tonal stability
+- Individual strength controls for shadow_strength and highlight_strength
+- Shadow correction: 30% luminance + 70% color correction
+- Highlight correction: 50% luminance + 50% color correction
 """
 
     CATEGORY = "VTS"
 
     def colormatch(self, image_target, method, passthrough, strength=1.0, numberOfFirstFrames=20, 
-                   contrast_stabilization=False, shadow_threshold=0.3, highlight_threshold=0.7, contrast_strength=0.8,
+                   contrast_stabilization=False, shadow_threshold=0.3, highlight_threshold=0.7, shadow_strength=0.8, highlight_strength=0.8,
                    editInPlace=False, gc_interval=50):
         if passthrough:
             print("VTS_ColourMatchFirstFrames - passthrough is True, returning original image_target without processing")
@@ -170,7 +175,8 @@ Contrast Stabilization (Optional):
             contrast_stabilization,
             shadow_threshold,
             highlight_threshold,
-            contrast_strength
+            shadow_strength,
+            highlight_strength
         )
         
         print(f"VTS_ColourMatchFirstFrames - Finished processing. Built reference library with {len(self.brightness_lookup)} frames")
@@ -284,8 +290,8 @@ Contrast Stabilization (Optional):
         
         return best_frame_data
 
-    def apply_contrast_stabilization(self, reference_frame, current_frame, strength=0.8, shadow_threshold=0.3, highlight_threshold=0.7):
-        """Apply contrast stabilization to prevent shadow/highlight drift"""
+    def apply_contrast_stabilization(self, reference_frame, current_frame, shadow_strength=0.8, highlight_strength=0.8, shadow_threshold=0.3, highlight_threshold=0.7):
+        """Apply contrast stabilization to prevent shadow/highlight drift with separate strength controls"""
         curr_lum = 0.299 * current_frame[..., 0] + 0.587 * current_frame[..., 1] + 0.114 * current_frame[..., 2]
         ref_lum = 0.299 * reference_frame[..., 0] + 0.587 * reference_frame[..., 1] + 0.114 * reference_frame[..., 2]
         
@@ -312,9 +318,9 @@ Contrast Stabilization (Optional):
             # Color correction (restore saturation and color balance)
             color_correction = ref_shadow_pixels.mean(dim=0) - curr_shadow_pixels.mean(dim=0)
             
-            # Apply combined correction with strength control
-            corrected_shadows = curr_shadow_pixels * (1.0 + strength * 0.3 * (lum_correction_factor - 1.0))
-            corrected_shadows = corrected_shadows + strength * 0.7 * color_correction
+            # Apply combined correction with shadow strength control
+            corrected_shadows = curr_shadow_pixels * (1.0 + shadow_strength * 0.3 * (lum_correction_factor - 1.0))
+            corrected_shadows = corrected_shadows + shadow_strength * 0.7 * color_correction
             
             result[curr_shadows] = torch.clamp(corrected_shadows, 0.0, 1.0)
             corrections_applied.append("shadows")
@@ -333,9 +339,9 @@ Contrast Stabilization (Optional):
             # Color correction for highlights
             color_correction = ref_highlight_pixels.mean(dim=0) - curr_highlight_pixels.mean(dim=0)
             
-            # Apply correction (more conservative for highlights)
-            corrected_highlights = curr_highlight_pixels * (1.0 + strength * 0.5 * (lum_correction_factor - 1.0))
-            corrected_highlights = corrected_highlights + strength * 0.5 * color_correction
+            # Apply correction with highlight strength control (more conservative for highlights)
+            corrected_highlights = curr_highlight_pixels * (1.0 + highlight_strength * 0.5 * (lum_correction_factor - 1.0))
+            corrected_highlights = corrected_highlights + highlight_strength * 0.5 * color_correction
             
             result[curr_highlights] = torch.clamp(corrected_highlights, 0.0, 1.0)
             corrections_applied.append("highlights")
@@ -343,9 +349,9 @@ Contrast Stabilization (Optional):
         return result, corrections_applied
 
     def process_first_frames_sequence(self, decoded_frames, color_match_method, color_match_strength, editInPlace, gc_interval,
-                                     contrast_stabilization=False, shadow_threshold=0.3, highlight_threshold=0.7, contrast_strength=0.8):
+                                     contrast_stabilization=False, shadow_threshold=0.3, highlight_threshold=0.7, shadow_strength=0.8, highlight_strength=0.8):
         """
-        Enhanced processing with optional contrast stabilization
+        Enhanced processing with optional contrast stabilization using separate shadow and highlight strength controls
         """
         if color_match_strength <= 0.0 and not contrast_stabilization:
             return decoded_frames
@@ -355,7 +361,7 @@ Contrast Stabilization (Optional):
         for i, current_frame in enumerate(decoded_frames):
             current_frame_batch = current_frame.unsqueeze(0)  # Add batch dimension
             
-            if i < self.numberOfFirstFrames:
+            if self.brightness_lookup is None or len(self.brightness_lookup) < self.numberOfFirstFrames:
                 # Build enhanced brightness lookup with tonal zone analysis
                 if contrast_stabilization:
                     signature = self.calculate_brightness_signature_with_zones(current_frame, shadow_threshold, highlight_threshold)
@@ -394,7 +400,7 @@ Contrast Stabilization (Optional):
                     # Apply contrast stabilization if enabled
                     if contrast_stabilization:
                         processed_frame, corrections = self.apply_contrast_stabilization(
-                            best_match['frame'], processed_frame, contrast_strength, shadow_threshold, highlight_threshold
+                            best_match['frame'], processed_frame, shadow_strength, highlight_strength, shadow_threshold, highlight_threshold
                         )
                         if corrections:
                             applied_corrections.extend(corrections)
