@@ -105,6 +105,10 @@ class VTS_ColourMatchFirstFrames:
             "optional": {
                 "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01}),
                 "numberOfFirstFrames": ("INT", {"default": 20, "min": 1, "max": 100, "step": 1, "tooltip": "Number of first frames to use as brightness reference library"}),
+                "contrast_stabilization": ("BOOLEAN", {"default": False, "tooltip": "Enable contrast stabilization to prevent shadow/highlight drift"}),
+                "shadow_threshold": ("FLOAT", {"default": 0.3, "min": 0.1, "max": 0.5, "step": 0.05, "tooltip": "Luminance threshold to define shadow areas"}),
+                "highlight_threshold": ("FLOAT", {"default": 0.7, "min": 0.5, "max": 0.9, "step": 0.05, "tooltip": "Luminance threshold to define highlight areas"}),
+                "contrast_strength": ("FLOAT", {"default": 0.8, "min": 0.0, "max": 100.0, "step": 0.1, "tooltip": "Strength of contrast stabilization"}),
                 "editInPlace": ("BOOLEAN", {"default": False, "tooltip": "When true, modify the input image_target tensor directly instead of creating a new tensor"}),
                 "gc_interval": ("INT", {"default": 50, "min": 0, "max": 1000, "step": 1, "tooltip": "Garbage collection interval. Set to 0 to disable automatic garbage collection. For large batches, lower values can help manage memory"}),
             }
@@ -114,7 +118,7 @@ class VTS_ColourMatchFirstFrames:
     RETURN_NAMES = ("image",)
     FUNCTION = "colormatch"
     DESCRIPTION = """
-First Frames Histogram Color Matching
+First Frames Histogram Color Matching with Contrast Stabilization
 
 This node implements a simple and effective color matching strategy that uses the first N frames 
 of a video sequence as reference frames. It builds a brightness signature library from these 
@@ -124,20 +128,33 @@ Key Features:
 - Clean, focused implementation without adaptive complexity
 - Histogram-based brightness matching for robust frame selection
 - Consistent color correction using actual reference frames
-- Ideal for maintaining temporal color stability in video sequences
+- Optional contrast stabilization to prevent shadow/highlight drift
+- Addresses temporal contrast expansion and shadow desaturation
+- Ideal for maintaining temporal color and tonal stability in video sequences
 
 The first frames are left unchanged and used to build the reference library. 
 All subsequent frames are color-matched to the best-fitting reference frame.
+
+Contrast Stabilization (Optional):
+- Prevents shadows from getting darker and losing saturation over time
+- Prevents highlights from becoming blown out
+- Uses the same proven first-frames approach for tonal stability
 """
 
     CATEGORY = "VTS"
 
-    def colormatch(self, image_target, method, passthrough, strength=1.0, numberOfFirstFrames=20, editInPlace=False, gc_interval=50):
+    def colormatch(self, image_target, method, passthrough, strength=1.0, numberOfFirstFrames=20, 
+                   contrast_stabilization=False, shadow_threshold=0.3, highlight_threshold=0.7, contrast_strength=0.8,
+                   editInPlace=False, gc_interval=50):
         if passthrough:
             print("VTS_ColourMatchFirstFrames - passthrough is True, returning original image_target without processing")
             return (image_target,)
         
-        print(f"VTS_ColourMatchFirstFrames - Processing {image_target.shape[0]} frames with first {numberOfFirstFrames} as reference library")
+        mode_desc = "color matching"
+        if contrast_stabilization:
+            mode_desc += " + contrast stabilization"
+        
+        print(f"VTS_ColourMatchFirstFrames - Processing {image_target.shape[0]} frames with first {numberOfFirstFrames} as reference library ({mode_desc})")
         
         # Initialize brightness lookup
         self.brightness_lookup = []
@@ -149,7 +166,11 @@ All subsequent frames are color-matched to the best-fitting reference frame.
             method,
             strength,
             editInPlace,
-            gc_interval
+            gc_interval,
+            contrast_stabilization,
+            shadow_threshold,
+            highlight_threshold,
+            contrast_strength
         )
         
         print(f"VTS_ColourMatchFirstFrames - Finished processing. Built reference library with {len(self.brightness_lookup)} frames")
@@ -175,6 +196,64 @@ All subsequent frames are color-matched to the best-fitting reference frame.
             'mean': mean_lum,
             'std': std_lum,
             'percentiles': percentiles
+        }
+
+    def calculate_brightness_signature_with_zones(self, frame, shadow_threshold=0.3, highlight_threshold=0.7):
+        """Calculate brightness signature including shadow/highlight zone analysis"""
+        lum = 0.299 * frame[..., 0] + 0.587 * frame[..., 1] + 0.114 * frame[..., 2]
+        
+        # Define tonal zones
+        shadow_mask = lum < shadow_threshold
+        midtone_mask = (lum >= shadow_threshold) & (lum <= highlight_threshold)
+        highlight_mask = lum > highlight_threshold
+        
+        # Standard brightness signature
+        hist = torch.histc(lum.flatten(), bins=16, min=0, max=1)
+        hist_norm = hist / (hist.sum() + 1e-8)
+        mean_lum = lum.mean().item()
+        std_lum = lum.std().item()
+        percentiles = torch.quantile(lum.flatten(), torch.tensor([0.1, 0.25, 0.5, 0.75, 0.9]))
+        
+        # Zone-specific analysis
+        shadow_stats = self.analyze_zone(frame, shadow_mask, "shadows")
+        highlight_stats = self.analyze_zone(frame, highlight_mask, "highlights")
+        
+        # Contrast characteristics
+        contrast_ratio = percentiles[4] - percentiles[0]  # 90th - 10th percentile
+        
+        return {
+            'histogram': hist_norm,
+            'mean': mean_lum,
+            'std': std_lum,
+            'percentiles': percentiles,
+            'shadow_stats': shadow_stats,
+            'highlight_stats': highlight_stats,
+            'contrast_ratio': contrast_ratio.item()
+        }
+
+    def analyze_zone(self, frame, mask, zone_name):
+        """Analyze specific tonal zone characteristics"""
+        if mask.sum() == 0:
+            return {
+                'area_ratio': 0.0,
+                'mean_luminance': 0.5,
+                'mean_color': torch.tensor([0.5, 0.5, 0.5]),
+                'saturation': 0.0
+            }
+        
+        zone_pixels = frame[mask]
+        zone_lum = (0.299 * zone_pixels[..., 0] + 0.587 * zone_pixels[..., 1] + 0.114 * zone_pixels[..., 2])
+        
+        # Calculate saturation (approximate)
+        zone_max, _ = zone_pixels.max(dim=-1)
+        zone_min, _ = zone_pixels.min(dim=-1)
+        saturation = ((zone_max - zone_min) / (zone_max + 1e-8)).mean()
+        
+        return {
+            'area_ratio': (mask.sum().float() / mask.numel()).item(),
+            'mean_luminance': zone_lum.mean().item(),
+            'mean_color': zone_pixels.mean(dim=0),
+            'saturation': saturation.item()
         }
 
     def find_best_brightness_match(self, target_signature, brightness_lookup):
@@ -205,11 +284,70 @@ All subsequent frames are color-matched to the best-fitting reference frame.
         
         return best_frame_data
 
-    def process_first_frames_sequence(self, decoded_frames, color_match_method, color_match_strength, editInPlace, gc_interval):
+    def apply_contrast_stabilization(self, reference_frame, current_frame, strength=0.8, shadow_threshold=0.3, highlight_threshold=0.7):
+        """Apply contrast stabilization to prevent shadow/highlight drift"""
+        curr_lum = 0.299 * current_frame[..., 0] + 0.587 * current_frame[..., 1] + 0.114 * current_frame[..., 2]
+        ref_lum = 0.299 * reference_frame[..., 0] + 0.587 * reference_frame[..., 1] + 0.114 * reference_frame[..., 2]
+        
+        # Define current and reference zones
+        curr_shadows = curr_lum < shadow_threshold
+        curr_highlights = curr_lum > highlight_threshold
+        ref_shadows = ref_lum < shadow_threshold
+        ref_highlights = ref_lum > highlight_threshold
+        
+        result = current_frame.clone()
+        corrections_applied = []
+        
+        # Shadow stabilization (prevent darkening + restore saturation)
+        if curr_shadows.sum() > 0 and ref_shadows.sum() > 0:
+            curr_shadow_pixels = current_frame[curr_shadows]
+            ref_shadow_pixels = reference_frame[ref_shadows]
+            
+            # Luminance correction (prevent darkening)
+            curr_shadow_lum = curr_lum[curr_shadows]
+            ref_shadow_lum = ref_lum[ref_shadows]
+            lum_correction_factor = ref_shadow_lum.mean() / (curr_shadow_lum.mean() + 1e-8)
+            lum_correction_factor = torch.clamp(lum_correction_factor, 0.8, 1.3)  # Limit correction
+            
+            # Color correction (restore saturation and color balance)
+            color_correction = ref_shadow_pixels.mean(dim=0) - curr_shadow_pixels.mean(dim=0)
+            
+            # Apply combined correction with strength control
+            corrected_shadows = curr_shadow_pixels * (1.0 + strength * 0.3 * (lum_correction_factor - 1.0))
+            corrected_shadows = corrected_shadows + strength * 0.7 * color_correction
+            
+            result[curr_shadows] = torch.clamp(corrected_shadows, 0.0, 1.0)
+            corrections_applied.append("shadows")
+        
+        # Highlight stabilization (prevent blowout)
+        if curr_highlights.sum() > 0 and ref_highlights.sum() > 0:
+            curr_highlight_pixels = current_frame[curr_highlights]
+            ref_highlight_pixels = reference_frame[ref_highlights]
+            
+            # Prevent highlight blowout
+            curr_highlight_lum = curr_lum[curr_highlights]
+            ref_highlight_lum = ref_lum[ref_highlights]
+            lum_correction_factor = ref_highlight_lum.mean() / (curr_highlight_lum.mean() + 1e-8)
+            lum_correction_factor = torch.clamp(lum_correction_factor, 0.7, 1.2)  # Limit correction
+            
+            # Color correction for highlights
+            color_correction = ref_highlight_pixels.mean(dim=0) - curr_highlight_pixels.mean(dim=0)
+            
+            # Apply correction (more conservative for highlights)
+            corrected_highlights = curr_highlight_pixels * (1.0 + strength * 0.5 * (lum_correction_factor - 1.0))
+            corrected_highlights = corrected_highlights + strength * 0.5 * color_correction
+            
+            result[curr_highlights] = torch.clamp(corrected_highlights, 0.0, 1.0)
+            corrections_applied.append("highlights")
+        
+        return result, corrections_applied
+
+    def process_first_frames_sequence(self, decoded_frames, color_match_method, color_match_strength, editInPlace, gc_interval,
+                                     contrast_stabilization=False, shadow_threshold=0.3, highlight_threshold=0.7, contrast_strength=0.8):
         """
-        Process sequence using first frames histogram matching strategy
+        Enhanced processing with optional contrast stabilization
         """
-        if color_match_strength <= 0.0:
+        if color_match_strength <= 0.0 and not contrast_stabilization:
             return decoded_frames
         
         processed_frames = []
@@ -218,32 +356,56 @@ All subsequent frames are color-matched to the best-fitting reference frame.
             current_frame_batch = current_frame.unsqueeze(0)  # Add batch dimension
             
             if i < self.numberOfFirstFrames:
-                # Build brightness lookup from first frames (no color matching applied)
-                signature = self.calculate_brightness_signature(current_frame)
+                # Build enhanced brightness lookup with tonal zone analysis
+                if contrast_stabilization:
+                    signature = self.calculate_brightness_signature_with_zones(current_frame, shadow_threshold, highlight_threshold)
+                    zone_info = f", shadows: {signature['shadow_stats']['area_ratio']:.2f}, highlights: {signature['highlight_stats']['area_ratio']:.2f}"
+                else:
+                    signature = self.calculate_brightness_signature(current_frame)
+                    zone_info = ""
+                
                 self.brightness_lookup.append({
                     'frame': current_frame.clone(),
                     'signature': signature,
                     'frame_index': i
                 })
-                print(f"Frame {i}: Added to brightness lookup (mean luminance: {signature['mean']:.3f}, std: {signature['std']:.3f})")
+                print(f"Frame {i}: Added to lookup (lum: {signature['mean']:.3f}, std: {signature['std']:.3f}{zone_info})")
                 processed_frames.append(current_frame)
             else:
-                # Use brightness lookup to find best matching reference frame
-                target_signature = self.calculate_brightness_signature(current_frame)
+                # Find best matching reference frame
+                if contrast_stabilization:
+                    target_signature = self.calculate_brightness_signature_with_zones(current_frame, shadow_threshold, highlight_threshold)
+                else:
+                    target_signature = self.calculate_brightness_signature(current_frame)
+                
                 best_match = self.find_best_brightness_match(target_signature, self.brightness_lookup)
                 
                 if best_match is not None:
                     reference_frame = best_match['frame'].unsqueeze(0)
-                    print(f"Frame {i}: Matched with reference frame {best_match['frame_index']} (target mean lum: {target_signature['mean']:.3f})")
+                    processed_frame = current_frame.clone()
+                    applied_corrections = []
                     
-                    # Apply color matching using the matched reference frame
-                    color_match_result = colormatch(reference_frame, current_frame_batch, color_match_method, color_match_strength, editInPlace, gc_interval)
-                    processed_frame = color_match_result[0][0]  # Remove batch dimension
+                    # Apply color matching if enabled
+                    if color_match_strength > 0.0:
+                        color_match_result = colormatch(reference_frame, current_frame_batch, color_match_method, color_match_strength, editInPlace, gc_interval)
+                        processed_frame = color_match_result[0][0]
+                        applied_corrections.append("color_match")
+                    
+                    # Apply contrast stabilization if enabled
+                    if contrast_stabilization:
+                        processed_frame, corrections = self.apply_contrast_stabilization(
+                            best_match['frame'], processed_frame, contrast_strength, shadow_threshold, highlight_threshold
+                        )
+                        if corrections:
+                            applied_corrections.extend(corrections)
+                    
+                    correction_desc = " + ".join(applied_corrections) if applied_corrections else "none"
+                    print(f"Frame {i}: Matched with ref {best_match['frame_index']} (lum: {target_signature['mean']:.3f}) - applied: {correction_desc}")
+                    
+                    processed_frames.append(processed_frame)
                 else:
-                    print(f"Frame {i}: No suitable match found in brightness lookup, using original frame")
-                    processed_frame = current_frame
-                
-                processed_frames.append(processed_frame)
+                    print(f"Frame {i}: No suitable match found, using original frame")
+                    processed_frames.append(current_frame)
         
         return torch.stack(processed_frames, dim=0)
 
