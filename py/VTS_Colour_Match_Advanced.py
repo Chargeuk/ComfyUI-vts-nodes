@@ -438,7 +438,11 @@ https://github.com/hahnec/color-matcher/
                 # Use threshold to determine if scene change is significant enough to reduce color matching
                 if scene_change_score > color_match_scene_threshold:
                     # Calculate how much the scene change exceeds the threshold (0.0 to 1.0 range)
-                    excess_change = min((scene_change_score - color_match_scene_threshold) / (1.0 - color_match_scene_threshold), 1.0)
+                    # Handle edge case where threshold is 1.0 (divisor would be 0)
+                    if color_match_scene_threshold >= 1.0:
+                        excess_change = 1.0  # Maximum reduction when threshold is at maximum
+                    else:
+                        excess_change = min((scene_change_score - color_match_scene_threshold) / (1.0 - color_match_scene_threshold), 1.0)
                     
                     # Gradually reduce strength from full strength to minimum (e.g., 20% of original)
                     min_strength_ratio = 0.2  # Don't go below 20% of original strength
@@ -719,7 +723,11 @@ https://github.com/hahnec/color-matcher/
                 # Use threshold to determine if scene change is significant enough to reduce color matching
                 if scene_change_score > color_match_scene_threshold:
                     # Calculate how much the scene change exceeds the threshold (0.0 to 1.0 range)
-                    excess_change = min((scene_change_score - color_match_scene_threshold) / (1.0 - color_match_scene_threshold), 1.0)
+                    # Handle edge case where threshold is 1.0 (divisor would be 0)
+                    if color_match_scene_threshold >= 1.0:
+                        excess_change = 1.0  # Maximum reduction when threshold is at maximum
+                    else:
+                        excess_change = min((scene_change_score - color_match_scene_threshold) / (1.0 - color_match_scene_threshold), 1.0)
                     
                     # Gradually reduce strength from full strength to minimum (e.g., 20% of original)
                     min_strength_ratio = 0.2  # Don't go below 20% of original strength
