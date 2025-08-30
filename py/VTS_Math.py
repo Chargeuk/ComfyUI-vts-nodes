@@ -79,7 +79,6 @@ class VTS_Math:
 
     RETURN_TYPES = ("FLOAT", "INT")
     #RETURN_NAMES = ("image_output_name",)
-    INPUT_IS_LIST = True
 
     FUNCTION = "execute"
 
