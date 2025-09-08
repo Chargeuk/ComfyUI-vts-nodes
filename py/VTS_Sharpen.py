@@ -47,6 +47,9 @@ class VTSSharpen:
                 }),
                 "passthrough": ("BOOLEAN", {"default": False, "tooltip": "When true, bypass processing and return images unchanged"}),
             },
+            "optional": {
+                "edit_in_place": ("BOOLEAN", {"default": False, "tooltip": "When true, attempt to edit the input tensor in-place for memory efficiency. When false, always create a copy."}),
+            }
         }
 
     RETURN_TYPES = ("IMAGE",)
@@ -54,7 +57,7 @@ class VTSSharpen:
 
     CATEGORY = "image/postprocessing"
 
-    def sharpen(self, image: torch.Tensor, sharpen_radius: int, sigma: float, alpha: float, batch_size: int, passthrough: bool = False) -> tuple:
+    def sharpen(self, image: torch.Tensor, sharpen_radius: int, sigma: float, alpha: float, batch_size: int, passthrough: bool = False, edit_in_place: bool = False) -> tuple:
         if passthrough:
             logging.info("VTSSharpen - passthrough is True, returning original image without processing")
             return (image,)
@@ -66,13 +69,19 @@ class VTSSharpen:
         logging.info(f"VTSSharpen - total_batch_size: {total_batch_size}, height: {height}, width: {width}, channels: {channels}, sharpen_radius: {sharpen_radius}, sigma: {sigma}, alpha: {alpha}, batch_size: {batch_size}")
         
         # Process images in batches to avoid memory issues
-        # Use in-place processing for maximum memory efficiency
-        if image.device != model_management.intermediate_device():
-            final_result = image.clone()
-            logging.info("VTSSharpen - Input images cloned to intermediate device for processing")
+        # Handle in-place editing based on edit_in_place parameter
+        if edit_in_place:
+            # Try to edit in-place if requested
+            if image.device != model_management.intermediate_device():
+                final_result = image.clone()
+                logging.info("VTSSharpen - Input images cloned due to device mismatch despite edit_in_place=True")
+            else:
+                final_result = image
+                logging.info("VTSSharpen - Processing input images in-place (edit_in_place=True)")
         else:
-            final_result = image
-            logging.info("VTSSharpen - Processing input images in-place (no clone needed)")
+            # Always create a copy when edit_in_place=False
+            final_result = image.clone()
+            logging.info("VTSSharpen - Input images cloned (edit_in_place=False)")
         
         for i in range(0, total_batch_size, batch_size):
             logging.info(f"Processing batch {i // batch_size + 1} of {total_batch_size // batch_size + 1}")
