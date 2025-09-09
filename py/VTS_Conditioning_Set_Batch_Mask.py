@@ -99,10 +99,16 @@ class VTS_Conditioning_Set_Batch_Mask:
 
         is_list_of_multiple_conditionings = VTS_Conditioning_Set_Batch_Mask.is_list_of_multiple_conditionings(conditioning)
         is_list_of_masks = VTS_Conditioning_Set_Batch_Mask.is_list_of_masks(masks)
+
+        if not is_list_of_multiple_conditionings and is_list_of_masks and len(masks) == 1:
+            masks = masks[0]
+            is_list_of_masks = False
+
         #print(f"!!!VTS_Conditioning_Set_Batch_Mask is_list_of_multiple_conditionings: {is_list_of_multiple_conditionings}, is_list_of_masks: {is_list_of_masks}")
         VTS_Conditioning_Set_Batch_Mask.printConditioningInfo(conditioning, "conditioningRoot")
 
         if is_list_of_multiple_conditionings != is_list_of_masks:
+            print(f"Set Batch Mask = {isinstance(masks, list)} and {len(masks) > 0} and {isinstance(masks[0], torch.Tensor)}")
             raise Exception(f"Conditioning and masks must both be lists of multiple items or not, but got conditioning: {is_list_of_multiple_conditionings} and masks: {is_list_of_masks}.")
 
         if is_list_of_multiple_conditionings and is_list_of_masks:
