@@ -90,7 +90,7 @@ class VTS_To_Text:
         # Replace all occurrences of "\n" (literal newline) in the delimiter with an actual newline character.
         delimiter = delimiter.replace("\\n", "\n")
         merged_text = ""
-        for input_data_item in input_data:
+        for index, input_data_item in enumerate(input_data):
             # Try to convert input_data_item to a list or dict if it's a string
             if isinstance(input_data_item, str):
                 try:
@@ -111,7 +111,10 @@ class VTS_To_Text:
             else:
                 # Convert the single value to a string
                 #print(f"input_data_item is a single value of type {type(input_data_item).__name__}")
-                merged_text += str(input_data_item)
+                if index == 0:
+                    merged_text += f"{input_data_item}"
+                else:
+                    merged_text += f"{delimiter}{input_data_item}"
 
         # trim the merged text
         merged_text = merged_text.strip()
