@@ -13,7 +13,7 @@ class VTS_Create_Character_Mask:
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
-                              "type": (["character", "face"],),
+                              "type": (["character", "face", "object"],),
                               "number_of_characters": ("INT", {"default": 1, "min": 1, "max": 10, "step": 1}),
                               "merge_to_single_string": ("BOOLEAN", {"default": False, "tooltip": "If true, the output will be an array with a single string containing all colors."}),
                              }}
@@ -34,16 +34,30 @@ class VTS_Create_Character_Mask:
         return f"#{red:02x}{green:02x}{blue:02x}"
 
     def create_character_mask(self, type: str, number_of_characters: int, merge_to_single_string: bool):
+        all_character_colors = []
+        
         red = 255
         green = 0
         blue = 0
-        all_character_colors = []
+        if type == "object":
+            red = 0
+            green = 255
+            blue = 0
         # count through each character
         for i in range(number_of_characters):
             characterColors = []
+            if type == "object":
+                green = 255 - i
+                # convert the colour to hex
+                character_body_colour = VTS_Create_Character_Mask.rgb_to_hex(0, green, 0)
+                characterColors.append(character_body_colour)
+                character_colours_string = ",".join(characterColors)
+                all_character_colors.append(f'"{character_colours_string}"')
+                continue
+
+
             # change the colour
             red = 255 - i
-
             character_face_colour = VTS_Create_Character_Mask.rgb_to_hex(red, 128, 128)
             characterColors.append(character_face_colour)
             if type == "face":
