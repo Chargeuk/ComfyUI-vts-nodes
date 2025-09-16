@@ -6,7 +6,7 @@ MAX_RESOLUTION = 16384
 class VTS_Images_ScaleToMin:
     upscale_methods = ["nearest-exact", "bilinear", "area", "bicubic", "lanczos"]
     crop_methods = ["disabled", "center"]
-    scale_types = ["small", "large"]
+    scale_types = ["small", "large", "max"]
 
     @classmethod
     def INPUT_TYPES(s):
@@ -43,8 +43,10 @@ class VTS_Images_ScaleToMin:
         # Determine final dimensions
         if scale_type == "small":
             width, height = self.getSmallDimensions(original_width, original_height, smallMaxSize, largeMaxSize, new_largest_side, new_smallest_side)
-        else:
+        elif scale_type == "large":
             width, height = self.getLargeDimensions(original_width, original_height, smallMaxSize, largeMaxSize)
+        else:
+            width, height = self.getMaxDimensions(original_width, original_height, smallMaxSize, largeMaxSize)
 
         if divisible_by > 1:
             width = width - (width % divisible_by)
@@ -81,6 +83,17 @@ class VTS_Images_ScaleToMin:
         else:
             width = largeMaxSize
             height = smallMaxSize
+        return width, height
+    
+    def getMaxDimensions(self, original_width, original_height, smallMaxSize, largeMaxSize):
+        if original_width < original_height:
+            height = largeMaxSize
+            heightRatio = height / original_height
+            width = int(original_width * heightRatio)
+        else:
+            width = largeMaxSize
+            widthRatio = width / original_width
+            height = int(original_height * widthRatio)
         return width, height
 
 
