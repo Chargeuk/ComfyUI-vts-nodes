@@ -52,7 +52,7 @@ class VTSLoopingKSampler:
                 "latent_image": ("LATENT", {"tooltip": "The latent image to denoise."}),
                 "vae": ("VAE", {"tooltip": "The VAE model used for encoding and decoding the provided images."}),
                 "frame_window_size": ("INT", {"default": 81, "min": 1, "step": 4, "tooltip": "The number of frames to process in a loop. Includes the motion frames."}),
-                "motion_frames": ("INT", {"default": 9, "min": 1, "step": 4, "tooltip": "The number of frames to process in a loop. Includes the motion frames."})
+                "motion_frames": ("INT", {"default": 9, "min": -3, "step": 4, "tooltip": "The number of frames to process in a loop. Includes the motion frames."})
             }
         }
 
@@ -65,9 +65,10 @@ class VTSLoopingKSampler:
 
     def sample(self, model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise=1.0,
             frame_window_size=81, motion_frames=9):
-        
+        if motion_frames < 1:
+            motion_frames = 0
         # increase the frame_window_size by 4 to account for dropping a frame each iteration
-        frame_window_size += 4
+        # frame_window_size += 4
 
         # Extract the actual tensor from the latent dictionary
         latent_samples = latent_image["samples"]
@@ -76,12 +77,12 @@ class VTSLoopingKSampler:
         print(f"Provided latent shape: {latent_samples.shape}, provided_number_of_latents: {provided_number_of_latents}, provided_number_of_frames: {provided_number_of_frames}")
 
         batch_window_size = int((frame_window_size + 3) / 4)
-        motion_sample_size = int((motion_frames + 3) / 4)
+        motion_sample_size = int((motion_frames + 3) / 4) if motion_frames > 0 else 0
         
         # Calculate step size (how many new frames to process each iteration)
         # Subtract 1 from step_size to account for dropping the last latent each loop
         base_step_size = batch_window_size - motion_sample_size
-        step_size = base_step_size - 1  # Drop last latent each loop
+        step_size = batch_window_size - 1  # Drop last latent each loop
         number_of_loops = (provided_number_of_latents - motion_sample_size + step_size - 1) // step_size
         
         print(f"Number of loops: {number_of_loops}, Provided number of frames: {provided_number_of_frames}")
@@ -99,30 +100,35 @@ class VTSLoopingKSampler:
         for loop_idx in range(number_of_loops):
             # Calculate the starting index for new frames
             if loop_idx == 0:
-                # First iteration: start from beginning
+                # First iteration: start from beginning of the provided latent samples
                 start_idx = 0
                 end_idx = min(batch_window_size, provided_number_of_latents)
                 chunk_samples = latent_samples[:, :, start_idx:end_idx, :, :]
                 total_chunk_samples = chunk_samples.shape[2]
-                print(f"first iteration, taking from latent_samples, start_idx={start_idx}, end_idx={end_idx} for {total_chunk_samples} samples")
+                total_chunk_frames = int((total_chunk_samples * 4) - 3)
+                print(f"first iteration, taking from latent_samples, start_idx={start_idx}, end_idx={end_idx} for {total_chunk_samples} samples = {total_chunk_frames} frames")
             else:
                 # Subsequent iterations: combine motion frames + new frames
                 # Start one latent earlier due to dropping last latent from previous batch
-                new_start_idx = motion_sample_size + (loop_idx - 1) * step_size
-                new_end_idx = min(new_start_idx + base_step_size, provided_number_of_latents)
+                # new_start_idx = motion_sample_size + (loop_idx - 1) * step_size
+                number_of_latents_so_far = samples.shape[2]
+
+                start_idx = number_of_latents_so_far
+                end_idx = min(start_idx + base_step_size, provided_number_of_latents)
                 
                 # Get the last motion_sample_size frames from previous results
                 motion_frames_tensor = samples[:, :, -motion_sample_size:, :, :]
                 
                 # Get new frames from the original latent
-                new_frames = latent_samples[:, :, new_start_idx:new_end_idx, :, :]
+                new_frames = latent_samples[:, :, start_idx:end_idx, :, :]
                 
                 # Combine motion frames + new frames
                 chunk_samples = torch.cat([motion_frames_tensor, new_frames], dim=2)
                 total_chunk_samples = chunk_samples.shape[2]
-                print(f"Loop {loop_idx}, taking last {motion_sample_size} latents from samples & from latent_samples, new_start_idx={new_start_idx}, new_end_idx={new_end_idx} for {total_chunk_samples} samples")
+                total_chunk_frames = int((total_chunk_samples * 4) - 3)
+                print(f"Loop {loop_idx}, taking last {motion_sample_size} latents from samples & from latent_samples, start_idx={start_idx}, end_idx={end_idx} for {total_chunk_samples} samples = {total_chunk_frames} frames")
 
-            chunk_number_of_frames = chunk_samples.shape[2] * 4
+            chunk_number_of_frames = int((chunk_samples.shape[2] * 4) - 3)
             print(f"Loop {loop_idx}: Processing chunk with shape {chunk_samples.shape} which is {chunk_number_of_frames} frames")
             
             # Create a new latent dict for each chunk
@@ -133,42 +139,52 @@ class VTSLoopingKSampler:
             
             if loop_idx == 0:
                 # First iteration: use all samples but drop the last latent
-                samples = batch_samples[:, :, :-1, :, :]  # Drop last latent
+                samples = batch_samples #[:, :, :-1, :, :]  # Drop last latent
                 number_of_samples = samples.shape[2]
                 print(f"Loop {loop_idx}: Took {number_of_samples} samples from batch, dropped last latent, this gives {number_of_samples * 4} frames")
             else:
-                # Subsequent iterations: blend the overlapping region and append new frames
-                
-                # Get the overlapping regions
-                existing_overlap = samples[:, :, -motion_sample_size:, :, :]  # Last motion_sample_size from existing
-                new_overlap = batch_samples[:, :, :motion_sample_size, :, :]  # First motion_sample_size from new batch
-                
-                # Create linear blending weights with extended range to avoid extremes
-                extended_size = motion_sample_size + 2  # Add 2 extra
-                extended_weights = torch.linspace(1.0, 0.0, extended_size, device=existing_overlap.device)
-                blend_weights = extended_weights[1:-1]  # Remove first and last elements
-                # Reshape weights to match tensor dimensions [1, 1, motion_sample_size, 1, 1]
-                blend_weights = blend_weights.view(1, 1, -1, 1, 1)
-                
-                # Perform linear blending
-                blended_overlap = existing_overlap * blend_weights + new_overlap * (1.0 - blend_weights)
-                
-                # Replace the last motion_sample_size frames in samples with the blended version
-                samples[:, :, -motion_sample_size:, :, :] = blended_overlap
-                
+                # Subsequent iterations: blend the overlapping region and append new frames if motion_sample_size > 0
+                if motion_sample_size > 0:
+                    # Get the overlapping regions
+                    existing_overlap = samples[:, :, -motion_sample_size:, :, :]  # Last motion_sample_size from existing
+                    new_overlap = batch_samples[:, :, :motion_sample_size, :, :]  # First motion_sample_size from new batch
+                    
+                    # Create linear blending weights with extended range to avoid extremes
+                    extended_size = motion_sample_size + 2  # Add 2 extra
+                    extended_weights = torch.linspace(1.0, 0.0, extended_size, device=existing_overlap.device)
+                    blend_weights = extended_weights[1:-1]  # Remove first and last elements
+                    # Reshape weights to match tensor dimensions [1, 1, motion_sample_size, 1, 1]
+                    blend_weights = blend_weights.view(1, 1, -1, 1, 1)
+                    
+                    # Perform linear blending
+                    blended_overlap = existing_overlap * blend_weights + new_overlap * (1.0 - blend_weights)
+                    blended_overlap_number_of_latents = blended_overlap.shape[2]
+                    number_of_generated_latents = samples.shape[2]
+                    print(f"Loop {loop_idx}: replacing {motion_sample_size} latents with {blended_overlap_number_of_latents} latents in current total of {number_of_generated_latents} latents")
+
+                    # Replace the last motion_sample_size frames in samples with the blended version
+                    samples[:, :, -motion_sample_size:, :, :] = blended_overlap
+                    number_of_generated_latents = samples.shape[2]
+                    print(f"Loop {loop_idx}: replaced {motion_sample_size} latents with {blended_overlap_number_of_latents} latents to give new total of {number_of_generated_latents} latents")
+
                 # Append only the new frames (skip the overlapping region)
                 new_samples_only = batch_samples[:, :, motion_sample_size:, :, :]
                 
                 # Drop the last latent except on the final loop
-                if loop_idx < number_of_loops - 1:  # Not the last loop
-                    new_samples_only = new_samples_only[:, :, :-1, :, :]  # Drop last latent
-                
-                if new_samples_only.shape[2] > 0:  # Only concatenate if there are new frames
+                # if loop_idx < number_of_loops - 1:  # Not the last loop
+                #    new_samples_only = new_samples_only[:, :, :-1, :, :]  # Drop last latent
+
+                new_samples_latent_count = new_samples_only.shape[2]
+
+                if new_samples_latent_count > 0:  # Only concatenate if there are new frames
                     samples = torch.cat([samples, new_samples_only], dim=2)
                 motion_sample_frames = motion_sample_size * 4
-                new_samples_frames = new_samples_only.shape[2] * 4
+                new_samples_frames = new_samples_latent_count * 4
                 total_added_frames = new_samples_frames + motion_sample_frames
-                print(f"Loop {loop_idx}: Blended {motion_sample_size} overlapping latents={motion_sample_frames} frames, added {new_samples_only.shape[2]} new latents={new_samples_frames} for a total of {total_added_frames} frames")
+                print(f"Loop {loop_idx}: Blended {motion_sample_size} overlapping latents={motion_sample_frames} frames, added {new_samples_latent_count} new latents={new_samples_frames} for a total of {total_added_frames} frames")
+                number_of_generated_latents = samples.shape[2]
+                number_of_generated_frames = int((number_of_generated_latents * 4) - 3)
+                print(f"Loop {loop_idx} samples shape: {samples.shape}, which is {number_of_generated_latents} latents, and {number_of_generated_frames} frames")
 
         number_of_generated_latents = samples.shape[2]
         number_of_generated_frames = int((number_of_generated_latents * 4) - 3)
