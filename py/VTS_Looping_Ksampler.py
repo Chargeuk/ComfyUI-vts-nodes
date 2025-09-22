@@ -66,18 +66,22 @@ class VTSLoopingKSampler:
     def sample(self, model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise=1.0,
             frame_window_size=81, motion_frames=9):
         
+        # increase the frame_window_size by 4 to account for dropping a frame each iteration
+        frame_window_size += 4
+
         # Extract the actual tensor from the latent dictionary
         latent_samples = latent_image["samples"]
-        print(f"Provided latent shape: {latent_samples.shape}")
+        provided_number_of_latents = latent_samples.shape[2]
+        provided_number_of_frames = int((provided_number_of_latents * 4) - 3)
+        print(f"Provided latent shape: {latent_samples.shape}, provided_number_of_latents: {provided_number_of_latents}, provided_number_of_frames: {provided_number_of_frames}")
 
         batch_window_size = int((frame_window_size + 3) / 4)
         motion_sample_size = int((motion_frames + 3) / 4)
-
-        provided_number_of_latents = latent_samples.shape[2]
-        provided_number_of_frames = int((provided_number_of_latents * 4) - 3)
         
         # Calculate step size (how many new frames to process each iteration)
-        step_size = batch_window_size - motion_sample_size
+        # Subtract 1 from step_size to account for dropping the last latent each loop
+        base_step_size = batch_window_size - motion_sample_size
+        step_size = base_step_size - 1  # Drop last latent each loop
         number_of_loops = (provided_number_of_latents - motion_sample_size + step_size - 1) // step_size
         
         print(f"Number of loops: {number_of_loops}, Provided number of frames: {provided_number_of_frames}")
@@ -86,7 +90,12 @@ class VTSLoopingKSampler:
         
         # Initialize samples tensor with None - will be set after first iteration
         samples = None
-        
+
+            # If we have fewer latents than the window size, process in single batch
+        if provided_number_of_latents <= batch_window_size:
+            print(f"Processing all {provided_number_of_latents} latents in single batch")
+            return common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise=denoise)
+
         for loop_idx in range(number_of_loops):
             # Calculate the starting index for new frames
             if loop_idx == 0:
@@ -94,10 +103,13 @@ class VTSLoopingKSampler:
                 start_idx = 0
                 end_idx = min(batch_window_size, provided_number_of_latents)
                 chunk_samples = latent_samples[:, :, start_idx:end_idx, :, :]
+                total_chunk_samples = chunk_samples.shape[2]
+                print(f"first iteration, taking from latent_samples, start_idx={start_idx}, end_idx={end_idx} for {total_chunk_samples} samples")
             else:
                 # Subsequent iterations: combine motion frames + new frames
+                # Start one latent earlier due to dropping last latent from previous batch
                 new_start_idx = motion_sample_size + (loop_idx - 1) * step_size
-                new_end_idx = min(new_start_idx + step_size, provided_number_of_latents)
+                new_end_idx = min(new_start_idx + base_step_size, provided_number_of_latents)
                 
                 # Get the last motion_sample_size frames from previous results
                 motion_frames_tensor = samples[:, :, -motion_sample_size:, :, :]
@@ -107,7 +119,9 @@ class VTSLoopingKSampler:
                 
                 # Combine motion frames + new frames
                 chunk_samples = torch.cat([motion_frames_tensor, new_frames], dim=2)
-                
+                total_chunk_samples = chunk_samples.shape[2]
+                print(f"Loop {loop_idx}, taking last {motion_sample_size} latents from samples & from latent_samples, new_start_idx={new_start_idx}, new_end_idx={new_end_idx} for {total_chunk_samples} samples")
+
             chunk_number_of_frames = chunk_samples.shape[2] * 4
             print(f"Loop {loop_idx}: Processing chunk with shape {chunk_samples.shape} which is {chunk_number_of_frames} frames")
             
@@ -118,8 +132,10 @@ class VTSLoopingKSampler:
             batch_samples = common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, chunk_latent, denoise=denoise)
             
             if loop_idx == 0:
-                # First iteration: use all samples
-                samples = batch_samples
+                # First iteration: use all samples but drop the last latent
+                samples = batch_samples[:, :, :-1, :, :]  # Drop last latent
+                number_of_samples = samples.shape[2]
+                print(f"Loop {loop_idx}: Took {number_of_samples} samples from batch, dropped last latent, this gives {number_of_samples * 4} frames")
             else:
                 # Subsequent iterations: blend the overlapping region and append new frames
                 
@@ -142,12 +158,21 @@ class VTSLoopingKSampler:
                 
                 # Append only the new frames (skip the overlapping region)
                 new_samples_only = batch_samples[:, :, motion_sample_size:, :, :]
+                
+                # Drop the last latent except on the final loop
+                if loop_idx < number_of_loops - 1:  # Not the last loop
+                    new_samples_only = new_samples_only[:, :, :-1, :, :]  # Drop last latent
+                
                 if new_samples_only.shape[2] > 0:  # Only concatenate if there are new frames
                     samples = torch.cat([samples, new_samples_only], dim=2)
-                
-                print(f"Loop {loop_idx}: Blended {motion_sample_size} overlapping frames, added {new_samples_only.shape[2]} new frames")
+                motion_sample_frames = motion_sample_size * 4
+                new_samples_frames = new_samples_only.shape[2] * 4
+                total_added_frames = new_samples_frames + motion_sample_frames
+                print(f"Loop {loop_idx}: Blended {motion_sample_size} overlapping latents={motion_sample_frames} frames, added {new_samples_only.shape[2]} new latents={new_samples_frames} for a total of {total_added_frames} frames")
 
-        print(f"Final samples shape: {samples.shape}")
+        number_of_generated_latents = samples.shape[2]
+        number_of_generated_frames = int((number_of_generated_latents * 4) - 3)
+        print(f"Final samples shape: {samples.shape}, which is {number_of_generated_latents} latents, and {number_of_generated_frames} frames")
         out = latent_image.copy()
         out["samples"] = samples
         return (out, )
