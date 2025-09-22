@@ -56,15 +56,15 @@ class VTSLoopingKSampler:
             }
         }
 
-    RETURN_TYPES = ("LATENT",)
-    OUTPUT_TOOLTIPS = ("The denoised latent.",)
+    RETURN_TYPES = ("LATENT", "IMAGE",)
+    OUTPUT_TOOLTIPS = ("The denoised latent.", "The denoised image, if the vae was provided.")
     FUNCTION = "sample"
 
     CATEGORY = "sampling"
     DESCRIPTION = "Uses the provided model, positive and negative conditioning to denoise the latent image."
 
     def sample(self, model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise=1.0,
-            frame_window_size=81, motion_frames=9):
+            vae=None, frame_window_size=81, motion_frames=9):
         if motion_frames < 1:
             motion_frames = 0
         # increase the frame_window_size by 4 to account for dropping a frame each iteration
@@ -191,7 +191,63 @@ class VTSLoopingKSampler:
         print(f"Final samples shape: {samples.shape}, which is {number_of_generated_latents} latents, and {number_of_generated_frames} frames")
         out = latent_image.copy()
         out["samples"] = samples
-        return (out, )
+
+        if vae:
+            # decode images in batch_window_size sized batches with overlap
+            total_latents = out["samples"].shape[2]
+            decoded_images = []
+            
+            # Calculate number of decode loops
+            decode_step_size = batch_window_size - 1  # Step back by 1 each time (except first)
+            decode_loops = (total_latents + decode_step_size - 1) // decode_step_size
+            
+            for decode_idx in range(decode_loops):
+                if decode_idx == 0:
+                    # First decode: start from beginning, decode batch_window_size latents
+                    start_idx = 0
+                    end_idx = min(batch_window_size, total_latents)
+                else:
+                    # Subsequent decodes: start one latent back from where we left off
+                    start_idx = decode_idx * decode_step_size - 1
+                    end_idx = min(start_idx + batch_window_size, total_latents)
+                
+                # Extract batch for decoding
+                batch_latent = out["samples"][:, :, start_idx:end_idx, :, :]
+                
+                # Create a temporary latent dict for this batch
+                temp_latent = {"samples": batch_latent}
+                
+                # Decode this batch
+                batch_images = vae.decode(temp_latent["samples"])
+                if len(batch_images.shape) == 5: #Combine batches
+                    batch_images = batch_images.reshape(-1, batch_images.shape[-3], batch_images.shape[-2], batch_images.shape[-1])
+
+                # Drop the last image except on the final loop
+                is_last_loop = (decode_idx == decode_loops - 1)
+                if not is_last_loop and batch_images.shape[0] > 1:
+                    batch_images = batch_images[:-1]  # Drop last image
+                    images_kept = batch_images.shape[0]
+                else:
+                    images_kept = batch_images.shape[0]
+
+                decoded_images.append(batch_images)
+                
+                print(f"Decode loop {decode_idx + 1}: latents {start_idx}-{end_idx-1}, decoded {end_idx-start_idx} latents, kept {images_kept} images")
+            
+            # Concatenate all decoded batches
+            if decoded_images:
+                shape_of_images_batch_0 = decoded_images[0].shape
+                print(f"Shape of first batch of decoded images: {shape_of_images_batch_0}")
+                images = torch.cat(decoded_images, dim=0)
+                print(f"Final decoded images shape: {images.shape}")
+                
+                # Return both latent and images
+                return (out, images,)
+   
+        # No VAE provided, return a single 64x64 black image
+        black_image = torch.zeros(1, 64, 64, 3, dtype=torch.float32)
+        print("No VAE provided, returning single 64x64 black image")
+        return (out, black_image,)
 
 # A dictionary that contains all nodes you want to export with their names
 # NOTE: names should be globally unique
