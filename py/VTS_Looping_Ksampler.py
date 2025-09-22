@@ -71,28 +71,58 @@ class VTSLoopingKSampler:
         print(f"Provided latent shape: {latent_samples.shape}")
 
         batch_window_size = int((frame_window_size + 3) / 4)
+        motion_sample_size = int((motion_frames + 3) / 4)
 
         provided_number_of_latents = latent_samples.shape[2]
         provided_number_of_frames = int((provided_number_of_latents * 4) - 3)
-        number_of_loops = (provided_number_of_frames + frame_window_size - 1) // frame_window_size
-        print(f"Number of loops: {number_of_loops}, Provided number of frames: {provided_number_of_frames}, Frame window size: {frame_window_size}")
+        
+        # Calculate step size (how many new frames to process each iteration)
+        step_size = batch_window_size - motion_sample_size
+        number_of_loops = (provided_number_of_latents - motion_sample_size + step_size - 1) // step_size
+        
+        print(f"Number of loops: {number_of_loops}, Provided number of frames: {provided_number_of_frames}")
+        print(f"Frame window size: {frame_window_size}, Motion frames: {motion_frames}")
+        print(f"Batch window size: {batch_window_size}, Motion sample size: {motion_sample_size}, Step size: {step_size}")
         
         # Initialize samples tensor with None - will be set after first iteration
         samples = None
         
-        for i in range(0, provided_number_of_latents, batch_window_size):
-            print(f"Processing chunk starting at index {i}")
+        for loop_idx in range(number_of_loops):
+            # Calculate the starting index for new frames
+            if loop_idx == 0:
+                # First iteration: start from beginning
+                start_idx = 0
+                end_idx = min(batch_window_size, provided_number_of_latents)
+                chunk_samples = latent_samples[:, :, start_idx:end_idx, :, :]
+            else:
+                # Subsequent iterations: combine motion frames + new frames
+                new_start_idx = motion_sample_size + (loop_idx - 1) * step_size
+                new_end_idx = min(new_start_idx + step_size, provided_number_of_latents)
+                
+                # Get the last motion_sample_size frames from previous results
+                motion_frames_tensor = samples[:, :, -motion_sample_size:, :, :]
+                
+                # Get new frames from the original latent
+                new_frames = latent_samples[:, :, new_start_idx:new_end_idx, :, :]
+                
+                # Combine motion frames + new frames
+                chunk_samples = torch.cat([motion_frames_tensor, new_frames], dim=2)
+            chunk_number_of_frames = chunk_samples.shape[2] * 4
+            print(f"Loop {loop_idx}: Processing chunk with shape {chunk_samples.shape} which is {chunk_number_of_frames} frames")
+            
             # Create a new latent dict for each chunk
             chunk_latent = latent_image.copy()
-            chunk_latent["samples"] = latent_samples[:, :, i:i + batch_window_size, :, :]
+            chunk_latent["samples"] = chunk_samples
             
             batch_samples = common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, chunk_latent, denoise=denoise)
             
-            # Append to the samples tensor - concatenate along dimension 2 (the batch dimension)
-            if samples is None:
+            if loop_idx == 0:
+                # First iteration: use all samples
                 samples = batch_samples
             else:
-                samples = torch.cat([samples, batch_samples], dim=2)
+                # Subsequent iterations: only append the new frames (skip the motion frames)
+                new_samples_only = batch_samples[:, :, motion_sample_size:, :, :]
+                samples = torch.cat([samples, new_samples_only], dim=2)
 
         print(f"Final samples shape: {samples.shape}")
         out = latent_image.copy()
