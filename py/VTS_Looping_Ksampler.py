@@ -107,6 +107,7 @@ class VTSLoopingKSampler:
                 
                 # Combine motion frames + new frames
                 chunk_samples = torch.cat([motion_frames_tensor, new_frames], dim=2)
+                
             chunk_number_of_frames = chunk_samples.shape[2] * 4
             print(f"Loop {loop_idx}: Processing chunk with shape {chunk_samples.shape} which is {chunk_number_of_frames} frames")
             
@@ -120,16 +121,37 @@ class VTSLoopingKSampler:
                 # First iteration: use all samples
                 samples = batch_samples
             else:
-                # Subsequent iterations: only append the new frames (skip the motion frames)
+                # Subsequent iterations: blend the overlapping region and append new frames
+                
+                # Get the overlapping regions
+                existing_overlap = samples[:, :, -motion_sample_size:, :, :]  # Last motion_sample_size from existing
+                new_overlap = batch_samples[:, :, :motion_sample_size, :, :]  # First motion_sample_size from new batch
+                
+                # Create linear blending weights with extended range to avoid extremes
+                extended_size = motion_sample_size + 2  # Add 2 extra
+                extended_weights = torch.linspace(1.0, 0.0, extended_size, device=existing_overlap.device)
+                blend_weights = extended_weights[1:-1]  # Remove first and last elements
+                # Reshape weights to match tensor dimensions [1, 1, motion_sample_size, 1, 1]
+                blend_weights = blend_weights.view(1, 1, -1, 1, 1)
+                
+                # Perform linear blending
+                blended_overlap = existing_overlap * blend_weights + new_overlap * (1.0 - blend_weights)
+                
+                # Replace the last motion_sample_size frames in samples with the blended version
+                samples[:, :, -motion_sample_size:, :, :] = blended_overlap
+                
+                # Append only the new frames (skip the overlapping region)
                 new_samples_only = batch_samples[:, :, motion_sample_size:, :, :]
-                samples = torch.cat([samples, new_samples_only], dim=2)
+                if new_samples_only.shape[2] > 0:  # Only concatenate if there are new frames
+                    samples = torch.cat([samples, new_samples_only], dim=2)
+                
+                print(f"Loop {loop_idx}: Blended {motion_sample_size} overlapping frames, added {new_samples_only.shape[2]} new frames")
 
         print(f"Final samples shape: {samples.shape}")
         out = latent_image.copy()
         out["samples"] = samples
         return (out, )
 
-    
 # A dictionary that contains all nodes you want to export with their names
 # NOTE: names should be globally unique
 NODE_CLASS_MAPPINGS = {
