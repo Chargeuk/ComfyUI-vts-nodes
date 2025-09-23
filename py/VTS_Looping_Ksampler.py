@@ -96,8 +96,10 @@ class VTSLoopingKSampler:
         if provided_number_of_latents <= batch_window_size:
             print(f"Processing all {provided_number_of_latents} latents in single batch")
             return common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise=denoise)
-
-        for loop_idx in range(number_of_loops):
+        number_of_generated_latents = 0
+        loop_idx = 0
+        # for loop_idx in range(number_of_loops):
+        while number_of_generated_latents < provided_number_of_latents:
             # Calculate the starting index for new frames
             if loop_idx == 0:
                 # First iteration: start from beginning of the provided latent samples
@@ -185,6 +187,7 @@ class VTSLoopingKSampler:
                 number_of_generated_latents = samples.shape[2]
                 number_of_generated_frames = int((number_of_generated_latents * 4) - 3)
                 print(f"Loop {loop_idx} samples shape: {samples.shape}, which is {number_of_generated_latents} latents, and {number_of_generated_frames} frames")
+            loop_idx += 1
 
         number_of_generated_latents = samples.shape[2]
         number_of_generated_frames = int((number_of_generated_latents * 4) - 3)
@@ -208,7 +211,7 @@ class VTSLoopingKSampler:
                     end_idx = min(batch_window_size, total_latents)
                 else:
                     # Subsequent decodes: start one latent back from where we left off
-                    start_idx = decode_idx * decode_step_size - 1
+                    start_idx = (decode_idx * batch_window_size) - 1
                     end_idx = min(start_idx + batch_window_size, total_latents)
                 
                 # Extract batch for decoding
