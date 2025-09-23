@@ -95,7 +95,11 @@ class VTSLoopingKSampler:
             # If we have fewer latents than the window size, process in single batch
         if provided_number_of_latents <= batch_window_size:
             print(f"Processing all {provided_number_of_latents} latents in single batch")
-            return common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise=denoise)
+            samples = common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise=denoise)
+            out = latent_image.copy()
+            out["samples"] = samples
+            return (out, )
+        
         number_of_generated_latents = 0
         loop_idx = 0
         # for loop_idx in range(number_of_loops):
