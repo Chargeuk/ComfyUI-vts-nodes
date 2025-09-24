@@ -52,7 +52,8 @@ class VTSLoopingKSampler:
                 "latent_image": ("LATENT", {"tooltip": "The latent image to denoise."}),
                 "vae": ("VAE", {"tooltip": "The VAE model used for encoding and decoding the provided images."}),
                 "frame_window_size": ("INT", {"default": 81, "min": 1, "step": 4, "tooltip": "The number of frames to process in a loop. Includes the motion frames."}),
-                "motion_frames": ("INT", {"default": 9, "min": -3, "step": 4, "tooltip": "The number of frames to process in a loop. Includes the motion frames."})
+                "motion_frames": ("INT", {"default": 9, "min": -3, "step": 4, "tooltip": "The number of frames to process in a loop. Includes the motion frames."}),
+                "force_full_denoise": ("BOOLEAN", {"default": False, "tooltip": "Forces full denoising of the input latent."})
             }
         }
 
@@ -64,7 +65,7 @@ class VTSLoopingKSampler:
     DESCRIPTION = "Uses the provided model, positive and negative conditioning to denoise the latent image."
 
     def sample(self, model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise=1.0,
-            vae=None, frame_window_size=81, motion_frames=9):
+            vae=None, frame_window_size=81, motion_frames=9, force_full_denoise=False):
         if motion_frames < 1:
             motion_frames = 0
         # increase the frame_window_size by 4 to account for dropping a frame each iteration
@@ -95,7 +96,7 @@ class VTSLoopingKSampler:
             # If we have fewer latents than the window size, process in single batch
         if provided_number_of_latents <= batch_window_size:
             print(f"Processing all {provided_number_of_latents} latents in single batch")
-            samples = common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise=denoise)
+            samples = common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise=denoise, force_full_denoise=force_full_denoise)
             out = latent_image.copy()
             out["samples"] = samples
             return (out, )
@@ -140,9 +141,9 @@ class VTSLoopingKSampler:
             # Create a new latent dict for each chunk
             chunk_latent = latent_image.copy()
             chunk_latent["samples"] = chunk_samples
-            
-            batch_samples = common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, chunk_latent, denoise=denoise)
-            
+
+            batch_samples = common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, chunk_latent, denoise=denoise, force_full_denoise=force_full_denoise)
+
             if loop_idx == 0:
                 # First iteration: use all samples but drop the last latent
                 samples = batch_samples #[:, :, :-1, :, :]  # Drop last latent
