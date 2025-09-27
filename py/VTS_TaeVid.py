@@ -37,6 +37,22 @@ class VTS_TAEVideoNodeBase:
                         "tooltip": "Parallel mode is faster but requires more memory.",
                     },
                 ),
+                "batch_window_size": (
+                    "INT",
+                    {
+                        "default": 89,
+                        "min": 13,
+                        "step": 4,
+                    },
+                ),
+                "overlap_frames": (
+                    "INT",
+                    {
+                        "default": 8,
+                        "min": 0,
+                        "step": 4,
+                    },
+                ),
             },
         }
 
@@ -80,7 +96,7 @@ class VTS_TAEVideoNodeBase:
         return dtype_map.get(dtype_str, torch.bfloat16)
 
     @classmethod
-    def go(cls, *, latent, latent_type: str, dtype: str, parallel_mode: bool) -> tuple:
+    def go(cls, *, latent, latent_type: str, dtype: str, parallel_mode: bool, batch_window_size: int, overlap_frames: int) -> tuple:
         raise NotImplementedError
 
 
@@ -98,7 +114,7 @@ class VTS_TAEVideoDecode(VTS_TAEVideoNodeBase):
         return result
 
     @classmethod
-    def go(cls, *, latent: dict, latent_type: str, dtype: str, parallel_mode: bool) -> tuple:
+    def go(cls, *, latent: dict, latent_type: str, dtype: str, parallel_mode: bool, batch_window_size: int, overlap_frames: int) -> tuple:
         torch_dtype = cls.get_dtype_from_string(dtype)
         model, device, model_dtype, vmi = cls.get_taevid_model(latent_type, torch_dtype)
         samples = latent["samples"].detach().to(device=device, dtype=torch_dtype, copy=True)
@@ -133,9 +149,7 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
         return result
 
     @classmethod
-    def go(cls, *, image: torch.Tensor, latent_type: str, dtype: str, parallel_mode: bool) -> tuple:
-        batch_window_size = 89
-        overlap_frames = 12
+    def go(cls, *, image: torch.Tensor, latent_type: str, dtype: str, parallel_mode: bool, batch_window_size: int, overlap_frames: int) -> tuple:
         number_of_overlapping_latents = overlap_frames // 4
         number_of_images_to_drop = 1 + overlap_frames
 
