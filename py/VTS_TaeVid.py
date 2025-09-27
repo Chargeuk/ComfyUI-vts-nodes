@@ -115,6 +115,100 @@ class VTS_TAEVideoDecode(VTS_TAEVideoNodeBase):
 
     @classmethod
     def go(cls, *, latent: dict, latent_type: str, dtype: str, parallel_mode: bool, batch_window_size: int, overlap_frames: int) -> tuple:
+        number_of_overlapping_latents = overlap_frames // 4
+        number_of_overlapping_images = overlap_frames
+        number_of_images_to_drop = 1 + overlap_frames
+        original_batch_window_size = batch_window_size
+        original_overlap_frames = overlap_frames
+        batch_window_size = (batch_window_size + 3) // 4
+        overlap_frames = overlap_frames // 4
+        number_of_latents_to_drop = 1 + overlap_frames
+        samples = latent["samples"]
+
+        # decode images in batch_window_size sized batches with overlap
+        a, b, total_items, c, d = samples.shape
+        decoded_images = None  # Initialize as None instead of list
+        print(f"Starting decoding of {total_items} latents with batch size {batch_window_size}, overlap frames {overlap_frames}, dropping {number_of_latents_to_drop} latents per batch except last")
+        
+        # Calculate number of decode loops
+        is_last_loop = False
+        loop_idx = 0
+        while not is_last_loop:
+            if loop_idx == 0:
+                # First decode: start from beginning, decode batch_window_size latents
+                start_idx = 0
+                end_idx = min(batch_window_size, total_items)
+            else:
+                # Subsequent decodes: start one latent back from where we left off
+                start_idx = (loop_idx * (batch_window_size - number_of_latents_to_drop))
+                end_idx = min(start_idx + batch_window_size, total_items)
+
+            is_last_loop = (end_idx >= total_items)
+            # Extract batch for decoding
+            batch_samples = samples[:, :, start_idx:end_idx, :, :]
+            batch_latent = {"samples": batch_samples}
+
+            # decode this batch
+            images = cls.execute(latent=batch_latent, latent_type=latent_type, dtype=dtype, parallel_mode=parallel_mode)
+            print(f"Decoded image shape for batch {loop_idx + 1}: {images.shape}")
+            # Drop the last image except on the final loop
+
+            if not is_last_loop and images.shape[0] > 1:
+                images = images[:-1, :, :, :]  # Drop last image
+                images_kept = images.shape[0]
+            else:
+                images_kept = images.shape[0]
+
+            # Extend the tensor instead of appending to list
+            if decoded_images is None:
+                decoded_images = images
+            else:
+                # the last number_of_overlapping_images of decoded_images should be equal to
+                # the first number_of_overlapping_images of images
+                # we need to blend them
+                if number_of_overlapping_images > 0:
+                    # Get the overlapping regions
+                    new_overlap = images[:number_of_overlapping_images, :, :, :]  # First number_of_overlapping_images from new batch
+                    existing_overlap = decoded_images[-number_of_overlapping_images:, :, :, :]  # Last number_of_overlapping_images from existing
+
+                    # Create linear blending weights with extended range to avoid extremes
+                    extended_size = number_of_overlapping_images + 2  # Add 2 extra
+                    extended_weights = torch.linspace(1.0, 0.0, extended_size, device=existing_overlap.device)
+                    blend_weights = extended_weights[1:-1]  # Remove first and last elements
+                    # Reshape weights to match tensor dimensions [ motion_sample_size, 1, 1, 1]
+                    blend_weights = blend_weights.view(-1, 1, 1, 1)
+
+                    # Perform linear blending
+                    blended_overlap = existing_overlap * blend_weights + new_overlap * (1.0 - blend_weights)
+                    blended_overlap_number_of_images = blended_overlap.shape[0]
+                    number_of_generated_images = decoded_images.shape[0]
+                    print(f"Loop {loop_idx}: replacing {number_of_overlapping_images} images with {blended_overlap_number_of_images} images in current total of {number_of_generated_images} images")
+
+                    # Replace the last number_of_overlapping_images frames in samples with the blended version
+                    decoded_images[-number_of_overlapping_images:, :, :, :] = blended_overlap
+                    number_of_generated_images = decoded_images.shape[0]
+                    print(f"Loop {loop_idx}: replaced {number_of_overlapping_images} images with {blended_overlap_number_of_images} images to give new total of {number_of_generated_images} images")
+
+                    # Append only the new frames (skip the overlapping region)
+                    new_samples_only = images[number_of_overlapping_images:, :, :, :]
+                else:
+                    new_samples_only = images
+
+                new_samples_images_count = new_samples_only.shape[0]
+                if new_samples_images_count > 0:  # Only concatenate if there are new frames
+                    decoded_images = torch.cat([decoded_images, new_samples_only], dim=0)
+
+            print(f"Encode loop {loop_idx + 1}: Images {start_idx}-{end_idx-1}, encoded {end_idx-start_idx} images, kept {images_kept} images")
+            loop_idx += 1
+
+        # No concatenation step needed anymore
+        print(f"Final decoded images shape: {decoded_images.shape}")
+
+        return (decoded_images,)
+
+
+    @classmethod
+    def execute(cls, *, latent: dict, latent_type: str, dtype: str, parallel_mode: bool):
         torch_dtype = cls.get_dtype_from_string(dtype)
         model, device, model_dtype, vmi = cls.get_taevid_model(latent_type, torch_dtype)
         samples = latent["samples"].detach().to(device=device, dtype=torch_dtype, copy=True)
@@ -132,7 +226,7 @@ class VTS_TAEVideoDecode(VTS_TAEVideoNodeBase):
             )
         )
         img = img.reshape(-1, *img.shape[-3:])
-        return (img,)
+        return img
 
 
 class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
@@ -160,15 +254,15 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
         
         # Calculate number of decode loops
         is_last_loop = False
-        decode_idx = 0
+        loop_idx = 0
         while not is_last_loop:
-            if decode_idx == 0:
+            if loop_idx == 0:
                 # First decode: start from beginning, decode batch_window_size latents
                 start_idx = 0
                 end_idx = min(batch_window_size, total_items)
             else:
                 # Subsequent decodes: start one latent back from where we left off
-                start_idx = (decode_idx * (batch_window_size - number_of_images_to_drop))
+                start_idx = (loop_idx * (batch_window_size - number_of_images_to_drop))
                 end_idx = min(start_idx + batch_window_size, total_items)
 
             is_last_loop = (end_idx >= total_items)
@@ -177,7 +271,7 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
 
             # Encode this batch
             latent = cls.execute(image=batch_Images, latent_type=latent_type, dtype=dtype, parallel_mode=parallel_mode)
-            print(f"Encoded latent shape for batch {decode_idx + 1}: {latent.shape}")
+            print(f"Encoded latent shape for batch {loop_idx + 1}: {latent.shape}")
             # Drop the last latent except on the final loop
             
             if not is_last_loop and latent.shape[2] > 1:
@@ -209,12 +303,12 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
                     blended_overlap = existing_overlap * blend_weights + new_overlap * (1.0 - blend_weights)
                     blended_overlap_number_of_latents = blended_overlap.shape[2]
                     number_of_generated_latents = encoded_latents.shape[2]
-                    print(f"Loop {decode_idx}: replacing {number_of_overlapping_latents} latents with {blended_overlap_number_of_latents} latents in current total of {number_of_generated_latents} latents")
+                    print(f"Loop {loop_idx}: replacing {number_of_overlapping_latents} latents with {blended_overlap_number_of_latents} latents in current total of {number_of_generated_latents} latents")
 
                     # Replace the last number_of_overlapping_latents frames in samples with the blended version
                     encoded_latents[:, :, -number_of_overlapping_latents:, :, :] = blended_overlap
                     number_of_generated_latents = encoded_latents.shape[2]
-                    print(f"Loop {decode_idx}: replaced {number_of_overlapping_latents} latents with {blended_overlap_number_of_latents} latents to give new total of {number_of_generated_latents} latents")
+                    print(f"Loop {loop_idx}: replaced {number_of_overlapping_latents} latents with {blended_overlap_number_of_latents} latents to give new total of {number_of_generated_latents} latents")
 
                     # Append only the new frames (skip the overlapping region)
                     new_samples_only = latent[:, :, number_of_overlapping_latents:, :, :]
@@ -225,8 +319,8 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
                 if new_samples_latent_count > 0:  # Only concatenate if there are new frames
                     encoded_latents = torch.cat([encoded_latents, new_samples_only], dim=2)
 
-            print(f"Encode loop {decode_idx + 1}: Images {start_idx}-{end_idx-1}, encoded {end_idx-start_idx} images, kept {latents_kept} latents")
-            decode_idx += 1
+            print(f"Encode loop {loop_idx + 1}: Images {start_idx}-{end_idx-1}, encoded {end_idx-start_idx} images, kept {latents_kept} latents")
+            loop_idx += 1
 
         # No concatenation step needed anymore
         print(f"Final encoded latents shape: {encoded_latents.shape}")
