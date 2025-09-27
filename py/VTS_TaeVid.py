@@ -29,6 +29,7 @@ class VTS_TAEVideoNodeBase:
         return {
             "required": {
                 "latent_type": (("wan21", "wan22", "hunyuanvideo", "mochi"),),
+                "dtype": (("float32", "float16", "bfloat16"), {"default": "bfloat16"}),
                 "parallel_mode": (
                     "BOOLEAN",
                     {
@@ -43,6 +44,7 @@ class VTS_TAEVideoNodeBase:
     def get_taevid_model(
         cls,
         latent_type: str,
+        dtype: torch.dtype,
     ) -> tuple[TAEVid, torch.device, torch.dtype, VideoModelInfo]:
         vmi = VIDEO_FORMATS.get(latent_type)
         if vmi is None or vmi.tae_model is None:
@@ -60,16 +62,25 @@ class VTS_TAEVideoNodeBase:
             err_string = f"Missing TAE video model. Download {model_src} and place it in the models/vae_approx directory"
             raise RuntimeError(err_string)
         device = model_management.vae_device()
-        dtype = model_management.vae_dtype(device=device)
         return (
-            TAEVid(checkpoint_path=tae_model_path, vmi=vmi, device=device).to(device=device, dtype=dtype),  # ✅ Add dtype conversion
+            TAEVid(checkpoint_path=tae_model_path, vmi=vmi, device=device).to(device=device, dtype=dtype),
             device,
             dtype,
             vmi,
         )
 
     @classmethod
-    def go(cls, *, latent, latent_type: str, parallel_mode: bool) -> tuple:
+    def get_dtype_from_string(cls, dtype_str: str) -> torch.dtype:
+        """Convert string dtype to torch.dtype"""
+        dtype_map = {
+            "float32": torch.float32,
+            "float16": torch.float16,
+            "bfloat16": torch.bfloat16,
+        }
+        return dtype_map.get(dtype_str, torch.bfloat16)
+
+    @classmethod
+    def go(cls, *, latent, latent_type: str, dtype: str, parallel_mode: bool) -> tuple:
         raise NotImplementedError
 
 
@@ -87,9 +98,10 @@ class VTS_TAEVideoDecode(VTS_TAEVideoNodeBase):
         return result
 
     @classmethod
-    def go(cls, *, latent: dict, latent_type: str, parallel_mode: bool) -> tuple:
-        model, device, dtype, vmi = cls.get_taevid_model(latent_type)
-        samples = latent["samples"].detach().to(device=device, dtype=dtype, copy=True)
+    def go(cls, *, latent: dict, latent_type: str, dtype: str, parallel_mode: bool) -> tuple:
+        torch_dtype = cls.get_dtype_from_string(dtype)
+        model, device, model_dtype, vmi = cls.get_taevid_model(latent_type, torch_dtype)
+        samples = latent["samples"].detach().to(device=device, dtype=torch_dtype, copy=True)
         samples = vmi.latent_format().process_in(samples)
         img = (
             model.decode(
@@ -121,9 +133,97 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
         return result
 
     @classmethod
-    def go(cls, *, image: torch.Tensor, latent_type: str, parallel_mode: bool) -> tuple:
-        model, device, dtype, vmi = cls.get_taevid_model(latent_type)
-        image = image.detach().to(device=device, dtype=dtype, copy=True)
+    def go(cls, *, image: torch.Tensor, latent_type: str, dtype: str, parallel_mode: bool) -> tuple:
+        batch_window_size = 89
+        overlap_frames = 12
+        number_of_overlapping_latents = overlap_frames // 4
+        number_of_images_to_drop = 1 + overlap_frames
+
+        # decode images in batch_window_size sized batches with overlap
+        total_items, image_height, image_width, C = image.shape
+        encoded_latents = None  # Initialize as None instead of list
+        print(f"Starting encoding of {total_items} images with batch size {batch_window_size}, overlap frames {overlap_frames}, dropping {number_of_images_to_drop} images per batch except last")
+        
+        # Calculate number of decode loops
+        is_last_loop = False
+        decode_idx = 0
+        while not is_last_loop:
+            if decode_idx == 0:
+                # First decode: start from beginning, decode batch_window_size latents
+                start_idx = 0
+                end_idx = min(batch_window_size, total_items)
+            else:
+                # Subsequent decodes: start one latent back from where we left off
+                start_idx = (decode_idx * (batch_window_size - number_of_images_to_drop))
+                end_idx = min(start_idx + batch_window_size, total_items)
+
+            is_last_loop = (end_idx >= total_items)
+            # Extract batch for decoding
+            batch_Images = image[start_idx:end_idx, :, :, :]
+
+            # Encode this batch
+            latent = cls.execute(image=batch_Images, latent_type=latent_type, dtype=dtype, parallel_mode=parallel_mode)
+            print(f"Encoded latent shape for batch {decode_idx + 1}: {latent.shape}")
+            # Drop the last latent except on the final loop
+            
+            if not is_last_loop and latent.shape[2] > 1:
+                latent = latent[:, :, :-1, :, :]  # Drop last latent
+                latents_kept = latent.shape[2]
+            else:
+                latents_kept = latent.shape[2]
+
+            # Extend the tensor instead of appending to list
+            if encoded_latents is None:
+                encoded_latents = latent
+            else:
+                # the last number_of_overlapping_latents of encoded_latents should be equal to
+                # the first number_of_overlapping_latents of latent
+                # we need to blend them
+                if number_of_overlapping_latents > 0:
+                    # Get the overlapping regions
+                    new_overlap = latent[:, :, :number_of_overlapping_latents, :, :]  # First number_of_overlapping_latents from new batch
+                    existing_overlap = encoded_latents[:, :, -number_of_overlapping_latents:, :, :]  # Last number_of_overlapping_latents from existing
+
+                    # Create linear blending weights with extended range to avoid extremes
+                    extended_size = number_of_overlapping_latents + 2  # Add 2 extra
+                    extended_weights = torch.linspace(1.0, 0.0, extended_size, device=existing_overlap.device)
+                    blend_weights = extended_weights[1:-1]  # Remove first and last elements
+                    # Reshape weights to match tensor dimensions [1, 1, motion_sample_size, 1, 1]
+                    blend_weights = blend_weights.view(1, 1, -1, 1, 1)
+                    
+                    # Perform linear blending
+                    blended_overlap = existing_overlap * blend_weights + new_overlap * (1.0 - blend_weights)
+                    blended_overlap_number_of_latents = blended_overlap.shape[2]
+                    number_of_generated_latents = encoded_latents.shape[2]
+                    print(f"Loop {decode_idx}: replacing {number_of_overlapping_latents} latents with {blended_overlap_number_of_latents} latents in current total of {number_of_generated_latents} latents")
+
+                    # Replace the last number_of_overlapping_latents frames in samples with the blended version
+                    encoded_latents[:, :, -number_of_overlapping_latents:, :, :] = blended_overlap
+                    number_of_generated_latents = encoded_latents.shape[2]
+                    print(f"Loop {decode_idx}: replaced {number_of_overlapping_latents} latents with {blended_overlap_number_of_latents} latents to give new total of {number_of_generated_latents} latents")
+
+                    # Append only the new frames (skip the overlapping region)
+                    new_samples_only = latent[:, :, number_of_overlapping_latents:, :, :]
+                else:
+                    new_samples_only = latent
+
+                new_samples_latent_count = new_samples_only.shape[2]
+                if new_samples_latent_count > 0:  # Only concatenate if there are new frames
+                    encoded_latents = torch.cat([encoded_latents, new_samples_only], dim=2)
+
+            print(f"Encode loop {decode_idx + 1}: Images {start_idx}-{end_idx-1}, encoded {end_idx-start_idx} images, kept {latents_kept} latents")
+            decode_idx += 1
+
+        # No concatenation step needed anymore
+        print(f"Final encoded latents shape: {encoded_latents.shape}")
+
+        return ({"samples": encoded_latents},)
+
+    @classmethod
+    def execute(cls, *, image: torch.Tensor, latent_type: str, dtype: str, parallel_mode: bool) -> torch.Tensor:
+        torch_dtype = cls.get_dtype_from_string(dtype)
+        model, device, model_dtype, vmi = cls.get_taevid_model(latent_type, torch_dtype)
+        image = image.detach().to(device=device, dtype=torch_dtype, copy=True)
         if image.ndim < 5:
             image = image.unsqueeze(0)
         if image.ndim < 5:
@@ -160,7 +260,7 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
                 device="cpu",
             )
         )
-        return ({"samples": latent},)
+        return latent
 
 # A dictionary that contains all nodes you want to export with their names
 # NOTE: names should be globally unique
