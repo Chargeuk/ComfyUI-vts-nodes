@@ -426,6 +426,39 @@ class VTS_Render_People_Kps:
             if max_frames > 0:
                 combined_frames = combined_frames[:max_frames]
             
+            # Ensure all frames have the same shape before stacking
+            if combined_frames:
+                # Get the target shape from the first frame
+                target_shape = combined_frames[0].shape
+                
+                # Check if all frames have the same shape
+                shapes_match = all(frame.shape == target_shape for frame in combined_frames)
+                
+                if not shapes_match:
+                    # Find the maximum dimensions across all frames
+                    max_height = max(frame.shape[0] for frame in combined_frames)
+                    max_width = max(frame.shape[1] for frame in combined_frames)
+                    channels = combined_frames[0].shape[2] if len(combined_frames[0].shape) > 2 else 1
+                    
+                    # Resize all frames to match the maximum dimensions
+                    normalized_frames = []
+                    for frame in combined_frames:
+                        if frame.shape[:2] != (max_height, max_width):
+                            # Create a new frame with the target size filled with zeros (black background)
+                            if len(frame.shape) == 3:
+                                new_frame = np.zeros((max_height, max_width, frame.shape[2]), dtype=frame.dtype)
+                                # Copy the original frame into the top-left corner of the new frame
+                                h, w = frame.shape[:2]
+                                new_frame[:h, :w] = frame
+                            else:
+                                new_frame = np.zeros((max_height, max_width), dtype=frame.dtype)
+                                h, w = frame.shape[:2]
+                                new_frame[:h, :w] = frame
+                            normalized_frames.append(new_frame)
+                        else:
+                            normalized_frames.append(frame)
+                    combined_frames = normalized_frames
+            
             # Convert to tensor
             final_result = [torch.from_numpy(np.stack(combined_frames, axis=0).astype(np.float32) / 255)]
         else:
@@ -453,8 +486,45 @@ class VTS_Render_People_Kps:
             if max_frames > 0:
                 character_stacks = [char_stack[:max_frames] for char_stack in character_stacks]
 
+            # Normalize shapes for each character stack before stacking
+            normalized_character_stacks = []
+            for char_stack in character_stacks:
+                if char_stack:  # Only process non-empty stacks
+                    # Check if all images in this character's stack have the same shape
+                    target_shape = char_stack[0].shape
+                    shapes_match = all(img.shape == target_shape for img in char_stack)
+                    
+                    if not shapes_match:
+                        # Find the maximum dimensions across all images in this character's stack
+                        max_height = max(img.shape[0] for img in char_stack)
+                        max_width = max(img.shape[1] for img in char_stack)
+                        channels = char_stack[0].shape[2] if len(char_stack[0].shape) > 2 else 1
+                        
+                        # Normalize all images in this character's stack
+                        normalized_stack = []
+                        for img in char_stack:
+                            if img.shape[:2] != (max_height, max_width):
+                                # Create a new image with the target size filled with zeros (black background)
+                                if len(img.shape) == 3:
+                                    new_img = np.zeros((max_height, max_width, img.shape[2]), dtype=img.dtype)
+                                    # Copy the original image into the top-left corner of the new image
+                                    h, w = img.shape[:2]
+                                    new_img[:h, :w] = img
+                                else:
+                                    new_img = np.zeros((max_height, max_width), dtype=img.dtype)
+                                    h, w = img.shape[:2]
+                                    new_img[:h, :w] = img
+                                normalized_stack.append(new_img)
+                            else:
+                                normalized_stack.append(img)
+                        normalized_character_stacks.append(normalized_stack)
+                    else:
+                        normalized_character_stacks.append(char_stack)
+                else:
+                    normalized_character_stacks.append(char_stack)
+
             # Convert the list of character stacks to numpy arrays
-            final_result = [torch.from_numpy(np.stack(char_stack, axis=0).astype(np.float32) / 255) for char_stack in character_stacks]
+            final_result = [torch.from_numpy(np.stack(char_stack, axis=0).astype(np.float32) / 255) for char_stack in normalized_character_stacks]
 
         return (final_result,)
 
