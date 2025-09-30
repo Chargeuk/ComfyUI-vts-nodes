@@ -460,24 +460,10 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
             image = image.unsqueeze(0)
         if image.ndim != 5:
             raise ValueError("Unexpected input image dimensions")
+        
+        # DON'T pad the entire video here - let the chunked encoder handle it per chunk
         frames = image.shape[1]
-        add_frames = (
-            math.ceil(frames / vmi.temporal_compression) * vmi.temporal_compression
-            - frames
-        )
-        if add_frames > 0:
-            image = torch.cat(
-                (
-                    image,
-                    image[:, frames - 1 :, ...].expand(
-                        image.shape[0],
-                        add_frames,
-                        *image.shape[2:],
-                    ),
-                ),
-                dim=1,
-            )
-
+        
         from contextlib import nullcontext
         dev_type = torch.device(device).type
         use_amp = (torch_dtype == torch.float16 and dev_type in ("cuda", "hip"))
@@ -495,9 +481,23 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
                     blend_mode=blend_mode,
                     blend_exp=blend_exp,
                     min_border_fraction=min_border_fraction,
-                    time_chunk=time_chunk
+                    time_chunk=time_chunk,
+                    temporal_compression=vmi.temporal_compression  # NEW: pass compression info
                 ).transpose(1, 2)
             else:
+                # For non-tiled, we still need to pad the whole video
+                add_frames = (
+                    math.ceil(frames / vmi.temporal_compression) * vmi.temporal_compression
+                    - frames
+                )
+                if add_frames > 0:
+                    last_frame = image[:, -1:, ...]
+                    padding = last_frame.repeat(1, add_frames, 1, 1, 1)
+                    image = torch.cat([image, padding], dim=1)
+                    del last_frame, padding
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                
                 latent = model.encode(
                     image[..., :3].movedim(-1, 2),
                     parallel=parallel_mode,

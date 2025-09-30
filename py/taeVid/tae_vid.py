@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, NamedTuple
 import os
 
@@ -787,6 +788,7 @@ class TAEVid(nn.Module):
         min_border_fraction: float = 0.0,
         time_chunk: int | None = None,
         keep_temporal_continuity: bool = True,   # NEW: maintain per-tile MemBlock state across chunks
+        temporal_compression: int | None = None,  # NEW: for chunk-wise padding
     ) -> torch.Tensor:
         """
         Tiled spatial encode with optional temporal chunking and per-tile continuity.
@@ -816,7 +818,10 @@ class TAEVid(nn.Module):
                 min_border_fraction=min_border_fraction,
                 tile_mem_in=None,
                 return_tile_mem=False,
+                temporal_compression=temporal_compression,
             )
+
+        print(f"Starting encoding of {N} images with tile size ({pixel_tile_size_x},{pixel_tile_size_y}), stride ({pixel_tile_stride_x},{pixel_tile_stride_y}) and time chunk {time_chunk}")
 
         # Build tile task list ONCE (need for per-tile memory arrays)
         spatial_factor = 1
@@ -890,6 +895,7 @@ class TAEVid(nn.Module):
                     tasks_override=tasks,
                     tile_mem_in=tile_mem_states,
                     return_tile_mem=True,
+                    temporal_compression=temporal_compression,
                 )
             else:
                 enc_chunk = self._encode_tiled_core(
@@ -906,6 +912,7 @@ class TAEVid(nn.Module):
                     tasks_override=tasks,
                     tile_mem_in=None,
                     return_tile_mem=False,
+                    temporal_compression=temporal_compression,
                 )
             encoded_chunks.append(enc_chunk)
             del x_chunk, enc_chunk
@@ -932,14 +939,33 @@ class TAEVid(nn.Module):
         tasks_override: list[tuple[int,int,int,int]] | None = None,
         tile_mem_in: list[list[torch.Tensor | None] | None] | None = None,  # per-tile mem
         return_tile_mem: bool = False,
+        temporal_compression: int | None = None,  # NEW: for chunk-wise padding
     ) -> torch.Tensor | tuple[torch.Tensor, list[list[torch.Tensor | None] | None]]:
         """
         Core encode tiling over a temporal slice.
         tile_mem_in: list indexed by tile_id -> per-layer mem list (or None)
         return_tile_mem: return updated per-tile mem (MemBlock states of last timestep for each tile)
+        temporal_compression: if provided, pad this chunk to be divisible by this factor
         """
         compute_device = torch.device(device) if device is not None else x.device
         N, T_in, C_img, H, W = x.shape
+        
+        # Pad this chunk if needed (instead of padding entire video)
+        if temporal_compression is not None:
+            chunk_frames = T_in
+            add_frames = (
+                math.ceil(chunk_frames / temporal_compression) * temporal_compression
+                - chunk_frames
+            )
+            if add_frames > 0:
+                last_frame = x[:, -1:, ...]  # (N, 1, C, H, W)
+                padding = last_frame.repeat(1, add_frames, 1, 1, 1)
+                x = torch.cat([x, padding], dim=1)
+                del last_frame, padding
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                # Update T_in after padding
+                T_in = x.shape[1]
 
         # Spatial downscale factor
         spatial_factor = 1
