@@ -66,8 +66,7 @@ class VTS_Math:
                 "number_1": (any_typ, ),
                 "number_2": (any_typ, ),
                 "operation": (
-                [   
-                    'add',
+                [   'add',
                     'subtract',
                     'multiply',
                     'divide',
@@ -91,7 +90,8 @@ class VTS_Math:
 
         # if either number_1, number_2 or operation is None, return empty text
         if number_1 is None or number_2 is None or operation is None:
-            return (0.0, 0)
+            print(f"VTS_Math: Invalid input: num1={number_1}, num2={number_2}, operation={operation}. Returning zeroes!")
+            return (float(0.0), int(0))
 
         if operation == "add":
             result = number_1 + number_2
@@ -102,8 +102,9 @@ class VTS_Math:
         elif operation == "divide":
             result = number_1 / number_2 if number_2 != 0 else 0
         else:
-            return (0.0, 0)
-
+            print(f"VTS_Math: Invalid operation: {operation}. Returning zeroes!")
+            return (float(0.0), int(0))
+        print(f"VTS_Math: {number_1} {operation} {number_2} = {result}")
         return (float(result), int(result))
 
 
