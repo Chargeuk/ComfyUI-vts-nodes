@@ -332,36 +332,80 @@ class TAEVid(nn.Module):
 
     # ---- Tiled decoding helpers ----
     @staticmethod
-    def _build_1d_mask(length: int, at_start: bool, at_end: bool, border: int, device, dtype):
+    def _build_1d_mask(length: int, 
+                       at_start: bool, 
+                       at_end: bool, 
+                       border: int, 
+                       device, 
+                       dtype,
+                       blend_mode: str = "linear",
+                       blend_exp: float = 1.0,
+                       min_border_fraction: float = 0.0):
+        """
+        Build 1D feather mask along one axis.
+        Center region = 1.0, edges ramp from 0->1 (if not at boundary) or stay 1 if boundary.
+        """
         if border <= 0:
             return torch.ones(length, device=device, dtype=dtype)
+
+        # Optionally ensure a minimum fractional border
+        min_border = int(min_border_fraction * length)
+        if border < min_border:
+            border = min_border
+
         mask = torch.ones(length, device=device, dtype=dtype)
+
+        def make_ramp(b: int, forward: bool) -> torch.Tensor:
+            # Generate values from 0->1 (forward=True) or 1->0 (forward=False)
+            r = torch.linspace(0, 1, b + 2, device=device, dtype=dtype)[1:-1]
+            if blend_mode == "cosine":
+                r2 = 0.5 - 0.5 * torch.cos(torch.pi * r)  # smooth start/end
+            elif blend_mode == "smoothstep":
+                r2 = r * r * (3 - 2 * r)
+            elif blend_mode == "gaussian":
+                # Center the gaussian so 0 at edge, 1 at interior
+                sigma = 0.35
+                r2 = torch.exp(-((1 - r) ** 2) / (2 * sigma * sigma))
+            else:  # linear
+                r2 = r
+            if not forward:
+                r2 = 1.0 - r2
+            if blend_exp != 1.0:
+                r2 = r2.clamp(0, 1) ** blend_exp
+            return r2
+
         if not at_start:
-            ramp = torch.linspace(0, 1, border + 2, device=device, dtype=dtype)[1:-1]
-            mask[:border] = ramp
+            mask[:border] = make_ramp(border, forward=True)
         if not at_end:
-            ramp = torch.linspace(1, 0, border + 2, device=device, dtype=dtype)[1:-1]
-            mask[-border:] = torch.minimum(mask[-border:], ramp)
+            mask[-border:] = torch.minimum(mask[-border:], make_ramp(border, forward=False))
         return mask
 
     @classmethod
-    def _build_mask(cls, tile_decoded: torch.Tensor,
+    def _build_mask(cls, 
+                    tile_decoded: torch.Tensor,
                     is_bound: tuple[bool, bool, bool, bool],
-                    border_width_hw: tuple[int, int]) -> torch.Tensor:
-        # tile_decoded shape: (N, T_out, C, H_tile_out, W_tile_out)
+                    border_width_hw: tuple[int, int],
+                    blend_mode: str = "linear",
+                    blend_exp: float = 1.0,
+                    min_border_fraction: float = 0.0) -> torch.Tensor:
+        """
+        Build 2D separable feather mask.
+        Uses outer product (mh * mw) instead of min which gives smoother corners.
+        """
         H = tile_decoded.shape[-2]
         W = tile_decoded.shape[-1]
-        (top, bottom, left, right) = is_bound
-        (border_h, border_w) = border_width_hw
+        top, bottom, left, right = is_bound
+        border_h, border_w = border_width_hw
         device = tile_decoded.device
         dtype = tile_decoded.dtype
-        mh = cls._build_1d_mask(H, top, bottom, border_h, device, dtype)
-        mw = cls._build_1d_mask(W, left, right, border_w, device, dtype)
-        mask2d = torch.min(
-            mh.view(H, 1).expand(H, W),
-            mw.view(1, W).expand(H, W),
-        )
-        # Shape (1,1,1,H,W) for broadcasting over (N, T_out, C, H, W)
+
+        mh = cls._build_1d_mask(H, top, bottom, border_h, device, dtype, 
+                               blend_mode, blend_exp, min_border_fraction)  # (H,)
+        mw = cls._build_1d_mask(W, left, right, border_w, device, dtype,
+                               blend_mode, blend_exp, min_border_fraction)  # (W,)
+
+        mask2d = mh.view(H, 1) * mw.view(1, W)  # separable weight
+        # Shape (1,1,1,H,W)
         return mask2d.view(1, 1, 1, H, W)
 
     def decode_tiled(
@@ -374,6 +418,9 @@ class TAEVid(nn.Module):
         *,
         show_progress: bool = False,
         device: torch.device | str | None = None,
+        blend_mode: str = "linear",
+        blend_exp: float = 1.0,
+        min_border_fraction: float = 0.0,
     ) -> torch.Tensor:
         """
         Tiled spatial decode of latent video tensor.
@@ -457,14 +504,15 @@ class TAEVid(nn.Module):
         # Allocate accumulators (keep on compute device for fewer transfers)
         H_out = H_lat * spatial_factor
         W_out = W_lat * spatial_factor
+        acc_dtype = torch.float32  # force higher precision accumulation
         values = torch.zeros(
             (N, T_out, C_img, H_out, W_out),
-            dtype=x.dtype,
+            dtype=acc_dtype,
             device=compute_device,
         )
         weight = torch.zeros(
             (N, T_out, 1, H_out, W_out),
-            dtype=x.dtype,
+            dtype=acc_dtype,
             device=compute_device,
         )
 
@@ -496,6 +544,9 @@ class TAEVid(nn.Module):
                         x1 >= W_lat,
                     ),
                     border_width_hw=(border_h_out, border_w_out),
+                    blend_mode=blend_mode,
+                    blend_exp=blend_exp,
+                    min_border_fraction=min_border_fraction,
                 ).to(dec.device, dec.dtype)
 
                 # Accumulate
@@ -503,7 +554,7 @@ class TAEVid(nn.Module):
                 weight[:, :, :, out_y0:out_y1, out_x0:out_x1] += mask
 
         weight.clamp_(min=1e-6)
-        decoded = (values / weight).type_as(values)
+        decoded = (values / weight).to(dtype=x.dtype)
 
         # (N, T_out, C, H_out, W_out) already matches standard decode output ordering
         return decoded
@@ -518,6 +569,9 @@ class TAEVid(nn.Module):
         *,
         show_progress: bool = False,
         device: torch.device | str | None = None,
+        blend_mode: str = "linear",
+        blend_exp: float = 1.0,
+        min_border_fraction: float = 0.0,
     ) -> torch.Tensor:
         """
         Tiled spatial encode of video frames.
@@ -601,14 +655,15 @@ class TAEVid(nn.Module):
         H_lat_full = H // spatial_factor
         W_lat_full = W // spatial_factor
 
+        acc_dtype = torch.float32  # force higher precision accumulation
         values = torch.zeros(
             (N, T_enc, C_lat, H_lat_full, W_lat_full),
-            dtype=x.dtype,
+            dtype=acc_dtype,
             device=compute_device,
         )
         weight = torch.zeros(
             (N, T_enc, 1, H_lat_full, W_lat_full),
-            dtype=x.dtype,
+            dtype=acc_dtype,
             device=compute_device,
         )
 
@@ -646,13 +701,16 @@ class TAEVid(nn.Module):
                         x1 >= W,
                     ),
                     border_width_hw=(border_h_lat, border_w_lat),
+                    blend_mode=blend_mode,
+                    blend_exp=blend_exp,
+                    min_border_fraction=min_border_fraction,
                 ).to(enc_tile.device, enc_tile.dtype)
 
                 values[:, :, :, y_lat0:y_lat1, x_lat0:x_lat1] += enc_tile * mask
                 weight[:, :, :, y_lat0:y_lat1, x_lat0:x_lat1] += mask
 
         weight.clamp_(min=1e-6)
-        encoded = (values / weight).type_as(values)
+        encoded = (values / weight).to(dtype=x.dtype)
         return encoded
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
