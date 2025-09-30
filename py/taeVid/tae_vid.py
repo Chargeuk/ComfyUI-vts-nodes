@@ -494,6 +494,7 @@ class TAEVid(nn.Module):
         print(f"Decode tiling: {tiles_x} tiles in X, {tiles_y} tiles in Y")
         print(f"Tile size in pixels: {pixel_tile_size_x} x {pixel_tile_size_y}")
         print(f"Total tiles: {len(tasks)}")
+        print(f"[TAEVid decode_tiled] spatial_factor={spatial_factor} H_lat={H_lat} W_lat={W_lat}")
 
         # Decode one tile to determine output channel count & tile output size
         with torch.no_grad():
@@ -535,8 +536,22 @@ class TAEVid(nn.Module):
                 # Spatial placement indices in output
                 out_y0 = y0 * spatial_factor
                 out_x0 = x0 * spatial_factor
-                out_y1 = out_y0 + dec.shape[-2]
-                out_x1 = out_x0 + dec.shape[-1]
+
+                # Use actual decoded tile size for end (avoid theoretical calc mismatch)
+                tile_h_out = dec.shape[-2]
+                tile_w_out = dec.shape[-1]
+
+                out_y1 = min(H_out, out_y0 + tile_h_out)
+                out_x1 = min(W_out, out_x0 + tile_w_out)
+
+                # Adjust if slice size mismatches tile (shouldn't after this)
+                slice_h = out_y1 - out_y0
+                slice_w = out_x1 - out_x0
+                if slice_h != tile_h_out or slice_w != tile_w_out:
+                    # Log once and crop tile to fit
+                    print(f"[TAEVid decode_tiled] Mismatch tile ({tile_h_out},{tile_w_out}) vs slice ({slice_h},{slice_w}) "
+                          f"at latent y={y0} x={x0}. Cropping tile.")
+                    dec = dec[..., :slice_h, :slice_w]
 
                 mask = self._build_mask(
                     dec,
@@ -658,6 +673,8 @@ class TAEVid(nn.Module):
         H_lat_full = H // spatial_factor
         W_lat_full = W // spatial_factor
 
+        print(f"[TAEVid encode_tiled] spatial_factor={spatial_factor} H={H} W={W} H_lat_full={H_lat_full} W_lat_full={W_lat_full}")
+
         acc_dtype = torch.float32  # force higher precision accumulation
         values = torch.zeros(
             (N, T_enc, C_lat, H_lat_full, W_lat_full),
@@ -689,11 +706,25 @@ class TAEVid(nn.Module):
                 # enc_tile: (N, T_enc, C_lat, h_lat_tile, w_lat_tile)
                 del pixel_tile
 
-                # Map pixel coords to latent coords
+                # Map pixel coords to latent coords (start)
                 y_lat0 = y0 // spatial_factor
                 x_lat0 = x0 // spatial_factor
-                y_lat1 = y_lat0 + enc_tile.shape[-2]
-                x_lat1 = x_lat0 + enc_tile.shape[-1]
+
+                # Use actual enc_tile latent size for end (avoid theoretical calc mismatch)
+                tile_h_lat = enc_tile.shape[-2]
+                tile_w_lat = enc_tile.shape[-1]
+
+                y_lat1 = min(H_lat_full, y_lat0 + tile_h_lat)
+                x_lat1 = min(W_lat_full, x_lat0 + tile_w_lat)
+
+                # Adjust if slice size mismatches tile (shouldn't after this)
+                slice_h = y_lat1 - y_lat0
+                slice_w = x_lat1 - x_lat0
+                if slice_h != tile_h_lat or slice_w != tile_w_lat:
+                    # Log once and crop tile to fit
+                    print(f"[TAEVid encode_tiled] Mismatch tile ({tile_h_lat},{tile_w_lat}) vs slice ({slice_h},{slice_w}) "
+                          f"at pixel y={y0} x={x0}. Cropping tile.")
+                    enc_tile = enc_tile[..., :slice_h, :slice_w]
 
                 mask = self._build_mask(
                     enc_tile,
