@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, NamedTuple
+import os
 
 import torch
 from torch import nn
@@ -35,6 +36,9 @@ def conv(n_in: int, n_out: int, **kwargs: dict) -> nn.Conv2d:
 class Clamp(nn.Module):
     @classmethod
     def forward(cls, x: torch.Tensor) -> torch.Tensor:
+        mode = os.getenv("TAE_CLAMP_MODE", "tanh")  # "tanh" (default) or "hard"
+        if mode == "hard":
+            return x.clamp(-3, 3)
         return torch.tanh(x / 3) * 3
 
 

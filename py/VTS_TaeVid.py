@@ -29,7 +29,7 @@ class VTS_TAEVideoNodeBase:
         return {
             "required": {
                 "latent_type": (("wan21", "wan22", "hunyuanvideo", "mochi"),),
-                "dtype": (("float32", "float16", "bfloat16"), {"default": "bfloat16"}),
+                "dtype": (("float32", "float16", "bfloat16"), {"default": "float16"}, {"tooltip": "The data type of the input tensor. Most Tiny VAEs are trained using float16, so it's usually the best."}),
                 "parallel_mode": (
                     "BOOLEAN",
                     {
@@ -56,7 +56,8 @@ class VTS_TAEVideoNodeBase:
                 "tileX": (
                     "INT",
                     {
-                        "default": 1088,
+                        "default": 128,
+                        "tooltip": "The tile size in X. Should be 128 for decoding and 160 for encoding to reduce artifacts.",
                         "min": 0,
                         "step": 32,
                     },
@@ -64,7 +65,8 @@ class VTS_TAEVideoNodeBase:
                 "tileY": (
                     "INT",
                     {
-                        "default": 576,
+                        "default": 128,
+                        "tooltip": "The tile size in Y. Should be 128 for decoding and 160 for encoding to reduce artifacts.",
                         "min": 0,
                         "step": 32,
                     },
@@ -73,6 +75,7 @@ class VTS_TAEVideoNodeBase:
                     "INT",
                     {
                         "default": 64,
+                        "tooltip": "The overlap size in X (the gap between the previous X start and the next). Should be 64 for decoding and 96 for encoding to reduce artifacts.",
                         "min": 0,
                         "step": 32,
                     },
@@ -81,6 +84,7 @@ class VTS_TAEVideoNodeBase:
                     "INT",
                     {
                         "default": 64,
+                        "tooltip": "The overlap size in Y (the gap between the previous Y start and the next). Should be 64 for decoding and 96 for encoding to reduce artifacts.",
                         "min": 0,
                         "step": 32,
                     },
@@ -117,10 +121,12 @@ class VTS_TAEVideoNodeBase:
             err_string = f"Missing TAE video model. Download {model_src} and place it in the models/vae_approx directory"
             raise RuntimeError(err_string)
         device = model_management.vae_device()
+        # Keep weights in fp32 (training style); runtime autocast will handle fp16
+        model = TAEVid(checkpoint_path=tae_model_path, vmi=vmi, device=device).to(device=device, dtype=torch.float32)
         return (
-            TAEVid(checkpoint_path=tae_model_path, vmi=vmi, device=device).to(device=device, dtype=dtype),
+            model,
             device,
-            dtype,
+            dtype,  # requested runtime dtype
             vmi,
         )
 
@@ -132,7 +138,7 @@ class VTS_TAEVideoNodeBase:
             "float16": torch.float16,
             "bfloat16": torch.bfloat16,
         }
-        return dtype_map.get(dtype_str, torch.bfloat16)
+        return dtype_map.get(dtype_str, torch.float16)
 
     @classmethod
     def go(cls, *, latent, latent_type: str, dtype: str, parallel_mode: bool, batch_window_size: int, overlap_frames: int,
@@ -254,11 +260,17 @@ class VTS_TAEVideoDecode(VTS_TAEVideoNodeBase):
                 overlapX: int, overlapY: int, use_tiled: bool):
         torch_dtype = cls.get_dtype_from_string(dtype)
         model, device, model_dtype, vmi = cls.get_taevid_model(latent_type, torch_dtype)
-        samples = latent["samples"].detach().to(device=device, dtype=torch_dtype, copy=True)
+        samples = latent["samples"].detach().to(device=device, dtype=torch_dtype if torch_dtype != torch.float16 else torch.float16, copy=True)
         samples = vmi.latent_format().process_in(samples)
-        if use_tiled:
-            img = (
-                model.decode_tiled(
+
+        from contextlib import nullcontext
+        dev_type = torch.device(device).type
+        use_amp = (torch_dtype == torch.float16 and dev_type in ("cuda", "hip"))
+        amp_ctx = torch.autocast(device_type=dev_type, dtype=torch.float16) if use_amp else nullcontext()
+
+        with amp_ctx:
+            if use_tiled:
+                img = model.decode_tiled(
                     samples.transpose(1, 2),
                     pixel_tile_size_x=tileX,
                     pixel_tile_size_y=tileY,
@@ -266,25 +278,17 @@ class VTS_TAEVideoDecode(VTS_TAEVideoNodeBase):
                     pixel_tile_stride_y=overlapY,
                     show_progress=True,
                 )
-                .movedim(2, -1)
-                .to(
-                    dtype=torch.float,
-                    device="cpu",
-                )
-            )
-        else:
-            img = (
-                model.decode(
+            else:
+                img = model.decode(
                     samples.transpose(1, 2),
                     parallel=parallel_mode,
                     show_progress=True,
                 )
-                .movedim(2, -1)
-                .to(
-                    dtype=torch.float,
-                    device="cpu",
-                )
-            )
+
+        img = (
+            img.movedim(2, -1)
+               .to(dtype=torch.float32, device="cpu")
+        )
         img = img.reshape(-1, *img.shape[-3:])
         return img
 
@@ -394,7 +398,7 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
                  tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool) -> torch.Tensor:
         torch_dtype = cls.get_dtype_from_string(dtype)
         model, device, model_dtype, vmi = cls.get_taevid_model(latent_type, torch_dtype)
-        image = image.detach().to(device=device, dtype=torch_dtype, copy=True)
+        image = image.detach().to(device=device, dtype=torch_dtype if torch_dtype != torch.float16 else torch.float16, copy=True)
         if image.ndim < 5:
             image = image.unsqueeze(0)
         if image.ndim < 5:
@@ -418,28 +422,33 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
                 ),
                 dim=1,
             )
-        if use_tiled:
-            latent = model.encode_tiled(
-                image[..., :3].movedim(-1, 2),
-                pixel_tile_size_x=tileX,
-                pixel_tile_size_y=tileY,
-                pixel_tile_stride_x=overlapX,
-                pixel_tile_stride_y=overlapY,
-                show_progress=True,
-            ).transpose(1, 2)
-        else:
-            latent = model.encode(
-                image[..., :3].movedim(-1, 2),
-                parallel=parallel_mode,
-                show_progress=True,
-            ).transpose(1, 2)
+
+        from contextlib import nullcontext
+        dev_type = torch.device(device).type
+        use_amp = (torch_dtype == torch.float16 and dev_type in ("cuda", "hip"))
+        amp_ctx = torch.autocast(device_type=dev_type, dtype=torch.float16) if use_amp else nullcontext()
+
+        with amp_ctx:
+            if use_tiled:
+                latent = model.encode_tiled(
+                    image[..., :3].movedim(-1, 2),
+                    pixel_tile_size_x=tileX,
+                    pixel_tile_size_y=tileY,
+                    pixel_tile_stride_x=overlapX,
+                    pixel_tile_stride_y=overlapY,
+                    show_progress=True,
+                ).transpose(1, 2)
+            else:
+                latent = model.encode(
+                    image[..., :3].movedim(-1, 2),
+                    parallel=parallel_mode,
+                    show_progress=True,
+                ).transpose(1, 2)
+
         latent = (
             vmi.latent_format()
             .process_out(latent)
-            .to(
-                dtype=torch.float,
-                device="cpu",
-            )
+            .to(dtype=torch.float32, device="cpu")
         )
         return latent
 
