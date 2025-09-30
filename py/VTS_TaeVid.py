@@ -29,7 +29,7 @@ class VTS_TAEVideoNodeBase:
         return {
             "required": {
                 "latent_type": (("wan21", "wan22", "hunyuanvideo", "mochi"),),
-                "dtype": (("float32", "float16", "bfloat16"), {"default": "float16"}, {"tooltip": "The data type of the input tensor. Most Tiny VAEs are trained using float16, so it's usually the best."}),
+                "dtype": (("float32", "float16", "bfloat16"), {"default": "float16"}, {"tooltip": "The data type of the input tensor. Use the type that the TVAE was trained with. Most Tiny VAEs are trained using float16, so it's usually the best."}),
                 "parallel_mode": (
                     "BOOLEAN",
                     {
@@ -123,6 +123,13 @@ class VTS_TAEVideoNodeBase:
                         "tooltip": "Minimum border as fraction of tile size. Use 0.1-0.25 for very small tiles.",
                     },
                 ),
+                "clamp_mode": (
+                    ("tanh", "hard"),
+                    {
+                        "default": "tanh",
+                        "tooltip": "Activation clamping mode. 'tanh' uses smooth tanh(x/3)*3 (original), 'hard' uses simple clamp(-3,3). Hard clamp may reduce color blotches but can affect quality.",
+                    },
+                ),
             },
         }
 
@@ -131,6 +138,7 @@ class VTS_TAEVideoNodeBase:
         cls,
         latent_type: str,
         dtype: torch.dtype,
+        clamp_mode: str = "tanh",
     ) -> tuple[TAEVid, torch.device, torch.dtype, VideoModelInfo]:
         vmi = VIDEO_FORMATS.get(latent_type)
         if vmi is None or vmi.tae_model is None:
@@ -149,7 +157,7 @@ class VTS_TAEVideoNodeBase:
             raise RuntimeError(err_string)
         device = model_management.vae_device()
         # Keep weights in fp32 (training style); runtime autocast will handle fp16
-        model = TAEVid(checkpoint_path=tae_model_path, vmi=vmi, device=device).to(device=device, dtype=torch.float32)
+        model = TAEVid(checkpoint_path=tae_model_path, vmi=vmi, device=device, clamp_mode=clamp_mode).to(device=device, dtype=torch.float32)
         return (
             model,
             device,
@@ -169,7 +177,7 @@ class VTS_TAEVideoNodeBase:
 
     @classmethod
     def go(cls, *, latent, latent_type: str, dtype: str, parallel_mode: bool, batch_window_size: int, overlap_frames: int,
-           tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float) -> tuple:
+           tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float, clamp_mode: str) -> tuple:
         raise NotImplementedError
 
 
@@ -188,7 +196,7 @@ class VTS_TAEVideoDecode(VTS_TAEVideoNodeBase):
 
     @classmethod
     def go(cls, *, latent: dict, latent_type: str, dtype: str, parallel_mode: bool, batch_window_size: int, overlap_frames: int,
-            tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float) -> tuple:
+            tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float, clamp_mode: str) -> tuple:
         number_of_overlapping_latents = overlap_frames // 4
         number_of_overlapping_images = overlap_frames
         number_of_images_to_drop = 1 + overlap_frames
@@ -225,7 +233,7 @@ class VTS_TAEVideoDecode(VTS_TAEVideoNodeBase):
             # decode this batch
             images = cls.execute(latent=batch_latent, latent_type=latent_type, dtype=dtype, parallel_mode=parallel_mode,
                                  tileX=tileX, tileY=tileY, overlapX=overlapX, overlapY=overlapY, use_tiled=use_tiled,
-                                 blend_mode=blend_mode, blend_exp=blend_exp, min_border_fraction=min_border_fraction)
+                                 blend_mode=blend_mode, blend_exp=blend_exp, min_border_fraction=min_border_fraction, clamp_mode=clamp_mode)
             print(f"Decoded image shape for batch {loop_idx + 1}: {images.shape}")
             # Drop the last image except on the final loop
 
@@ -285,9 +293,9 @@ class VTS_TAEVideoDecode(VTS_TAEVideoNodeBase):
 
     @classmethod
     def execute(cls, *, latent: dict, latent_type: str, dtype: str, parallel_mode: bool, tileX: int, tileY: int,
-                overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float):
+                overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float, clamp_mode: str):
         torch_dtype = cls.get_dtype_from_string(dtype)
-        model, device, model_dtype, vmi = cls.get_taevid_model(latent_type, torch_dtype)
+        model, device, model_dtype, vmi = cls.get_taevid_model(latent_type, torch_dtype, clamp_mode)
         samples = latent["samples"].detach().to(device=device, dtype=torch_dtype if torch_dtype != torch.float16 else torch.float16, copy=True)
         samples = vmi.latent_format().process_in(samples)
 
@@ -339,7 +347,7 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
 
     @classmethod
     def go(cls, *, image: torch.Tensor, latent_type: str, dtype: str, parallel_mode: bool, batch_window_size: int, overlap_frames: int,
-            tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float) -> tuple:
+            tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float, clamp_mode: str) -> tuple:
         number_of_overlapping_latents = overlap_frames // 4
         number_of_images_to_drop = 1 + overlap_frames
 
@@ -368,7 +376,7 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
             # Encode this batch
             latent = cls.execute(image=batch_Images, latent_type=latent_type, dtype=dtype, parallel_mode=parallel_mode,
                                   tileX=tileX, tileY=tileY, overlapX=overlapX, overlapY=overlapY, use_tiled=use_tiled,
-                                  blend_mode=blend_mode, blend_exp=blend_exp, min_border_fraction=min_border_fraction)
+                                  blend_mode=blend_mode, blend_exp=blend_exp, min_border_fraction=min_border_fraction, clamp_mode=clamp_mode)
             print(f"Encoded latent shape for batch {loop_idx + 1}: {latent.shape}")
             # Drop the last latent except on the final loop
             
@@ -427,9 +435,9 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
 
     @classmethod
     def execute(cls, *, image: torch.Tensor, latent_type: str, dtype: str, parallel_mode: bool,
-                 tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float) -> torch.Tensor:
+                 tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float, clamp_mode: str) -> torch.Tensor:
         torch_dtype = cls.get_dtype_from_string(dtype)
-        model, device, model_dtype, vmi = cls.get_taevid_model(latent_type, torch_dtype)
+        model, device, model_dtype, vmi = cls.get_taevid_model(latent_type, torch_dtype, clamp_mode)
         image = image.detach().to(device=device, dtype=torch_dtype if torch_dtype != torch.float16 else torch.float16, copy=True)
         if image.ndim < 5:
             image = image.unsqueeze(0)

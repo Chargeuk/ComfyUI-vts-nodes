@@ -34,10 +34,12 @@ def conv(n_in: int, n_out: int, **kwargs: dict) -> nn.Conv2d:
 
 
 class Clamp(nn.Module):
-    @classmethod
-    def forward(cls, x: torch.Tensor) -> torch.Tensor:
-        mode = os.getenv("TAE_CLAMP_MODE", "tanh")  # "tanh" (default) or "hard"
-        if mode == "hard":
+    def __init__(self, clamp_mode: str = "tanh"):
+        super().__init__()
+        self.mode = clamp_mode
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.mode == "hard":
             return x.clamp(-3, 3)
         return torch.tanh(x / 3) * 3
 
@@ -205,6 +207,7 @@ class TAEVid(nn.Module):
         device="cpu",
         decoder_time_upscale=(True, True),
         decoder_space_upscale=(True, True, True),
+        clamp_mode: str = "tanh",
     ):
         n_f = self._nf
         super().__init__()
@@ -234,7 +237,7 @@ class TAEVid(nn.Module):
         )
         self.frames_to_trim = 2 ** sum(decoder_time_upscale) - 1
         self.decoder = nn.Sequential(
-            Clamp(),
+            Clamp(clamp_mode=clamp_mode),
             conv(vmi.latent_format.latent_channels, n_f[0]),
             nn.ReLU(inplace=True),
             MemBlock(n_f[0], n_f[0]),
