@@ -433,6 +433,14 @@ class TAEVid(nn.Module):
         if not tasks:
             raise ValueError("No tile tasks generated; check tile sizes / strides.")
 
+        # Calculate and log tile grid info
+        tiles_x = len(set(task[2] for task in tasks))  # unique x start positions
+        tiles_y = len(set(task[0] for task in tasks))  # unique y start positions
+        
+        print(f"Decode tiling: {tiles_x} tiles in X, {tiles_y} tiles in Y")
+        print(f"Tile size in pixels: {pixel_tile_size_x} x {pixel_tile_size_y}")
+        print(f"Total tiles: {len(tasks)}")
+
         # Decode one tile to determine output channel count & tile output size
         with torch.no_grad():
             y0, y1, x0, x1 = tasks[0]
@@ -495,6 +503,153 @@ class TAEVid(nn.Module):
 
         # (N, T_out, C, H_out, W_out) already matches standard decode output ordering
         return decoded
+
+    def encode_tiled(
+        self,
+        x: torch.Tensor,
+        pixel_tile_size_x: int,
+        pixel_tile_size_y: int,
+        pixel_tile_stride_x: int,
+        pixel_tile_stride_y: int,
+        *,
+        show_progress: bool = False,
+        device: torch.device | str | None = None,
+    ) -> torch.Tensor:
+        """
+        Tiled spatial encode of video frames.
+
+        Args:
+            x: (N, T, C_img, H, W) input video tensor (pixel space).
+            pixel_tile_size_x / pixel_tile_size_y: tile size (W / H) in pixels.
+            pixel_tile_stride_x / pixel_tile_stride_y: stride in pixels (overlap if < size).
+            show_progress: show tqdm over tiles.
+            device: compute device (defaults to x.device).
+
+        Returns:
+            Latent tensor (N, T_enc, latent_channels, H_lat, W_lat) identical to non-tiled encode.
+        """
+        if x.ndim != 5:
+            raise ValueError("Expected input shape (N,T,C,H,W)")
+
+        compute_device = torch.device(device) if device is not None else x.device
+        N, T_in, C_img, H, W = x.shape
+
+        # Compute spatial downscale factor of encoder (stride-2 convs * patch_size)
+        spatial_factor = 1
+        for layer in self.encoder:
+            if isinstance(layer, nn.Conv2d):
+                s = layer.stride
+                if isinstance(s, tuple):
+                    s = s[0]
+                if s == 2:
+                    spatial_factor *= 2
+        if self.patch_size > 1:
+            spatial_factor *= self.patch_size  # pixel_unshuffle step
+
+        # Validate tile sizes / strides
+        for name, val in (
+            ("pixel_tile_size_x", pixel_tile_size_x),
+            ("pixel_tile_size_y", pixel_tile_size_y),
+            ("pixel_tile_stride_x", pixel_tile_stride_x),
+            ("pixel_tile_stride_y", pixel_tile_stride_y),
+        ):
+            if val % spatial_factor != 0:
+                raise ValueError(
+                    f"{name}={val} must be multiple of encoder spatial factor {spatial_factor}",
+                )
+
+        if pixel_tile_size_x <= 0 or pixel_tile_size_y <= 0:
+            raise ValueError("Tile sizes must be positive")
+        if pixel_tile_stride_x <= 0 or pixel_tile_stride_y <= 0:
+            raise ValueError("Tile strides must be positive")
+
+        # Build task list (y0,y1,x0,x1) in pixel space
+        tasks: list[tuple[int, int, int, int]] = []
+        for y0 in range(0, H, pixel_tile_stride_y):
+            if (y0 - pixel_tile_stride_y >= 0) and (y0 - pixel_tile_stride_y + pixel_tile_size_y >= H):
+                continue
+            for x0 in range(0, W, pixel_tile_stride_x):
+                if (x0 - pixel_tile_stride_x >= 0) and (x0 - pixel_tile_stride_x + pixel_tile_size_x >= W):
+                    continue
+                y1 = min(y0 + pixel_tile_size_y, H)
+                x1 = min(x0 + pixel_tile_size_x, W)
+                tasks.append((y0, y1, x0, x1))
+
+        if not tasks:
+            raise ValueError("No tile tasks generated; check tile sizes / strides.")
+
+        # Calculate and log tile grid info
+        tiles_x = len(set(task[2] for task in tasks))  # unique x start positions
+        tiles_y = len(set(task[0] for task in tasks))  # unique y start positions
+        
+        print(f"Encode tiling: {tiles_x} tiles in X, {tiles_y} tiles in Y")
+        print(f"Tile size in pixels: {pixel_tile_size_x} x {pixel_tile_size_y}")
+        print(f"Total tiles: {len(tasks)}")
+
+        # Probe first tile to get latent channel count / spatial & temporal sizes
+        with torch.no_grad():
+            y0, y1, x0, x1 = tasks[0]
+            test_tile = x[:, :, :, y0:y1, x0:x1].to(compute_device)
+            enc_test = self.apply(test_tile, decode=False, parallel=True, show_progress=False)
+            _, T_enc, C_lat, h_lat_tile, w_lat_tile = enc_test.shape
+            del enc_test, test_tile
+
+        H_lat_full = H // spatial_factor
+        W_lat_full = W // spatial_factor
+
+        values = torch.zeros(
+            (N, T_enc, C_lat, H_lat_full, W_lat_full),
+            dtype=x.dtype,
+            device=compute_device,
+        )
+        weight = torch.zeros(
+            (N, T_enc, 1, H_lat_full, W_lat_full),
+            dtype=x.dtype,
+            device=compute_device,
+        )
+
+        # Border (overlap) in pixels -> latent units
+        overlap_y_pix = max(pixel_tile_size_y - pixel_tile_stride_y, 0)
+        overlap_x_pix = max(pixel_tile_size_x - pixel_tile_stride_x, 0)
+        if overlap_y_pix % spatial_factor != 0 or overlap_x_pix % spatial_factor != 0:
+            raise ValueError(
+                "Overlap (tile_size - stride) must be divisible by spatial downscale factor",
+            )
+        border_h_lat = overlap_y_pix // spatial_factor
+        border_w_lat = overlap_x_pix // spatial_factor
+
+        iterator = tqdm(tasks, disable=not show_progress, desc="Tiled encode")
+
+        with torch.no_grad():
+            for y0, y1, x0, x1 in iterator:
+                pixel_tile = x[:, :, :, y0:y1, x0:x1].to(compute_device)
+                enc_tile = self.apply(pixel_tile, decode=False, parallel=True, show_progress=False)
+                # enc_tile: (N, T_enc, C_lat, h_lat_tile, w_lat_tile)
+                del pixel_tile
+
+                # Map pixel coords to latent coords
+                y_lat0 = y0 // spatial_factor
+                x_lat0 = x0 // spatial_factor
+                y_lat1 = y_lat0 + enc_tile.shape[-2]
+                x_lat1 = x_lat0 + enc_tile.shape[-1]
+
+                mask = self._build_mask(
+                    enc_tile,
+                    is_bound=(
+                        y0 == 0,
+                        y1 >= H,
+                        x0 == 0,
+                        x1 >= W,
+                    ),
+                    border_width_hw=(border_h_lat, border_w_lat),
+                ).to(enc_tile.device, enc_tile.dtype)
+
+                values[:, :, :, y_lat0:y_lat1, x_lat0:x_lat1] += enc_tile * mask
+                weight[:, :, :, y_lat0:y_lat1, x_lat0:x_lat1] += mask
+
+        weight.clamp_(min=1e-6)
+        encoded = (values / weight).type_as(values)
+        return encoded
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.c(x)
