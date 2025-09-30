@@ -85,6 +85,13 @@ class VTS_TAEVideoNodeBase:
                         "step": 32,
                     },
                 ),
+                 "use_tiled": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "Use tiled processing for reduced peak memory.",
+                    },
+                ),
             },
         }
 
@@ -129,7 +136,7 @@ class VTS_TAEVideoNodeBase:
 
     @classmethod
     def go(cls, *, latent, latent_type: str, dtype: str, parallel_mode: bool, batch_window_size: int, overlap_frames: int,
-           tileX: int, tileY: int, overlapX: int, overlapY: int) -> tuple:
+           tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool) -> tuple:
         raise NotImplementedError
 
 
@@ -148,7 +155,7 @@ class VTS_TAEVideoDecode(VTS_TAEVideoNodeBase):
 
     @classmethod
     def go(cls, *, latent: dict, latent_type: str, dtype: str, parallel_mode: bool, batch_window_size: int, overlap_frames: int,
-            tileX: int, tileY: int, overlapX: int, overlapY: int) -> tuple:
+            tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool) -> tuple:
         number_of_overlapping_latents = overlap_frames // 4
         number_of_overlapping_images = overlap_frames
         number_of_images_to_drop = 1 + overlap_frames
@@ -184,7 +191,7 @@ class VTS_TAEVideoDecode(VTS_TAEVideoNodeBase):
 
             # decode this batch
             images = cls.execute(latent=batch_latent, latent_type=latent_type, dtype=dtype, parallel_mode=parallel_mode,
-                                 tileX=tileX, tileY=tileY, overlapX=overlapX, overlapY=overlapY)
+                                 tileX=tileX, tileY=tileY, overlapX=overlapX, overlapY=overlapY, use_tiled=use_tiled)
             print(f"Decoded image shape for batch {loop_idx + 1}: {images.shape}")
             # Drop the last image except on the final loop
 
@@ -243,38 +250,41 @@ class VTS_TAEVideoDecode(VTS_TAEVideoNodeBase):
 
 
     @classmethod
-    def execute(cls, *, latent: dict, latent_type: str, dtype: str, parallel_mode: bool, tileX: int, tileY: int, overlapX: int, overlapY: int):
+    def execute(cls, *, latent: dict, latent_type: str, dtype: str, parallel_mode: bool, tileX: int, tileY: int,
+                overlapX: int, overlapY: int, use_tiled: bool):
         torch_dtype = cls.get_dtype_from_string(dtype)
         model, device, model_dtype, vmi = cls.get_taevid_model(latent_type, torch_dtype)
         samples = latent["samples"].detach().to(device=device, dtype=torch_dtype, copy=True)
         samples = vmi.latent_format().process_in(samples)
-        img = (
-            model.decode_tiled(
-                samples.transpose(1, 2),
-                pixel_tile_size_x=tileX,
-                pixel_tile_size_y=tileY,
-                pixel_tile_stride_x=overlapX,
-                pixel_tile_stride_y=overlapY,
-                show_progress=True,
+        if use_tiled:
+            img = (
+                model.decode_tiled(
+                    samples.transpose(1, 2),
+                    pixel_tile_size_x=tileX,
+                    pixel_tile_size_y=tileY,
+                    pixel_tile_stride_x=overlapX,
+                    pixel_tile_stride_y=overlapY,
+                    show_progress=True,
+                )
+                .movedim(2, -1)
+                .to(
+                    dtype=torch.float,
+                    device="cpu",
+                )
             )
-            .movedim(2, -1)
-            .to(
-                dtype=torch.float,
-                device="cpu",
+        else:
+            img = (
+                model.decode(
+                    samples.transpose(1, 2),
+                    parallel=parallel_mode,
+                    show_progress=True,
+                )
+                .movedim(2, -1)
+                .to(
+                    dtype=torch.float,
+                    device="cpu",
+                )
             )
-        )
-        # img = (
-        #     model.decode(
-        #         samples.transpose(1, 2),
-        #         parallel=parallel_mode,
-        #         show_progress=True,
-        #     )
-        #     .movedim(2, -1)
-        #     .to(
-        #         dtype=torch.float,
-        #         device="cpu",
-        #     )
-        # )
         img = img.reshape(-1, *img.shape[-3:])
         return img
 
@@ -294,7 +304,7 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
 
     @classmethod
     def go(cls, *, image: torch.Tensor, latent_type: str, dtype: str, parallel_mode: bool, batch_window_size: int, overlap_frames: int,
-            tileX: int, tileY: int, overlapX: int, overlapY: int) -> tuple:
+            tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool) -> tuple:
         number_of_overlapping_latents = overlap_frames // 4
         number_of_images_to_drop = 1 + overlap_frames
 
@@ -322,7 +332,7 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
 
             # Encode this batch
             latent = cls.execute(image=batch_Images, latent_type=latent_type, dtype=dtype, parallel_mode=parallel_mode,
-                                  tileX=tileX, tileY=tileY, overlapX=overlapX, overlapY=overlapY)
+                                  tileX=tileX, tileY=tileY, overlapX=overlapX, overlapY=overlapY, use_tiled=use_tiled)
             print(f"Encoded latent shape for batch {loop_idx + 1}: {latent.shape}")
             # Drop the last latent except on the final loop
             
@@ -381,7 +391,7 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
 
     @classmethod
     def execute(cls, *, image: torch.Tensor, latent_type: str, dtype: str, parallel_mode: bool,
-                 tileX: int, tileY: int, overlapX: int, overlapY: int) -> torch.Tensor:
+                 tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool) -> torch.Tensor:
         torch_dtype = cls.get_dtype_from_string(dtype)
         model, device, model_dtype, vmi = cls.get_taevid_model(latent_type, torch_dtype)
         image = image.detach().to(device=device, dtype=torch_dtype, copy=True)
@@ -408,19 +418,21 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
                 ),
                 dim=1,
             )
-        latent = model.encode_tiled(
-            image[..., :3].movedim(-1, 2),
-            pixel_tile_size_x=tileX,
-            pixel_tile_size_y=tileY,
-            pixel_tile_stride_x=overlapX,
-            pixel_tile_stride_y=overlapY,
-            show_progress=True,
-        ).transpose(1, 2)
-        # latent = model.encode(
-        #     image[..., :3].movedim(-1, 2),
-        #     parallel=parallel_mode,
-        #     show_progress=True,
-        # ).transpose(1, 2)
+        if use_tiled:
+            latent = model.encode_tiled(
+                image[..., :3].movedim(-1, 2),
+                pixel_tile_size_x=tileX,
+                pixel_tile_size_y=tileY,
+                pixel_tile_stride_x=overlapX,
+                pixel_tile_stride_y=overlapY,
+                show_progress=True,
+            ).transpose(1, 2)
+        else:
+            latent = model.encode(
+                image[..., :3].movedim(-1, 2),
+                parallel=parallel_mode,
+                show_progress=True,
+            ).transpose(1, 2)
         latent = (
             vmi.latent_format()
             .process_out(latent)
