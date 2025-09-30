@@ -214,9 +214,12 @@ class VTS_TAEVideoDecode(VTS_TAEVideoNodeBase):
         samples = latent["samples"].detach().to(device=device, dtype=torch_dtype, copy=True)
         samples = vmi.latent_format().process_in(samples)
         img = (
-            model.decode(
+            model.decode_tiled(
                 samples.transpose(1, 2),
-                parallel=parallel_mode,
+                pixel_tile_size_x=512,
+                pixel_tile_size_y=512,
+                pixel_tile_stride_x=128,
+                pixel_tile_stride_y=128,
                 show_progress=True,
             )
             .movedim(2, -1)
@@ -225,6 +228,18 @@ class VTS_TAEVideoDecode(VTS_TAEVideoNodeBase):
                 device="cpu",
             )
         )
+        # img = (
+        #     model.decode(
+        #         samples.transpose(1, 2),
+        #         parallel=parallel_mode,
+        #         show_progress=True,
+        #     )
+        #     .movedim(2, -1)
+        #     .to(
+        #         dtype=torch.float,
+        #         device="cpu",
+        #     )
+        # )
         img = img.reshape(-1, *img.shape[-3:])
         return img
 
