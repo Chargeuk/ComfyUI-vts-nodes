@@ -13,7 +13,8 @@ import folder_paths
 class VTS_VAEDecodeTiled:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": {"samples": ("LATENT", ), "vae": ("VAE", ),
+        return {"required": {"samples": ("LATENT", ),
+                             "vae": ("VAE", ),
                              "tile_size_x": ("INT", {"default": 512, "min": 64, "max": 4096, "step": 32}),
                              "tile_size_y": ("INT", {"default": 512, "min": 64, "max": 4096, "step": 32}),
                              "overlap": ("INT", {"default": 64, "min": 0, "max": 4096, "step": 32}),

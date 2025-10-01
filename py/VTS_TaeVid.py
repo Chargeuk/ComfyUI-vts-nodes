@@ -46,14 +46,6 @@ class VTS_TAEVideoNodeBase:
                         "step": 4,
                     },
                 ),
-                # "overlap_frames": (
-                #     "INT",
-                #     {
-                #         "default": 12,
-                #         "min": 0,
-                #         "step": 4,
-                #     },
-                # ),
                 "tileX": (
                     "INT",
                     {
