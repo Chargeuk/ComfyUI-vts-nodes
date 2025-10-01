@@ -504,11 +504,15 @@ class TAEVid(nn.Module):
         offload_mem_states_to_cpu: bool = False,       # NEW: move continuity states to CPU between chunks
         mem_states_dtype: torch.dtype | None = torch.float16,  # NEW: compress mem states
         collect_ipc: bool = False,                     # NEW: call torch.cuda.ipc_collect()
+        accumulate_on_cpu: bool = False,               # NEW: accumulate tile results on CPU to save VRAM
     ) -> torch.Tensor:
         """
         Tiled spatial decode of latent video tensor with optional temporal chunking.
         Only the FIRST chunk has its leading warm-up frames (frames_to_trim) removed.
         Subsequent chunks retain all produced frames (we already have history).
+        
+        accumulate_on_cpu: If True, accumulate tile results on CPU to save GPU memory.
+                          Trades CPU memory and CPU-GPU transfer time for VRAM savings.
         """
         if x.ndim != 5:
             raise ValueError("Expected latent tensor shape (N,T,C,H,W)")
@@ -530,6 +534,7 @@ class TAEVid(nn.Module):
                 tile_mem_in=None,
                 return_tile_mem=False,
                 trim_leading=True,
+                accumulate_on_cpu=accumulate_on_cpu,
             )
             return decoded
 
@@ -587,6 +592,7 @@ class TAEVid(nn.Module):
                     tile_mem_in=tile_mem_states,
                     return_tile_mem=True,
                     trim_leading=(chunk_idx == 0),  # only first chunk trims warm-up
+                    accumulate_on_cpu=accumulate_on_cpu,
                 )
                 
                 # Optionally offload memory states to CPU and compress dtype
@@ -618,6 +624,7 @@ class TAEVid(nn.Module):
                     tile_mem_in=None,
                     return_tile_mem=False,
                     trim_leading=(chunk_idx == 0),
+                    accumulate_on_cpu=accumulate_on_cpu,
                 )
 
             # Offload decoded chunk to CPU if requested
@@ -670,10 +677,14 @@ class TAEVid(nn.Module):
         tile_mem_in: list[list[torch.Tensor | None] | None] | None = None,
         return_tile_mem: bool = False,
         trim_leading: bool = True,   # NEW: whether to remove initial frames_to_trim
+        accumulate_on_cpu: bool = False,  # NEW: accumulate tile results on CPU to save VRAM
     ) -> torch.Tensor | tuple[torch.Tensor, list[list[torch.Tensor | None] | None]]:
         """
         Core function for a single latent temporal slice decode.
         If trim_leading is False, we keep all produced frames (used for subsequent chunks).
+        
+        accumulate_on_cpu: If True, accumulate tile results on CPU to save GPU memory.
+                          Trades CPU memory and CPU-GPU transfer time for VRAM savings.
         """
         compute_device = torch.device(device) if device is not None else x.device
         N, T_in_lat, C_lat, H_lat, W_lat = x.shape
@@ -733,16 +744,18 @@ class TAEVid(nn.Module):
         H_out = H_lat * spatial_factor
         W_out = W_lat * spatial_factor
 
+        # Choose accumulation device based on setting
+        acc_device = torch.device('cpu') if accumulate_on_cpu else compute_device
         acc_dtype = torch.float32
         values = torch.zeros(
             (N, T_out_chunk, C_img, H_out, W_out),
             dtype=acc_dtype,
-            device=compute_device,
+            device=acc_device,
         )
         weight = torch.zeros(
             (N, T_out_chunk, 1, H_out, W_out),
             dtype=acc_dtype,
-            device=compute_device,
+            device=acc_device,
         )
 
         # Border (latent space -> output space)
@@ -812,11 +825,32 @@ class TAEVid(nn.Module):
                     min_border_fraction=min_border_fraction,
                 ).to(dec.device, dec.dtype)
 
-                values[:, :, :, out_y0:out_y1, out_x0:out_x1] += dec * mask
-                weight[:, :, :, out_y0:out_y1, out_x0:out_x1] += mask
+                # Handle accumulation based on device choice
+                if accumulate_on_cpu:
+                    # Move results to CPU for accumulation
+                    dec_cpu = dec.cpu()
+                    mask_cpu = mask.cpu()
+                    
+                    # Accumulate on CPU
+                    values[:, :, :, out_y0:out_y1, out_x0:out_x1] += dec_cpu * mask_cpu
+                    weight[:, :, :, out_y0:out_y1, out_x0:out_x1] += mask_cpu
+                    
+                    # Clean up CPU tensors
+                    del dec_cpu, mask_cpu
+                else:
+                    # Original GPU accumulation
+                    values[:, :, :, out_y0:out_y1, out_x0:out_x1] += dec * mask
+                    weight[:, :, :, out_y0:out_y1, out_x0:out_x1] += mask
+                
+                # Clean up GPU tensors
+                del dec, mask
 
         weight.clamp_(min=1e-6)
         decoded = (values / weight).to(dtype=x.dtype)
+        
+        # Move final result back to compute device if accumulated on CPU
+        if accumulate_on_cpu and compute_device.type == 'cuda':
+            decoded = decoded.to(compute_device)
 
         if return_tile_mem:
             return decoded, updated_tile_mem

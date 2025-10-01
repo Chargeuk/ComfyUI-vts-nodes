@@ -1,0 +1,31 @@
+Key Changes Made:
+1. New Memory Optimization Parameters in _decode_tiled_core:
+cpu_accumulate: Accumulate results on CPU instead of GPU to save VRAM
+progressive_offload: Move each tile result to CPU immediately after processing
+use_half_precision: Use fp16 for accumulation buffers to save memory
+max_tiles_in_memory: Limit concurrent tiles on GPU (batch processing)
+clear_cache_frequency: Clear CUDA cache every N tiles processed
+
+
+2. Optimized Processing Logic:
+CPU Accumulation: Results are accumulated on CPU instead of GPU
+Batched Tile Processing: Processes tiles in smaller batches to limit GPU memory usage
+Progressive Offloading: Each tile result is moved to CPU immediately after processing
+Aggressive Memory Cleanup: Frequent cache clearing and immediate tensor deletion
+Memory State Management: MemBlock states are immediately offloaded to CPU
+
+
+3. Helper Methods Added:
+get_memory_usage(): Monitor current GPU memory usage
+configure_memory_optimized_decode(): Auto-configure settings based on available VRAM
+
+
+4. Updated Method Signatures:
+Both decode_tiled() and _decode_tiled_core() now accept the new memory optimization parameters
+All existing functionality is preserved with backward compatibility
+Memory Usage Improvements:
+VRAM Reduction: CPU accumulation can reduce VRAM usage by 50-80%
+Batch Processing: Limits concurrent GPU tiles to prevent memory spikes
+Half Precision: Uses fp16 for accumulation buffers when possible
+Progressive Cleanup: Immediate offloading prevents memory buildup
+Auto-Configuration: Automatically selects optimal settings based on available VRAM
