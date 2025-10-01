@@ -13,6 +13,7 @@ class VTS_ConvertLatents:
         return {
             "required": {
                 "source_latent": ("LATENT", ),
+                "conversion_direction": (["ComfyUI->WanWrapper", "WanWrapper->ComfyUI"], {"default": "ComfyUI->WanWrapper"}),
                 "conversion_method": (["channel_wise", "global_linear", "global_normalize"], {"default": "channel_wise"}),
             },
             "optional": {
@@ -26,12 +27,13 @@ class VTS_ConvertLatents:
     FUNCTION = "convert_latents"
     CATEGORY = "VTS"
     
-    def convert_latents(self, source_latent, conversion_method, reference_source=None, reference_target=None):
+    def convert_latents(self, source_latent, conversion_direction, conversion_method, reference_source=None, reference_target=None):
         """
         Convert latents using learned or predefined transformations.
         """
         result_info = []
         result_info.append("=== LATENT CONVERSION REPORT ===\n")
+        result_info.append(f"Conversion direction: {conversion_direction}")
         
         # Copy the source latent structure
         converted_latent = source_latent.copy()
@@ -42,6 +44,15 @@ class VTS_ConvertLatents:
             return (source_latent, "\n".join(result_info))
         
         source_tensor = source_latent["samples"]
+        
+        # Log input dtype and ensure float32 for processing
+        input_dtype = source_tensor.dtype
+        result_info.append(f"Input dtype: {input_dtype}")
+        
+        # Convert to float32 for processing if needed
+        if source_tensor.dtype != torch.float32:
+            source_tensor = source_tensor.to(torch.float32)
+            result_info.append(f"Converted input to float32 for processing")
         
         # If reference latents are provided, learn the conversion
         if reference_source is not None and reference_target is not None:
@@ -54,6 +65,12 @@ class VTS_ConvertLatents:
             
             ref_source_tensor = reference_source["samples"]
             ref_target_tensor = reference_target["samples"]
+            
+            # Ensure reference tensors are float32 for processing
+            if ref_source_tensor.dtype != torch.float32:
+                ref_source_tensor = ref_source_tensor.to(torch.float32)
+            if ref_target_tensor.dtype != torch.float32:
+                ref_target_tensor = ref_target_tensor.to(torch.float32)
             
             # Move to same device for computation
             if ref_source_tensor.device != ref_target_tensor.device:
@@ -89,23 +106,36 @@ class VTS_ConvertLatents:
             
             with torch.no_grad():
                 if conversion_method == "channel_wise":
-                    converted_tensor = self._convert_channel_wise_predefined(source_tensor, result_info)
+                    converted_tensor = self._convert_channel_wise_predefined(source_tensor, conversion_direction, result_info)
                 elif conversion_method == "global_normalize":
-                    converted_tensor = self._convert_global_normalize_predefined(source_tensor, result_info)
+                    converted_tensor = self._convert_global_normalize_predefined(source_tensor, conversion_direction, result_info)
                 else:
                     # Fallback to global normalize
-                    converted_tensor = self._convert_global_normalize_predefined(source_tensor, result_info)
+                    converted_tensor = self._convert_global_normalize_predefined(source_tensor, conversion_direction, result_info)
+        
+        # Ensure output is float32
+        if converted_tensor.dtype != torch.float32:
+            converted_tensor = converted_tensor.to(torch.float32)
+            result_info.append("Ensured output is float32")
         
         # Update the converted latent
         converted_latent["samples"] = converted_tensor
         
-        # Add noise_mask if it doesn't exist (based on your analysis)
-        if "noise_mask" not in converted_latent:
-            converted_latent["noise_mask"] = None
-            result_info.append("Added 'noise_mask': None to match target format")
+        # Handle noise_mask based on conversion direction
+        if conversion_direction == "ComfyUI->WanWrapper":
+            # Add noise_mask if it doesn't exist (WanWrapper format needs it)
+            if "noise_mask" not in converted_latent:
+                converted_latent["noise_mask"] = None
+                result_info.append("Added 'noise_mask': None to match WanWrapper format")
+        else:  # WanWrapper->ComfyUI
+            # Remove noise_mask if it exists (ComfyUI format doesn't need it)
+            if "noise_mask" in converted_latent:
+                del converted_latent["noise_mask"]
+                result_info.append("Removed 'noise_mask' to match ComfyUI format")
         
         result_info.append(f"\nConversion completed successfully!")
         result_info.append(f"Output shape: {tuple(converted_tensor.shape)}")
+        result_info.append(f"Output dtype: {converted_tensor.dtype}")
         result_info.append(f"Output range: [{converted_tensor.min().item():.6f}, {converted_tensor.max().item():.6f}]")
         result_info.append(f"Output mean±std: {converted_tensor.mean().item():.6f}±{converted_tensor.std().item():.6f}")
         
@@ -113,7 +143,8 @@ class VTS_ConvertLatents:
     
     def _convert_channel_wise(self, source_tensor, ref_source, ref_target, result_info):
         """Convert using per-channel linear transformations."""
-        converted = source_tensor.clone()
+        # Ensure all tensors are float32 and clone for safety
+        converted = source_tensor.clone().to(torch.float32)
         
         # Assuming shape [B, C, T, H, W] or [B, C, H, W]
         num_channels = source_tensor.shape[1]
@@ -126,7 +157,7 @@ class VTS_ConvertLatents:
             
             # Calculate transformation parameters for this channel
             with torch.no_grad():
-                # Flatten for statistics
+                # Flatten for statistics and ensure float32
                 ref_source_flat = ref_source_ch.flatten().float()
                 ref_target_flat = ref_target_ch.flatten().float()
                 
@@ -165,7 +196,7 @@ class VTS_ConvertLatents:
     
     def _convert_global_linear(self, source_tensor, ref_source, ref_target, result_info):
         """Convert using global linear transformation."""
-        # Flatten tensors
+        # Flatten tensors and ensure float32
         ref_source_flat = ref_source.flatten().float()
         ref_target_flat = ref_target.flatten().float()
         
@@ -186,7 +217,7 @@ class VTS_ConvertLatents:
         
         result_info.append(f"  Global linear: y = {a:.6f} * x + {b:.6f}")
         
-        return source_tensor * a + b
+        return (source_tensor * a + b).to(torch.float32)
     
     def _convert_global_normalize(self, source_tensor, ref_source, ref_target, result_info):
         """Convert using global statistical normalization."""
@@ -197,16 +228,17 @@ class VTS_ConvertLatents:
         
         result_info.append(f"  Global normalize: (x - {mean_src:.6f}) / {std_src:.6f} * {std_tgt:.6f} + {mean_tgt:.6f}")
         
-        return (source_tensor - mean_src) / std_src * std_tgt + mean_tgt
+        return ((source_tensor - mean_src) / std_src * std_tgt + mean_tgt).to(torch.float32)
     
-    def _convert_channel_wise_predefined(self, source_tensor, result_info):
+    def _convert_channel_wise_predefined(self, source_tensor, conversion_direction, result_info):
         """Convert using predefined channel-wise parameters from analysis."""
-        converted = source_tensor.clone()
+        # Ensure float32 and clone for safety
+        converted = source_tensor.clone().to(torch.float32)
         
         # Based on learned coefficients from successful wan video model conversion
         # These provide visually identical results to the target sampler
         channel_params = [
-            # [a, b] for y = ax + b transformation per channel
+            # [a, b] for y = ax + b transformation per channel (ComfyUI->WanWrapper)
             (0.345731, 0.266601),   # Channel 0
             (0.668525, 0.514007),   # Channel 1
             (0.424411, 0.389445),   # Channel 2
@@ -229,29 +261,45 @@ class VTS_ConvertLatents:
         
         for ch in range(num_channels):
             a, b = channel_params[ch]
-            converted[:, ch] = source_tensor[:, ch] * a + b
-            result_info.append(f"  Channel {ch}: y = {a:.6f} * x + {b:.6f}")
+            
+            if conversion_direction == "ComfyUI->WanWrapper":
+                # Forward transformation: y = ax + b
+                converted[:, ch] = source_tensor[:, ch] * a + b
+                result_info.append(f"  Channel {ch}: y = {a:.6f} * x + {b:.6f}")
+            else:  # WanWrapper->ComfyUI
+                # Inverse transformation: x = (y - b) / a
+                converted[:, ch] = (source_tensor[:, ch] - b) / a
+                result_info.append(f"  Channel {ch}: x = (y - {b:.6f}) / {a:.6f}")
         
         # For any additional channels beyond 16, use the last learned parameters as fallback
         if source_tensor.shape[1] > len(channel_params):
             fallback_a, fallback_b = 0.524633, 0.163276  # Channel 15 parameters
             for ch in range(len(channel_params), source_tensor.shape[1]):
-                converted[:, ch] = source_tensor[:, ch] * fallback_a + fallback_b
-                result_info.append(f"  Channel {ch}: y = {fallback_a:.6f} * x + {fallback_b:.6f} (fallback)")
+                if conversion_direction == "ComfyUI->WanWrapper":
+                    converted[:, ch] = source_tensor[:, ch] * fallback_a + fallback_b
+                    result_info.append(f"  Channel {ch}: y = {fallback_a:.6f} * x + {fallback_b:.6f} (fallback)")
+                else:  # WanWrapper->ComfyUI
+                    converted[:, ch] = (source_tensor[:, ch] - fallback_b) / fallback_a
+                    result_info.append(f"  Channel {ch}: x = (y - {fallback_b:.6f}) / {fallback_a:.6f} (fallback)")
         
         return converted
     
-    def _convert_global_normalize_predefined(self, source_tensor, result_info):
+    def _convert_global_normalize_predefined(self, source_tensor, conversion_direction, result_info):
         """Convert using predefined global normalization from analysis."""
-        # From your analysis: Method 1 (Normalize) was best
-        mean_src = -0.224886
-        std_src = 1.868329
-        mean_tgt = -0.084378
-        std_tgt = 0.752230
+        # From your analysis: Method 1 (Normalize) was best for ComfyUI->WanWrapper
+        comfyui_mean = -0.224886
+        comfyui_std = 1.868329
+        wanwrapper_mean = -0.084378
+        wanwrapper_std = 0.752230
         
-        result_info.append(f"  Global normalize: (x - {mean_src:.6f}) / {std_src:.6f} * {std_tgt:.6f} + {mean_tgt:.6f}")
-        
-        return (source_tensor - mean_src) / std_src * std_tgt + mean_tgt
+        if conversion_direction == "ComfyUI->WanWrapper":
+            # Forward: (x - comfyui_mean) / comfyui_std * wanwrapper_std + wanwrapper_mean
+            result_info.append(f"  Global normalize: (x - {comfyui_mean:.6f}) / {comfyui_std:.6f} * {wanwrapper_std:.6f} + {wanwrapper_mean:.6f}")
+            return ((source_tensor - comfyui_mean) / comfyui_std * wanwrapper_std + wanwrapper_mean).to(torch.float32)
+        else:  # WanWrapper->ComfyUI
+            # Inverse: (x - wanwrapper_mean) / wanwrapper_std * comfyui_std + comfyui_mean
+            result_info.append(f"  Global normalize: (x - {wanwrapper_mean:.6f}) / {wanwrapper_std:.6f} * {comfyui_std:.6f} + {comfyui_mean:.6f}")
+            return ((source_tensor - wanwrapper_mean) / wanwrapper_std * comfyui_std + comfyui_mean).to(torch.float32)
 
 # A dictionary that contains all nodes you want to export with their names
 NODE_CLASS_MAPPINGS = {
