@@ -123,6 +123,20 @@ class VTS_TAEVideoNodeBase:
                         "tooltip": "Activation clamping mode. 'tanh' uses smooth tanh(x/3)*3 (original), 'hard' uses simple clamp(-3,3). Hard clamp may reduce color blotches but can affect quality.",
                     },
                 ),
+                "accumulate_on_cpu": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": "Accumulate tile results on CPU to save GPU memory. Trades CPU memory and CPU-GPU transfer time for VRAM savings. Useful for very large videos or limited VRAM systems.",
+                    },
+                ),
+                "accumulate_dtype": (
+                    ("float32", "float16"),
+                    {
+                        "default": "float32",
+                        "tooltip": "Data type for internal accumulation buffers. Use float16 to save 50% memory (both GPU and CPU) with minimal quality loss. float32 provides maximum precision.",
+                    },
+                ),
             },
         }
 
@@ -170,7 +184,7 @@ class VTS_TAEVideoNodeBase:
 
     @classmethod
     def go(cls, *, latent, latent_type: str, dtype: str, parallel_mode: bool, batch_window_size: int, # overlap_frames: int,
-           tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float, clamp_mode: str) -> tuple:
+           tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float, clamp_mode: str, accumulate_on_cpu: bool, accumulate_dtype: str) -> tuple:
         raise NotImplementedError
 
 
@@ -189,7 +203,7 @@ class VTS_TAEVideoDecode(VTS_TAEVideoNodeBase):
 
     @classmethod
     def go(cls, *, latent: dict, latent_type: str, dtype: str, parallel_mode: bool, batch_window_size: int, # overlap_frames: int,
-            tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float, clamp_mode: str) -> tuple:
+            tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float, clamp_mode: str, accumulate_on_cpu: bool, accumulate_dtype: str) -> tuple:
 
         samples = latent["samples"]
 
@@ -201,14 +215,15 @@ class VTS_TAEVideoDecode(VTS_TAEVideoNodeBase):
         decoded_images = cls.execute(latent=latent, latent_type=latent_type, dtype=dtype, parallel_mode=parallel_mode,
                                  tileX=tileX, tileY=tileY, overlapX=overlapX, overlapY=overlapY, use_tiled=use_tiled,
                                  blend_mode=blend_mode, blend_exp=blend_exp, min_border_fraction=min_border_fraction, clamp_mode=clamp_mode,
-                                 time_chunk=latent_time_chunk)
+                                 time_chunk=latent_time_chunk, accumulate_on_cpu=accumulate_on_cpu, accumulate_dtype=accumulate_dtype)
         return (decoded_images,)
 
 
     @classmethod
     def execute(cls, *, latent: dict, latent_type: str, dtype: str, parallel_mode: bool, tileX: int, tileY: int,
-                overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float, clamp_mode: str, time_chunk: int):
+                overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float, clamp_mode: str, time_chunk: int, accumulate_on_cpu: bool, accumulate_dtype: str):
         torch_dtype = cls.get_dtype_from_string(dtype)
+        accumulate_torch_dtype = cls.get_dtype_from_string(accumulate_dtype)
         model, device, model_dtype, vmi = cls.get_taevid_model(latent_type, torch_dtype, clamp_mode)
         samples = latent["samples"].detach().to(device=device, dtype=torch_dtype if torch_dtype != torch.float16 else torch.float16, copy=True)
         samples = vmi.latent_format().process_in(samples)
@@ -230,7 +245,9 @@ class VTS_TAEVideoDecode(VTS_TAEVideoNodeBase):
                     blend_mode=blend_mode,
                     blend_exp=blend_exp,
                     min_border_fraction=min_border_fraction,
-                    time_chunk=time_chunk
+                    time_chunk=time_chunk,
+                    accumulate_on_cpu=accumulate_on_cpu,
+                    accumulate_dtype=accumulate_torch_dtype,
                 )
             else:
                 img = model.decode(
@@ -262,7 +279,7 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
 
     @classmethod
     def go(cls, *, image: torch.Tensor, latent_type: str, dtype: str, parallel_mode: bool, batch_window_size: int, # overlap_frames: int,
-            tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float, clamp_mode: str) -> tuple:
+            tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float, clamp_mode: str, accumulate_on_cpu: bool, accumulate_dtype: str) -> tuple:
         # decode images in batch_window_size sized batches with overlap
         total_items, image_height, image_width, C = image.shape
         encoded_latents = None  # Initialize as None instead of list
@@ -271,7 +288,7 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
         encoded_latents = cls.execute(image=image, latent_type=latent_type, dtype=dtype, parallel_mode=parallel_mode,
                                   tileX=tileX, tileY=tileY, overlapX=overlapX, overlapY=overlapY, use_tiled=use_tiled,
                                   blend_mode=blend_mode, blend_exp=blend_exp, min_border_fraction=min_border_fraction, clamp_mode=clamp_mode,
-                                  time_chunk=batch_window_size)
+                                  time_chunk=batch_window_size, accumulate_on_cpu=accumulate_on_cpu, accumulate_dtype=accumulate_dtype)
          # No concatenation step needed anymore
         print(f"Final encoded latents shape: {encoded_latents.shape}")
 
@@ -279,8 +296,9 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
 
     @classmethod
     def execute(cls, *, image: torch.Tensor, latent_type: str, dtype: str, parallel_mode: bool,
-                 tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float, clamp_mode: str, time_chunk: int) -> torch.Tensor:
+                 tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float, clamp_mode: str, time_chunk: int, accumulate_on_cpu: bool, accumulate_dtype: str) -> torch.Tensor:
         torch_dtype = cls.get_dtype_from_string(dtype)
+        accumulate_torch_dtype = cls.get_dtype_from_string(accumulate_dtype)
         model, device, model_dtype, vmi = cls.get_taevid_model(latent_type, torch_dtype, clamp_mode)
         image = image.detach().to(device=device, dtype=torch_dtype if torch_dtype != torch.float16 else torch.float16, copy=True)
         if image.ndim < 5:
@@ -311,7 +329,9 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
                     blend_exp=blend_exp,
                     min_border_fraction=min_border_fraction,
                     time_chunk=time_chunk,
-                    temporal_compression=vmi.temporal_compression  # NEW: pass compression info
+                    temporal_compression=vmi.temporal_compression,  # NEW: pass compression info
+                    accumulate_on_cpu=accumulate_on_cpu,
+                    accumulate_dtype=accumulate_torch_dtype,
                 ).transpose(1, 2)
             else:
                 # For non-tiled, we still need to pad the whole video

@@ -505,6 +505,7 @@ class TAEVid(nn.Module):
         mem_states_dtype: torch.dtype | None = torch.float16,  # NEW: compress mem states
         collect_ipc: bool = False,                     # NEW: call torch.cuda.ipc_collect()
         accumulate_on_cpu: bool = False,               # NEW: accumulate tile results on CPU to save VRAM
+        accumulate_dtype: torch.dtype = torch.float32, # NEW: precision for accumulation buffers
     ) -> torch.Tensor:
         """
         Tiled spatial decode of latent video tensor with optional temporal chunking.
@@ -513,6 +514,9 @@ class TAEVid(nn.Module):
         
         accumulate_on_cpu: If True, accumulate tile results on CPU to save GPU memory.
                           Trades CPU memory and CPU-GPU transfer time for VRAM savings.
+        accumulate_dtype: Data type for internal accumulation buffers. 
+                         Use torch.float16 to save memory (both GPU and CPU).
+                         Default torch.float32 for maximum precision.
         """
         if x.ndim != 5:
             raise ValueError("Expected latent tensor shape (N,T,C,H,W)")
@@ -535,6 +539,7 @@ class TAEVid(nn.Module):
                 return_tile_mem=False,
                 trim_leading=True,
                 accumulate_on_cpu=accumulate_on_cpu,
+                accumulate_dtype=accumulate_dtype,
             )
             return decoded
 
@@ -593,6 +598,7 @@ class TAEVid(nn.Module):
                     return_tile_mem=True,
                     trim_leading=(chunk_idx == 0),  # only first chunk trims warm-up
                     accumulate_on_cpu=accumulate_on_cpu,
+                    accumulate_dtype=accumulate_dtype,
                 )
                 
                 # Optionally offload memory states to CPU and compress dtype
@@ -625,6 +631,7 @@ class TAEVid(nn.Module):
                     return_tile_mem=False,
                     trim_leading=(chunk_idx == 0),
                     accumulate_on_cpu=accumulate_on_cpu,
+                    accumulate_dtype=accumulate_dtype,
                 )
 
             # Offload decoded chunk to CPU if requested
@@ -678,6 +685,7 @@ class TAEVid(nn.Module):
         return_tile_mem: bool = False,
         trim_leading: bool = True,   # NEW: whether to remove initial frames_to_trim
         accumulate_on_cpu: bool = False,  # NEW: accumulate tile results on CPU to save VRAM
+        accumulate_dtype: torch.dtype = torch.float32,  # NEW: precision for accumulation buffers
     ) -> torch.Tensor | tuple[torch.Tensor, list[list[torch.Tensor | None] | None]]:
         """
         Core function for a single latent temporal slice decode.
@@ -685,6 +693,8 @@ class TAEVid(nn.Module):
         
         accumulate_on_cpu: If True, accumulate tile results on CPU to save GPU memory.
                           Trades CPU memory and CPU-GPU transfer time for VRAM savings.
+        accumulate_dtype: Data type for accumulation tensors (e.g., torch.float16 to save memory).
+                         Works for both CPU and GPU accumulation.
         """
         compute_device = torch.device(device) if device is not None else x.device
         N, T_in_lat, C_lat, H_lat, W_lat = x.shape
@@ -746,15 +756,14 @@ class TAEVid(nn.Module):
 
         # Choose accumulation device based on setting
         acc_device = torch.device('cpu') if accumulate_on_cpu else compute_device
-        acc_dtype = torch.float32
         values = torch.zeros(
             (N, T_out_chunk, C_img, H_out, W_out),
-            dtype=acc_dtype,
+            dtype=accumulate_dtype,
             device=acc_device,
         )
         weight = torch.zeros(
             (N, T_out_chunk, 1, H_out, W_out),
-            dtype=acc_dtype,
+            dtype=accumulate_dtype,
             device=acc_device,
         )
 
@@ -827,9 +836,9 @@ class TAEVid(nn.Module):
 
                 # Handle accumulation based on device choice
                 if accumulate_on_cpu:
-                    # Move results to CPU for accumulation
-                    dec_cpu = dec.cpu()
-                    mask_cpu = mask.cpu()
+                    # Move results to CPU for accumulation, convert to accumulation dtype
+                    dec_cpu = dec.to(device='cpu', dtype=accumulate_dtype)
+                    mask_cpu = mask.to(device='cpu', dtype=accumulate_dtype)
                     
                     # Accumulate on CPU
                     values[:, :, :, out_y0:out_y1, out_x0:out_x1] += dec_cpu * mask_cpu
@@ -838,9 +847,14 @@ class TAEVid(nn.Module):
                     # Clean up CPU tensors
                     del dec_cpu, mask_cpu
                 else:
-                    # Original GPU accumulation
-                    values[:, :, :, out_y0:out_y1, out_x0:out_x1] += dec * mask
-                    weight[:, :, :, out_y0:out_y1, out_x0:out_x1] += mask
+                    # GPU accumulation with specified dtype
+                    dec_acc = dec.to(dtype=accumulate_dtype)
+                    mask_acc = mask.to(dtype=accumulate_dtype)
+                    
+                    values[:, :, :, out_y0:out_y1, out_x0:out_x1] += dec_acc * mask_acc
+                    weight[:, :, :, out_y0:out_y1, out_x0:out_x1] += mask_acc
+                    
+                    del dec_acc, mask_acc
                 
                 # Clean up GPU tensors
                 del dec, mask
@@ -876,6 +890,8 @@ class TAEVid(nn.Module):
         offload_mem_states_to_cpu: bool = False,       # NEW: move continuity states to CPU between chunks
         mem_states_dtype: torch.dtype | None = torch.float16,  # NEW: compress mem states
         collect_ipc: bool = False,                     # NEW: call torch.cuda.ipc_collect()
+        accumulate_on_cpu: bool = False,               # NEW: accumulate tile results on CPU to save VRAM
+        accumulate_dtype: torch.dtype = torch.float32, # NEW: precision for accumulation buffers
     ) -> torch.Tensor:
         """
         Tiled spatial encode with optional temporal chunking and per-tile continuity.
@@ -896,6 +912,12 @@ class TAEVid(nn.Module):
             
         collect_ipc:
             If True, call torch.cuda.ipc_collect() for additional memory cleanup.
+        
+        accumulate_on_cpu: If True, accumulate tile results on CPU to save GPU memory.
+                          Trades CPU memory and CPU-GPU transfer time for VRAM savings.
+        accumulate_dtype: Data type for internal accumulation buffers. 
+                         Use torch.float16 to save memory (both GPU and CPU).
+                         Default torch.float32 for maximum precision.
         """
         if x.ndim != 5:
             raise ValueError("Expected input shape (N,T,C,H,W)")
@@ -918,6 +940,8 @@ class TAEVid(nn.Module):
                 tile_mem_in=None,
                 return_tile_mem=False,
                 temporal_compression=temporal_compression,
+                accumulate_on_cpu=accumulate_on_cpu,
+                accumulate_dtype=accumulate_dtype,
             )
 
         print(f"Starting encoding of {N} images with tile size ({pixel_tile_size_x},{pixel_tile_size_y}), stride ({pixel_tile_stride_x},{pixel_tile_stride_y}) and time chunk {time_chunk}")
@@ -995,6 +1019,8 @@ class TAEVid(nn.Module):
                     tile_mem_in=tile_mem_states,
                     return_tile_mem=True,
                     temporal_compression=temporal_compression,
+                    accumulate_on_cpu=accumulate_on_cpu,
+                    accumulate_dtype=accumulate_dtype,
                 )
                 
                 # Optionally offload memory states to CPU and compress dtype
@@ -1026,6 +1052,8 @@ class TAEVid(nn.Module):
                     tile_mem_in=None,
                     return_tile_mem=False,
                     temporal_compression=temporal_compression,
+                    accumulate_on_cpu=accumulate_on_cpu,
+                    accumulate_dtype=accumulate_dtype,
                 )
 
             # Offload encoded chunk to CPU if requested
@@ -1077,12 +1105,19 @@ class TAEVid(nn.Module):
         tile_mem_in: list[list[torch.Tensor | None] | None] | None = None,  # per-tile mem
         return_tile_mem: bool = False,
         temporal_compression: int | None = None,  # NEW: for chunk-wise padding
+        accumulate_on_cpu: bool = False,  # NEW: accumulate tile results on CPU to save VRAM
+        accumulate_dtype: torch.dtype = torch.float32,  # NEW: precision for accumulation buffers
     ) -> torch.Tensor | tuple[torch.Tensor, list[list[torch.Tensor | None] | None]]:
         """
         Core encode tiling over a temporal slice.
         tile_mem_in: list indexed by tile_id -> per-layer mem list (or None)
         return_tile_mem: return updated per-tile mem (MemBlock states of last timestep for each tile)
         temporal_compression: if provided, pad this chunk to be divisible by this factor
+        
+        accumulate_on_cpu: If True, accumulate tile results on CPU to save GPU memory.
+                          Trades CPU memory and CPU-GPU transfer time for VRAM savings.
+        accumulate_dtype: Data type for accumulation tensors (e.g., torch.float16 to save memory).
+                         Works for both CPU and GPU accumulation.
         """
         compute_device = torch.device(device) if device is not None else x.device
         N, T_in, C_img, H, W = x.shape
@@ -1149,9 +1184,10 @@ class TAEVid(nn.Module):
         W_lat_full = W // spatial_factor
         print(f"[TAEVid encode_tiled] spatial_factor={spatial_factor} H={H} W={W} H_lat_full={H_lat_full} W_lat_full={W_lat_full}")
 
-        acc_dtype = torch.float32
-        values = torch.zeros((N, T_enc, C_lat, H_lat_full, W_lat_full), dtype=acc_dtype, device=compute_device)
-        weight = torch.zeros((N, T_enc, 1, H_lat_full, W_lat_full), dtype=acc_dtype, device=compute_device)
+        # Choose accumulation device based on setting
+        acc_device = torch.device('cpu') if accumulate_on_cpu else compute_device
+        values = torch.zeros((N, T_enc, C_lat, H_lat_full, W_lat_full), dtype=accumulate_dtype, device=acc_device)
+        weight = torch.zeros((N, T_enc, 1, H_lat_full, W_lat_full), dtype=accumulate_dtype, device=acc_device)
 
         overlap_y_pix = max(pixel_tile_size_y - pixel_tile_stride_y, 0)
         overlap_x_pix = max(pixel_tile_size_x - pixel_tile_stride_x, 0)
@@ -1214,11 +1250,37 @@ class TAEVid(nn.Module):
                     min_border_fraction=min_border_fraction,
                 ).to(enc_tile.device, enc_tile.dtype)
 
-                values[:, :, :, y_lat0:y_lat1, x_lat0:x_lat1] += enc_tile * mask
-                weight[:, :, :, y_lat0:y_lat1, x_lat0:x_lat1] += mask
+                # Handle accumulation based on device choice
+                if accumulate_on_cpu:
+                    # Move results to CPU for accumulation, convert to accumulation dtype
+                    enc_cpu = enc_tile.to(device='cpu', dtype=accumulate_dtype)
+                    mask_cpu = mask.to(device='cpu', dtype=accumulate_dtype)
+                    
+                    # Accumulate on CPU
+                    values[:, :, :, y_lat0:y_lat1, x_lat0:x_lat1] += enc_cpu * mask_cpu
+                    weight[:, :, :, y_lat0:y_lat1, x_lat0:x_lat1] += mask_cpu
+                    
+                    # Clean up CPU tensors
+                    del enc_cpu, mask_cpu
+                else:
+                    # GPU accumulation with specified dtype
+                    enc_acc = enc_tile.to(dtype=accumulate_dtype)
+                    mask_acc = mask.to(dtype=accumulate_dtype)
+                    
+                    values[:, :, :, y_lat0:y_lat1, x_lat0:x_lat1] += enc_acc * mask_acc
+                    weight[:, :, :, y_lat0:y_lat1, x_lat0:x_lat1] += mask_acc
+                    
+                    del enc_acc, mask_acc
+                
+                # Clean up GPU tensors
+                del enc_tile, mask
 
         weight.clamp_(min=1e-6)
         encoded = (values / weight).to(dtype=x.dtype)
+        
+        # Move final result back to compute device if accumulated on CPU
+        if accumulate_on_cpu and compute_device.type == 'cuda':
+            encoded = encoded.to(compute_device)
 
         if return_tile_mem:
             return encoded, updated_tile_mem
