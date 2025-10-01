@@ -838,6 +838,10 @@ class TAEVid(nn.Module):
         time_chunk: int | None = None,
         keep_temporal_continuity: bool = True,   # NEW: maintain per-tile MemBlock state across chunks
         temporal_compression: int | None = None,  # NEW: for chunk-wise padding
+        offload_chunk_to_cpu: bool = True,             # NEW: move each encoded time chunk off GPU
+        offload_mem_states_to_cpu: bool = False,       # NEW: move continuity states to CPU between chunks
+        mem_states_dtype: torch.dtype | None = torch.float16,  # NEW: compress mem states
+        collect_ipc: bool = False,                     # NEW: call torch.cuda.ipc_collect()
     ) -> torch.Tensor:
         """
         Tiled spatial encode with optional temporal chunking and per-tile continuity.
@@ -846,6 +850,18 @@ class TAEVid(nn.Module):
             If True and time_chunk is set, preserves MemBlock past activations separately
             for each spatial tile across chunks. Prevents shape mismatches and keeps
             causal continuity. If False, each chunk starts fresh (lower memory, small quality loss).
+        
+        offload_chunk_to_cpu:
+            If True, move each encoded time chunk to CPU after processing to save GPU memory.
+            
+        offload_mem_states_to_cpu:
+            If True, move MemBlock continuity states to CPU between chunks.
+            
+        mem_states_dtype:
+            Optional dtype to compress memory states (e.g., torch.float16).
+            
+        collect_ipc:
+            If True, call torch.cuda.ipc_collect() for additional memory cleanup.
         """
         if x.ndim != 5:
             raise ValueError("Expected input shape (N,T,C,H,W)")
@@ -946,6 +962,20 @@ class TAEVid(nn.Module):
                     return_tile_mem=True,
                     temporal_compression=temporal_compression,
                 )
+                
+                # Optionally offload memory states to CPU and compress dtype
+                if offload_mem_states_to_cpu and tile_mem_states is not None:
+                    for i, tile_state in enumerate(tile_mem_states):
+                        if tile_state is None:
+                            continue
+                        for li, layer_mem in enumerate(tile_state):
+                            if layer_mem is not None:
+                                # Compress dtype if requested
+                                if mem_states_dtype is not None and layer_mem.dtype != mem_states_dtype:
+                                    layer_mem = layer_mem.to(mem_states_dtype)
+                                # Move to CPU
+                                tile_state[li] = layer_mem.cpu()
+                        tile_mem_states[i] = tile_state
             else:
                 enc_chunk = self._encode_tiled_core(
                     x_chunk,
@@ -963,14 +993,38 @@ class TAEVid(nn.Module):
                     return_tile_mem=False,
                     temporal_compression=temporal_compression,
                 )
-            encoded_chunks.append(enc_chunk)
+
+            # Offload encoded chunk to CPU if requested
+            if offload_chunk_to_cpu:
+                if isinstance(enc_chunk, tuple):
+                    # Handle case where enc_chunk might be a tuple (shouldn't happen but be safe)
+                    enc_chunk_cpu = enc_chunk[0].cpu()
+                else:
+                    enc_chunk_cpu = enc_chunk.cpu()
+                encoded_chunks.append(enc_chunk_cpu)
+                del enc_chunk_cpu
+            else:
+                encoded_chunks.append(enc_chunk)
+
+            # Explicit cleanup
             del x_chunk, enc_chunk
             start = end
             chunk_index += 1
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                if collect_ipc:
+                    torch.cuda.ipc_collect()
 
-        return torch.cat(encoded_chunks, dim=1)
+        # Final concatenate (on CPU if offloaded, move back to target device if needed)
+        out = torch.cat(encoded_chunks, dim=1)
+        if not offload_chunk_to_cpu or device is None:
+            return out
+        
+        # Move final result back to target device if user specified a CUDA device
+        target_device = torch.device(device) if isinstance(device, str) else device
+        if target_device is not None and target_device.type == "cuda":
+            out = out.to(target_device)
+        return out
     
     def _encode_tiled_core(
         self,
@@ -1084,6 +1138,12 @@ class TAEVid(nn.Module):
                 # Per-tile mem list (only for MemBlocks) passed as mem_in
                 mem_in_this = tile_mem_in[tile_id] if (tile_mem_in is not None and tile_mem_in[tile_id] is not None) else None
 
+                # Move memory states from CPU back to GPU if they were offloaded
+                if mem_in_this is not None:
+                    for li, layer_mem in enumerate(mem_in_this):
+                        if layer_mem is not None and layer_mem.device.type == "cpu":
+                            mem_in_this[li] = layer_mem.to(compute_device, non_blocking=True)
+
                 if return_tile_mem:
                     enc_tile, mem_out_tile = self.apply(
                         pixel_tile, decode=False, parallel=True,
@@ -1093,7 +1153,7 @@ class TAEVid(nn.Module):
                 else:
                     enc_tile = self.apply(
                         pixel_tile, decode=False, parallel=True,
-                        show_progress=False, mem_in=None, return_mem=False
+                        show_progress=False, mem_in=mem_in_this, return_mem=False
                     )
 
                 del pixel_tile
