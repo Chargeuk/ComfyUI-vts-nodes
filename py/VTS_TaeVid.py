@@ -300,7 +300,9 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
         torch_dtype = cls.get_dtype_from_string(dtype)
         accumulate_torch_dtype = cls.get_dtype_from_string(accumulate_dtype)
         model, device, model_dtype, vmi = cls.get_taevid_model(latent_type, torch_dtype, clamp_mode)
-        image = image.detach().to(device=device, dtype=torch_dtype if torch_dtype != torch.float16 else torch.float16, copy=True)
+        
+        # Keep image on CPU initially to avoid OOM - let chunked processing handle device transfers
+        image = image.detach()
         if image.ndim < 5:
             image = image.unsqueeze(0)
         if image.ndim < 5:
@@ -332,9 +334,10 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
                     temporal_compression=vmi.temporal_compression,  # NEW: pass compression info
                     accumulate_on_cpu=accumulate_on_cpu,
                     accumulate_dtype=accumulate_torch_dtype,
+                    device=device,  # Pass device to encode_tiled for proper chunking
                 ).transpose(1, 2)
             else:
-                # For non-tiled, we still need to pad the whole video
+                # For non-tiled, we still need to pad and move to GPU
                 add_frames = (
                     math.ceil(frames / vmi.temporal_compression) * vmi.temporal_compression
                     - frames
@@ -346,6 +349,9 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
                     del last_frame, padding
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
+                
+                # Move to GPU only for non-tiled processing
+                image = image.to(device=device, dtype=torch_dtype if torch_dtype != torch.float16 else torch.float16)
                 
                 latent = model.encode(
                     image[..., :3].movedim(-1, 2),

@@ -728,7 +728,7 @@ class TAEVid(nn.Module):
 
         tiles_x = len(set(t[2] for t in tasks))
         tiles_y = len(set(t[0] for t in tasks))
-        print(f"Decode tiling: {tiles_x} tiles in X, {tiles_y} tiles in Y (chunk latent T={T_in_lat})")
+        print(f"Decode tiling: {tiles_x} tiles in X, {tiles_y} tiles in Y (chunk latent T={T_in_lat}), show_progress={show_progress}")
 
         # Probe first tile (shape inference)
         with torch.no_grad():
@@ -1010,7 +1010,7 @@ class TAEVid(nn.Module):
                     pixel_tile_size_y,
                     pixel_tile_stride_x,
                     pixel_tile_stride_y,
-                    show_progress=show_progress and (chunk_index == 0),
+                    show_progress=show_progress, # and (chunk_index == 0),
                     device=device,
                     blend_mode=blend_mode,
                     blend_exp=blend_exp,
@@ -1043,7 +1043,7 @@ class TAEVid(nn.Module):
                     pixel_tile_size_y,
                     pixel_tile_stride_x,
                     pixel_tile_stride_y,
-                    show_progress=show_progress and (chunk_index == 0),
+                    show_progress=show_progress, # and (chunk_index == 0),
                     device=device,
                     blend_mode=blend_mode,
                     blend_exp=blend_exp,
