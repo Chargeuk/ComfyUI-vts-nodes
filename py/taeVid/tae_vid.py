@@ -500,6 +500,10 @@ class TAEVid(nn.Module):
         min_border_fraction: float = 0.0,
         time_chunk: int | None = None,                 # NEW: latent-time chunk length (in latent frames)
         keep_temporal_continuity: bool = True,         # NEW: preserve per-tile MemBlock states
+        offload_chunk_to_cpu: bool = True,             # NEW: move each decoded time chunk off GPU
+        offload_mem_states_to_cpu: bool = False,       # NEW: move continuity states to CPU between chunks
+        mem_states_dtype: torch.dtype | None = torch.float16,  # NEW: compress mem states
+        collect_ipc: bool = False,                     # NEW: call torch.cuda.ipc_collect()
     ) -> torch.Tensor:
         """
         Tiled spatial decode of latent video tensor with optional temporal chunking.
@@ -584,6 +588,20 @@ class TAEVid(nn.Module):
                     return_tile_mem=True,
                     trim_leading=(chunk_idx == 0),  # only first chunk trims warm-up
                 )
+                
+                # Optionally offload memory states to CPU and compress dtype
+                if offload_mem_states_to_cpu and tile_mem_states is not None:
+                    for i, tile_state in enumerate(tile_mem_states):
+                        if tile_state is None:
+                            continue
+                        for li, layer_mem in enumerate(tile_state):
+                            if layer_mem is not None:
+                                # Compress dtype if requested
+                                if mem_states_dtype is not None and layer_mem.dtype != mem_states_dtype:
+                                    layer_mem = layer_mem.to(mem_states_dtype)
+                                # Move to CPU
+                                tile_state[li] = layer_mem.cpu()
+                        tile_mem_states[i] = tile_state
             else:
                 dec_chunk = self._decode_tiled_core(
                     x_chunk,
@@ -601,14 +619,39 @@ class TAEVid(nn.Module):
                     return_tile_mem=False,
                     trim_leading=(chunk_idx == 0),
                 )
-            decoded_chunks.append(dec_chunk)
+
+            # Offload decoded chunk to CPU if requested
+            if offload_chunk_to_cpu:
+                if isinstance(dec_chunk, tuple):
+                    # Handle case where dec_chunk might be a tuple (shouldn't happen but be safe)
+                    dec_chunk_cpu = dec_chunk[0].cpu()
+                else:
+                    dec_chunk_cpu = dec_chunk.cpu()
+                decoded_chunks.append(dec_chunk_cpu)
+                del dec_chunk_cpu
+            else:
+                decoded_chunks.append(dec_chunk)
+
+            # Explicit cleanup
             del x_chunk, dec_chunk
-            start = end
-            chunk_idx += 1
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                if collect_ipc:
+                    torch.cuda.ipc_collect()
 
-        return torch.cat(decoded_chunks, dim=1)
+            start = end
+            chunk_idx += 1
+
+        # Final concatenate (on CPU if offloaded, move back to target device if needed)
+        out = torch.cat(decoded_chunks, dim=1)
+        if not offload_chunk_to_cpu or device is None:
+            return out
+        
+        # Move final result back to target device if user specified a CUDA device
+        target_device = torch.device(device) if isinstance(device, str) else device
+        if target_device is not None and target_device.type == "cuda":
+            out = out.to(target_device)
+        return out
 
     def _decode_tiled_core(
         self,
@@ -717,6 +760,12 @@ class TAEVid(nn.Module):
             for tile_id, (y0, y1, x0, x1) in enumerate(iterator):
                 latent_tile = x[:, :, :, y0:y1, x0:x1].to(compute_device)
                 mem_in_this = tile_mem_in[tile_id] if (tile_mem_in is not None and tile_mem_in[tile_id] is not None) else None
+
+                # Move memory states from CPU back to GPU if they were offloaded
+                if mem_in_this is not None:
+                    for li, layer_mem in enumerate(mem_in_this):
+                        if layer_mem is not None and layer_mem.device.type == "cpu":
+                            mem_in_this[li] = layer_mem.to(compute_device, non_blocking=True)
 
                 if return_tile_mem:
                     dec_full, mem_out_tile = self.apply(
