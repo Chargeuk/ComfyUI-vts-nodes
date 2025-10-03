@@ -52,7 +52,7 @@ class VTS_TAEVideoNodeBase:
                         "default": 128,
                         "tooltip": "The tile size in X. Should be 128 for decoding and 160 for encoding to reduce artifacts.",
                         "min": 0,
-                        "step": 32,
+                        "step": 16,
                     },
                 ),
                 "tileY": (
@@ -61,7 +61,7 @@ class VTS_TAEVideoNodeBase:
                         "default": 128,
                         "tooltip": "The tile size in Y. Should be 128 for decoding and 160 for encoding to reduce artifacts.",
                         "min": 0,
-                        "step": 32,
+                        "step": 16,
                     },
                 ),
                 "overlapX": (
@@ -70,7 +70,7 @@ class VTS_TAEVideoNodeBase:
                         "default": 64,
                         "tooltip": "The overlap size in X (the gap between the previous X start and the next). Should be 64 for decoding and 96 for encoding to reduce artifacts.",
                         "min": 0,
-                        "step": 32,
+                        "step": 16,
                     },
                 ),
                 "overlapY": (
@@ -79,7 +79,7 @@ class VTS_TAEVideoNodeBase:
                         "default": 64,
                         "tooltip": "The overlap size in Y (the gap between the previous Y start and the next). Should be 64 for decoding and 96 for encoding to reduce artifacts.",
                         "min": 0,
-                        "step": 32,
+                        "step": 16,
                     },
                 ),
                  "use_tiled": (

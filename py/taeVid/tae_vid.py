@@ -543,15 +543,22 @@ class TAEVid(nn.Module):
             )
             return decoded
 
+        # Calculate actual spatial compression factor instead of hardcoding 32
+        spatial_factor = (2 ** sum(
+            (m.scale_factor == 2) for m in self.decoder if isinstance(m, nn.Upsample)
+        ))
+        if self.patch_size > 1:
+            spatial_factor *= self.patch_size
+        print(f"Spatial compression factor: {spatial_factor}")
         # Build latent-space tiling tasks once
-        if (pixel_tile_size_x % 32 != 0 or pixel_tile_size_y % 32 != 0 or
-            pixel_tile_stride_x % 32 != 0 or pixel_tile_stride_y % 32 != 0):
-            raise ValueError("Pixel tile sizes and strides must be multiples of 32")
+        if (pixel_tile_size_x % spatial_factor != 0 or pixel_tile_size_y % spatial_factor != 0 or
+            pixel_tile_stride_x % spatial_factor != 0 or pixel_tile_stride_y % spatial_factor != 0):
+            raise ValueError(f"Pixel tile sizes and strides must be multiples of {spatial_factor}")
 
-        tile_size_x = pixel_tile_size_x // 32
-        tile_size_y = pixel_tile_size_y // 32
-        tile_stride_x = pixel_tile_stride_x // 32
-        tile_stride_y = pixel_tile_stride_y // 32
+        tile_size_x = pixel_tile_size_x // spatial_factor
+        tile_size_y = pixel_tile_size_y // spatial_factor
+        tile_stride_x = pixel_tile_stride_x // spatial_factor
+        tile_stride_y = pixel_tile_stride_y // spatial_factor
         _, _, _, H_lat, W_lat = x.shape
 
         tasks: list[tuple[int,int,int,int]] = []
@@ -699,15 +706,22 @@ class TAEVid(nn.Module):
         compute_device = torch.device(device) if device is not None else x.device
         N, T_in_lat, C_lat, H_lat, W_lat = x.shape
 
-        # Validate multiples (same as outer)
-        if (pixel_tile_size_x % 32 != 0 or pixel_tile_size_y % 32 != 0 or
-            pixel_tile_stride_x % 32 != 0 or pixel_tile_stride_y % 32 != 0):
-            raise ValueError("Pixel tile sizes and strides must be multiples of 32")
+        # Calculate actual spatial compression factor instead of hardcoding 32
+        spatial_factor = (2 ** sum(
+            (m.scale_factor == 2) for m in self.decoder if isinstance(m, nn.Upsample)
+        ))
+        if self.patch_size > 1:
+            spatial_factor *= self.patch_size
 
-        tile_size_x = pixel_tile_size_x // 32
-        tile_size_y = pixel_tile_size_y // 32
-        tile_stride_x = pixel_tile_stride_x // 32
-        tile_stride_y = pixel_tile_stride_y // 32
+        # Validate multiples
+        if (pixel_tile_size_x % spatial_factor != 0 or pixel_tile_size_y % spatial_factor != 0 or
+            pixel_tile_stride_x % spatial_factor != 0 or pixel_tile_stride_y % spatial_factor != 0):
+            raise ValueError(f"Pixel tile sizes and strides must be multiples of {spatial_factor}")
+
+        tile_size_x = pixel_tile_size_x // spatial_factor
+        tile_size_y = pixel_tile_size_y // spatial_factor
+        tile_stride_x = pixel_tile_stride_x // spatial_factor
+        tile_stride_y = pixel_tile_stride_y // spatial_factor
 
         # Tasks
         if tasks_override is None:
