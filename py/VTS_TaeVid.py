@@ -23,6 +23,7 @@ from tae_vid import TAEVid
 class VTS_TAEVideoNodeBase:
     FUNCTION = "go"
     CATEGORY = "latent"
+    model = None
 
     @classmethod
     def INPUT_TYPES(cls) -> dict:
@@ -164,16 +165,17 @@ class VTS_TAEVideoNodeBase:
             raise RuntimeError(err_string)
         device = model_management.vae_device()
         # Keep weights in fp32 (training style); runtime autocast will handle fp16
-        model = TAEVid(checkpoint_path=tae_model_path, vmi=vmi, device=device, clamp_mode=clamp_mode).to(device=device, dtype=torch.float32)
+        if not cls.model:
+            cls.model = TAEVid(checkpoint_path=tae_model_path, vmi=vmi, device=device, clamp_mode=clamp_mode).to(device=device, dtype=torch.float32)
         return (
-            model,
+            cls.model,
             device,
             dtype,  # requested runtime dtype
             vmi,
         )
 
-    @classmethod
-    def get_dtype_from_string(cls, dtype_str: str) -> torch.dtype:
+    @staticmethod
+    def get_dtype_from_string(dtype_str: str) -> torch.dtype:
         """Convert string dtype to torch.dtype"""
         dtype_map = {
             "float32": torch.float32,
