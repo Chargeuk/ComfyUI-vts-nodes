@@ -65,6 +65,13 @@ class VTS_Images_ScaleToMin:
         if abs(old_aspect - new_aspect) < 1e-6:
             print("Aspect ratios are essentially equal - forcing crop='disabled'")
             crop = "disabled"
+
+        # Force safer upscale methods for large downscaling operations
+        if (original_width * original_height > 1000000 and  # > 1MP
+            width * height < original_width * original_height and  # downscaling
+            upscale_method == "bilinear"):
+            print(f"VTS_Images_ScaleToMin - large downscale detected, using area instead of bilinear")
+            upscale_method = "area"  # Much safer for downscaling
         try:
             # Move dimensions for processing
             samples = image.movedim(-1, 1)
