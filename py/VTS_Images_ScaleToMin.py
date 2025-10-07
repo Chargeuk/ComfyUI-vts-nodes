@@ -58,14 +58,27 @@ class VTS_Images_ScaleToMin:
             return (image,)
 
         print(f"VTS_Images_ScaleToMin - scaling from {original_width}x{original_height} to {width}x{height}")
+        old_aspect = original_width / original_height
+        new_aspect = width / height
+        print(f"Aspect ratios - old: {old_aspect:.10f}, new: {new_aspect:.10f}, diff: {abs(old_aspect - new_aspect):.2e}")
 
-        # Move dimensions for processing
-        samples = image.movedim(-1, 1)
-        # Perform the upscale
-        s = comfy.utils.common_upscale(samples, width, height, upscale_method, crop)
-        s = s.movedim(1, -1)
-        
-        return (s,)
+        if abs(old_aspect - new_aspect) < 1e-6:
+            print("Aspect ratios are essentially equal - forcing crop='disabled'")
+            crop = "disabled"
+        try:
+            # Move dimensions for processing
+            samples = image.movedim(-1, 1)
+            print(f"VTS_Images_ScaleToMin - moved dimensions for processing")
+            # Perform the upscale
+            s = comfy.utils.common_upscale(samples, width, height, upscale_method, crop)
+            print(f"VTS_Images_ScaleToMin - completed upscale")
+            s = s.movedim(1, -1)
+            print(f"VTS_Images_ScaleToMin - moved dimensions back to original")
+            
+            return (s,)
+        except Exception as e:
+            print(f"VTS_Images_ScaleToMin - error during scaling: {e}. returning original image")
+            return (image,)
 
     def getSmallDimensions(self, original_width, original_height, smallMaxSize, largeMaxSize, new_largest_side, new_smallest_side):
         if new_largest_side <= largeMaxSize:
