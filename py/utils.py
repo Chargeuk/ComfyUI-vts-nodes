@@ -28,19 +28,25 @@ def get_mask_aabb(masks):
     return bounding_boxes, is_empty
 
 
-def save_images_to_png(image_tensor, prefix="image", start_sequence=0, output_dir="./output"):
+def save_images(image_tensor, prefix="image", start_sequence=0, output_dir="./output", format="png"):
     """
-    Save a ComfyUI image tensor to disk as lossless PNG images.
+    Save a ComfyUI image tensor to disk as lossless PNG or WebP images.
     
     Args:
         image_tensor (torch.Tensor): ComfyUI image tensor with shape (batch, height, width, channels)
         prefix (str): Prefix for the filename
         start_sequence (int): Starting sequence number
         output_dir (str): Directory to save images to
+        format (str): Image format - "png" or "webp" (lossless)
     
     Returns:
         list: List of saved file paths
     """
+    # Validate format
+    format = format.lower()
+    if format not in ["png", "webp"]:
+        raise ValueError(f"Unsupported format: {format}. Must be 'png' or 'webp'")
+    
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
     
@@ -61,10 +67,10 @@ def save_images_to_png(image_tensor, prefix="image", start_sequence=0, output_di
     for i, image_np in enumerate(images_np):
         # Generate filename with sequence number
         sequence_num = start_sequence + i
-        filename = f"{prefix}_{sequence_num:06d}.png"
+        filename = f"{prefix}_{sequence_num:06d}.{format}"
         filepath = os.path.join(output_dir, filename)
         
-        # Convert to PIL Image and save as PNG (lossless)
+        # Convert to PIL Image and save
         if image_np.shape[-1] == 3:  # RGB
             pil_image = Image.fromarray(image_np, mode='RGB')
         elif image_np.shape[-1] == 4:  # RGBA
@@ -74,41 +80,60 @@ def save_images_to_png(image_tensor, prefix="image", start_sequence=0, output_di
         else:
             raise ValueError(f"Unsupported number of channels: {image_np.shape[-1]}")
         
-        # Save as PNG with maximum compression (lossless)
-        pil_image.save(filepath, format='PNG', optimize=True)
+        # Save with format-specific options
+        if format == "png":
+            # PNG: lossless with maximum compression
+            pil_image.save(filepath, format='PNG', optimize=True)
+        elif format == "webp":
+            # WebP: lossless mode
+            pil_image.save(filepath, format='WEBP', lossless=True, quality=100, method=6)
+        
         saved_paths.append(filepath)
         print(f"Saved: {filepath}")
     
     return saved_paths
 
+# Backward compatibility alias
+def save_images_to_png(image_tensor, prefix="image", start_sequence=0, output_dir="./output"):
+    """Deprecated: Use save_images() instead. This is kept for backward compatibility."""
+    return save_images(image_tensor, prefix, start_sequence, output_dir, format="png")
+
+
 # Example usage that would fit your VTS_Images_ScaleToMin class pattern:
-def save_images_to_disk(self, image, prefix="scaled", start_sequence=0, output_dir="./output"):
+def save_images_to_disk(self, image, prefix="scaled", start_sequence=0, output_dir="./output", format="png"):
     """
     Example method to save images after scaling - could be added to your VTS_Images_ScaleToMin class
     """
-    saved_paths = save_images_to_png(image, prefix, start_sequence, output_dir)
+    saved_paths = save_images(image, prefix, start_sequence, output_dir, format)
     print(f"Saved {len(saved_paths)} images to {output_dir}")
     return saved_paths
 
 
-def load_images_from_png(prefix="image", start_sequence=0, count=None, input_dir="./output"):
+def load_images(prefix="image", start_sequence=0, count=None, input_dir="./output", format="png"):
     """
-    Load PNG images from disk into a ComfyUI image tensor.
+    Load PNG or WebP images from disk into a ComfyUI image tensor.
     
     Args:
         prefix (str): Prefix of the filenames to load
         start_sequence (int): Starting sequence number
         count (int): Number of images to load. If None, loads all matching images.
         input_dir (str): Directory to load images from
+        format (str): Image format - "png" or "webp"
     
     Returns:
         torch.Tensor: ComfyUI image tensor with shape (batch, height, width, channels)
     """
+    # Validate format
+    format = format.lower()
+    if format not in ["png", "webp"]:
+        raise ValueError(f"Unsupported format: {format}. Must be 'png' or 'webp'")
+    
     if not os.path.exists(input_dir):
         raise ValueError(f"Input directory does not exist: {input_dir}")
     
     # Find all matching files
     matching_files = []
+    file_extension = f".{format}"
     
     if count is None:
         # Load all files matching the prefix pattern
@@ -117,7 +142,7 @@ def load_images_from_png(prefix="image", start_sequence=0, count=None, input_dir
         
         # Collect all matching files with their sequence numbers
         for filename in all_files:
-            if filename.startswith(pattern_prefix) and filename.endswith('.png'):
+            if filename.startswith(pattern_prefix) and filename.endswith(file_extension):
                 matching_files.append(filename)
         
         # Sort by filename to maintain sequence order
@@ -126,16 +151,16 @@ def load_images_from_png(prefix="image", start_sequence=0, count=None, input_dir
         # Load specific sequence range
         for i in range(count):
             sequence_num = start_sequence + i
-            filename = f"{prefix}_{sequence_num:06d}.png"
+            filename = f"{prefix}_{sequence_num:06d}{file_extension}"
             if os.path.exists(os.path.join(input_dir, filename)):
                 matching_files.append(filename)
             else:
                 print(f"Warning: Expected file not found: {filename}")
     
     if not matching_files:
-        raise ValueError(f"No matching images found with prefix '{prefix}' in {input_dir}")
+        raise ValueError(f"No matching images found with prefix '{prefix}' and format '{format}' in {input_dir}")
     
-    print(f"Loading {len(matching_files)} images from {input_dir}")
+    print(f"Loading {len(matching_files)} {format.upper()} images from {input_dir}")
     
     # Load images
     images = []
@@ -164,6 +189,12 @@ def load_images_from_png(prefix="image", start_sequence=0, count=None, input_dir
     
     print(f"Created tensor with shape: {images_tensor.shape}")
     return images_tensor
+
+
+# Backward compatibility alias
+def load_images_from_png(prefix="image", start_sequence=0, count=None, input_dir="./output"):
+    """Deprecated: Use load_images() instead. This is kept for backward compatibility."""
+    return load_images(prefix, start_sequence, count, input_dir, format="png")
 
 
 def load_images_by_pattern(pattern, input_dir="./output", sort=True):
