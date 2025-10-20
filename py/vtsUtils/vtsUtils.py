@@ -404,6 +404,94 @@ def load_images_by_pattern(pattern, input_dir="./output", sort=True, max_retries
     return images_tensor
 
 
+def transform_images(
+    images,
+    transform_fn,
+    batch_size=80,
+    num_workers=8
+):
+    """
+    Apply a transformation function to images without saving or returning results.
+    Uses a pipeline approach with parallel loading for optimal performance.
+    The transform_fn is called but its return value is discarded.
+    
+    Args:
+        images (DiskImage or torch.Tensor): DiskImage instance or tensor with shape (batch, height, width, channels)
+        transform_fn: Function that takes a tensor (B, H, W, C) and performs some operation.
+                     Return value is ignored.
+        batch_size: Number of images to process at once
+        num_workers: Number of parallel workers for background loading (default 8)
+    
+    Returns:
+        None
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    
+    # Determine if input is a tensor or DiskImage
+    is_tensor = isinstance(images, torch.Tensor)
+    
+    if is_tensor:
+        # Extract metadata from tensor
+        number_of_images = images.shape[0]
+        
+        # Create a simple loader function for tensor batches
+        def load_batch(batch_start, batch_count):
+            batch_end = min(batch_start + batch_count, number_of_images)
+            return images[batch_start:batch_end]
+            
+    else:
+        # Handle DiskImage input
+        number_of_images = images.number_of_images
+        
+        # Create loader function for DiskImage
+        def load_batch(batch_start, batch_count):
+            return images.load_images(start_sequence=images.start_sequence + batch_start, count=batch_count)
+    
+    # Calculate number of batches
+    num_batches = (number_of_images + batch_size - 1) // batch_size
+    
+    # Use executor for background loading
+    with ThreadPoolExecutor(max_workers=num_workers + 1) as executor:
+        # Prefetch first batch
+        next_batch_future = None
+        batch_num = 0
+        
+        for batch_idx in range(0, number_of_images, batch_size):
+            batch_count = min(batch_size, number_of_images - batch_idx)
+            batch_num += 1
+            
+            # If we don't have a prefetch in progress, load synchronously (first iteration)
+            if next_batch_future is None:
+                print(f"Loading batch {batch_num}/{num_batches}")
+                batch_images = load_batch(batch_idx, batch_count)
+            else:
+                # Wait for the prefetched batch to finish loading
+                print(f"Waiting for prefetched batch {batch_num}/{num_batches}")
+                batch_images = next_batch_future.result()
+            
+            # Start loading next batch in background (if there is one)
+            next_batch_idx = batch_idx + batch_size
+            if next_batch_idx < number_of_images:
+                next_batch_count = min(batch_size, number_of_images - next_batch_idx)
+                print(f"Prefetching batch {batch_num + 1}/{num_batches} in background")
+                next_batch_future = executor.submit(
+                    load_batch,
+                    next_batch_idx,
+                    next_batch_count
+                )
+            else:
+                next_batch_future = None
+            
+            # Transform current batch (while next batch loads in background)
+            print(f"Transforming batch {batch_num}/{num_batches}")
+            transform_fn(batch_images)
+            
+            # Clean up current batch
+            del batch_images
+    
+    print(f"Transform complete: processed {number_of_images} images")
+
+
 def transform_and_save_images(
     images,
     transform_fn,
