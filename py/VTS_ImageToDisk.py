@@ -70,17 +70,15 @@ class VTSImageToDisk:
 
         print(f"Saved {len(saved_paths)} images to {output_dir}")
 
-        # newImageData = {
-        #     "prefix": prefix,
-        #     "start_sequence": start_sequence,
-        #     "output_dir": output_dir,
-        #     "format": format,
-        #     "shape": image.shape,
-        #     "ndim": image.ndim,
-        #     "dtype": image.dtype,
-        # }
-
-        newImageData = DiskImage(prefix, start_sequence, len(saved_paths), output_dir, format, image)
+        newImageData = DiskImage(
+            prefix,
+            start_sequence, len(saved_paths),
+            output_dir,
+            format,
+            image,
+            compression_level=compression_level,
+            quality=quality
+        )
 
         return (newImageData,)
 
