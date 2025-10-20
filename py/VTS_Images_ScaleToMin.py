@@ -1,6 +1,15 @@
 import comfy
 import comfy.utils
 
+# Add the py directory to sys.path to allow imports
+import sys
+import os
+import_dir = os.path.join(os.path.dirname(__file__), "vtsUtils")
+if import_dir not in sys.path:
+    sys.path.append(import_dir)
+
+from vtsUtils import save_images, DiskImage
+
 MAX_RESOLUTION = 16384
 
 class VTS_Images_ScaleToMin:
@@ -17,6 +26,8 @@ class VTS_Images_ScaleToMin:
                               "divisible_by": ("INT", { "default": 2, "min": 0, "max": 512, "step": 1, }),
                               "crop": (s.crop_methods,),
                               "scale_type": (s.scale_types, {"default": "small"}),
+                              "edit_in_place": ("BOOLEAN", {"default": False}),
+                              "batch_size": ("INT", {"default": 80, "min": 1, "max": 1000, "step": 1}),
                             }
                 }
     RETURN_TYPES = ("IMAGE",)
@@ -24,7 +35,48 @@ class VTS_Images_ScaleToMin:
 
     CATEGORY = "VTS"
 
-    def scale(self, image, upscale_method, smallMaxSize, largeMaxSize, divisible_by, crop, scale_type):
+    def scale(self, image, upscale_method, smallMaxSize, largeMaxSize, divisible_by, crop, scale_type, edit_in_place, batch_size):
+        # Check if input is a DiskImage
+        if isinstance(image, DiskImage):
+            return self._scale_disk_image(image, upscale_method, smallMaxSize, largeMaxSize, 
+                                         divisible_by, crop, scale_type, edit_in_place, batch_size)
+        
+        # Original tensor-based scaling logic
+        return self._scale_tensor(image, upscale_method, smallMaxSize, largeMaxSize, 
+                                 divisible_by, crop, scale_type)
+
+    def _scale_disk_image(self, disk_image, upscale_method, smallMaxSize, largeMaxSize, 
+                          divisible_by, crop, scale_type, edit_in_place, batch_size):
+        """Handle scaling of DiskImage input"""
+        print(f"VTS_Images_ScaleToMin - processing DiskImage with {disk_image.number_of_images} images")
+        
+        # Determine output prefix
+        if edit_in_place:
+            new_prefix = None  # Will use original prefix
+        else:
+            new_prefix = f"{disk_image.prefix}_scaled"
+        
+        # Create transform function that captures all the scaling parameters
+        def transform_fn(batch_tensor):
+            return self._scale_tensor(batch_tensor, upscale_method, smallMaxSize, 
+                                     largeMaxSize, divisible_by, crop, scale_type)[0]
+        
+        # Use DiskImage's transform_and_save method
+        result = disk_image.transform_and_save(
+            transform_fn=transform_fn,
+            batch_size=batch_size,
+            edit_in_place=edit_in_place,
+            new_prefix=new_prefix,
+            new_output_dir=None,  # Use same directory
+            num_workers=16
+        )
+        
+        print(f"VTS_Images_ScaleToMin - DiskImage scaling complete")
+        return (result,)
+
+    def _scale_tensor(self, image, upscale_method, smallMaxSize, largeMaxSize, 
+                      divisible_by, crop, scale_type):
+        """Original tensor-based scaling logic"""
         # Get the dimensions of the image
         height, width = image.shape[1], image.shape[2]
         original_height, original_width = height, width
