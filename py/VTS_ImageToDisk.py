@@ -23,7 +23,7 @@ class VTSImageToDisk:
     @classmethod
     def INPUT_TYPES(s):
         defaults = get_default_image_input_types()
-        input_types =  {
+        input_types = {
             "required": {
                 "passthrough": ("BOOLEAN", {"default": False, "tooltip": "When true, bypass processing and return images unchanged"}),
             }
@@ -41,7 +41,7 @@ class VTSImageToDisk:
             return (kwargs.get("image"),)
 
         kwargs = ensure_image_defaults(kwargs)
-        
+
         saved_paths = save_images(
             **kwargs
         )

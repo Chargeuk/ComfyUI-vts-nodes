@@ -12,7 +12,7 @@ import_dir = os.path.join(os.path.dirname(__file__), "vtsUtils")
 if import_dir not in sys.path:
     sys.path.append(import_dir)
 
-from vtsUtils import save_images, DiskImage
+from vtsUtils import save_images, DiskImage, vtsImageTypes, get_default_image_input_types, deep_merge, ensure_image_defaults
 
 def gaussian_kernel(kernel_size: int, sigma: float, device=None):
     x, y = torch.meshgrid(torch.linspace(-1, 1, kernel_size, device=device), torch.linspace(-1, 1, kernel_size, device=device), indexing="ij")
@@ -27,7 +27,8 @@ class VTSSharpen:
 
     @classmethod
     def INPUT_TYPES(s):
-        return {
+        defaults = get_default_image_input_types()
+        input_types = {
             "required": {
                 "image": ("IMAGE",),
                 "sharpen_radius": ("INT", {
@@ -60,13 +61,23 @@ class VTSSharpen:
                 "edit_in_place": ("BOOLEAN", {"default": False, "tooltip": "When true, attempt to edit the input tensor in-place for memory efficiency. When false, always create a copy."}),
             }
         }
+        result = deep_merge(defaults, input_types)
+        return result
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "sharpen"
 
     CATEGORY = "image/postprocessing"
 
-    def sharpen(self, image: torch.Tensor, sharpen_radius: int, sigma: float, alpha: float, batch_size: int, passthrough: bool = False, edit_in_place: bool = False) -> tuple:
+    def sharpen(self,
+                image: torch.Tensor,
+                sharpen_radius: int,
+                sigma: float,
+                alpha: float,
+                batch_size: int,
+                passthrough: bool = False,
+                edit_in_place: bool = False,
+                **kwargs) -> tuple:
         if passthrough:
             logging.info("VTSSharpen - passthrough is True, returning original image without processing")
             return (image,)
@@ -76,11 +87,11 @@ class VTSSharpen:
         
         # Check if input is a DiskImage and route to appropriate method
         if not isinstance(image, torch.Tensor):
-            return self.sharpen_disk_image(image, sharpen_radius, sigma, alpha, batch_size, edit_in_place)
+            return self.sharpen_disk_image(image, sharpen_radius, sigma, alpha, batch_size, edit_in_place, kwargs)
         else:
             return self.sharpen_tensor(image, sharpen_radius, sigma, alpha, batch_size, edit_in_place)
 
-    def sharpen_disk_image(self, image: DiskImage, sharpen_radius: int, sigma: float, alpha: float, batch_size: int, edit_in_place: bool) -> tuple:
+    def sharpen_disk_image(self, image: DiskImage, sharpen_radius: int, sigma: float, alpha: float, batch_size: int, edit_in_place: bool, kwargs) -> tuple:
         """
         Sharpen a DiskImage by processing batches from disk.
         

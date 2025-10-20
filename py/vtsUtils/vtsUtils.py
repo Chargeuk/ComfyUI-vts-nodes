@@ -588,7 +588,8 @@ def transform_and_save_images(
         transform_fn: Function that takes a tensor (B, H, W, C) and returns transformed tensor
                      Can return different number of images than input.
         batch_size: Number of images to process at once
-        edit_in_place: If True, overwrite original files (only for DiskImage). If False, create new files.
+        edit_in_place: If True, overwrite original files (only for DiskImage) or modify input tensor in-place.
+                      For tensors: requires transform_fn to return same batch size as input, else raises ValueError.
         prefix: Prefix for new files (required if edit_in_place=False or images is a tensor and return_type is DiskImage)
         output_dir: Directory for new files (required if images is a tensor and return_type is DiskImage, defaults to images.output_dir for DiskImage)
         num_workers: Number of parallel workers for saving images (default 16)
@@ -674,8 +675,8 @@ def transform_and_save_images(
     output_shape = None
     output_dtype = None
     
-    # For tensor return type, collect all transformed batches
-    transformed_batches = [] if return_type == "tensor" else None
+    # For tensor return type, collect all transformed batches (only if not editing in place)
+    transformed_batches = [] if (return_type == "tensor" and not (is_tensor and edit_in_place)) else None
     
     # Use executor for background loading and saving
     with ThreadPoolExecutor(max_workers=num_workers + 1) as executor:
@@ -727,11 +728,29 @@ def transform_and_save_images(
             
             # Handle based on return type
             if return_type == "tensor":
-                # For tensor return, just collect the transformed batch (no disk writes)
-                if isinstance(transformed, torch.Tensor):
-                    transformed_batches.append(transformed.cpu())
+                # Check if we're doing in-place editing on a tensor
+                if is_tensor and edit_in_place:
+                    # Verify batch size matches
+                    if num_output != batch_count:
+                        raise ValueError(
+                            f"edit_in_place=True requires transform_fn to return same batch size as input. "
+                            f"Expected {batch_count} images, got {num_output} images in batch {batch_num}/{num_batches}"
+                        )
+                    
+                    # Copy transformed batch back into original tensor
+                    batch_end = batch_idx + batch_count
+                    if isinstance(transformed, torch.Tensor):
+                        images[batch_idx:batch_end] = transformed.to(images.device)
+                    else:
+                        images[batch_idx:batch_end] = torch.tensor(transformed, device=images.device)
+                    
+                    print(f"Updated input tensor in-place: indices {batch_idx} to {batch_end-1}")
                 else:
-                    transformed_batches.append(transformed)
+                    # For tensor return without edit_in_place, collect the transformed batch (no disk writes)
+                    if isinstance(transformed, torch.Tensor):
+                        transformed_batches.append(transformed.cpu())
+                    else:
+                        transformed_batches.append(transformed)
             else:
                 # For DiskImage return, save to disk
                 print(f"Saving batch {batch_num}/{num_batches} in background (sequence {current_output_sequence} to {current_output_sequence + num_output - 1})")
@@ -754,7 +773,7 @@ def transform_and_save_images(
             
             # Clean up current batch
             del batch_images
-            if return_type != "tensor":
+            if return_type != "tensor" or (is_tensor and edit_in_place):
                 del transformed
         
         # Wait for all saves to complete (only if saving to disk)
@@ -765,7 +784,12 @@ def transform_and_save_images(
     
     # Return based on return_type
     if return_type == "tensor":
-        # Concatenate all batches into a single tensor
+        # If editing in place, return the modified input tensor
+        if is_tensor and edit_in_place:
+            print(f"Transform complete: {number_of_images} images transformed in-place")
+            return images
+        
+        # Otherwise, concatenate all batches into a single tensor
         if transformed_batches:
             if isinstance(transformed_batches[0], torch.Tensor):
                 result_tensor = torch.cat(transformed_batches, dim=0)
