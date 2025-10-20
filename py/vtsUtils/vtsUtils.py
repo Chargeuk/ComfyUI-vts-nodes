@@ -13,7 +13,8 @@ class DiskImage:
                  number_of_images,
                  output_dir,
                  format,
-                 image: torch.Tensor):
+                 image: torch.Tensor,
+                 prefetch_count=2):
         self.prefix = prefix
         self.start_sequence = start_sequence
         self.number_of_images = number_of_images
@@ -22,6 +23,7 @@ class DiskImage:
         self.shape = None
         self.dtype = None
         self.ndim = 1
+        self.prefetch_count = prefetch_count
         if image is not None:
             # the provided image is likely to have a shape of B, H, W, C
             self.shape = image.shape
@@ -35,7 +37,8 @@ class DiskImage:
             number_of_images=self.number_of_images,
             output_dir=self.output_dir,
             format=self.format,
-            image=None
+            image=None,
+            prefetch_count=self.prefetch_count
         )
         selfCopy.shape = self.shape
         selfCopy.dtype = self.dtype
@@ -86,8 +89,48 @@ class DiskImage:
 
     def __iter__(self):
         """Make DiskImage iterable for use in VideoCombine"""
-        for i in range(self.number_of_images):
-            yield self[i]
+        return self.iter_with_prefetch(prefetch_count=self.prefetch_count)
+
+    def iter_with_prefetch(self, prefetch_count=None):
+        """
+        Alternative iterator with configurable prefetch count.
+        Allows per-iteration override of the default prefetch_count.
+        
+        Args:
+            prefetch_count (int): Number of images to prefetch ahead. 
+                                 If None, uses self.prefetch_count
+        
+        Yields:
+            torch.Tensor: Images loaded from disk
+        """
+        from concurrent.futures import ThreadPoolExecutor
+        
+        if prefetch_count is None:
+            prefetch_count = self.prefetch_count
+        
+        if self.number_of_images == 0:
+            return
+        
+        with ThreadPoolExecutor(max_workers=prefetch_count) as executor:
+            # Submit initial batch of prefetch tasks
+            futures = {}
+            for i in range(min(prefetch_count, self.number_of_images)):
+                futures[i] = executor.submit(self.__getitem__, i)
+            
+            # Yield images and submit new prefetch tasks
+            for i in range(self.number_of_images):
+                # Get the current image (will wait if not ready)
+                image = futures[i].result()
+                
+                # Submit next prefetch task
+                next_idx = i + prefetch_count
+                if next_idx < self.number_of_images:
+                    futures[next_idx] = executor.submit(self.__getitem__, next_idx)
+                
+                # Clean up used future
+                del futures[i]
+                
+                yield image
 
 
 # taken from comfyUi samplers.py to match the behavior of the sampler function
