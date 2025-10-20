@@ -33,12 +33,23 @@ def get_mask_aabb(masks):
     return bounding_boxes, is_empty
 
 
-def save_images(image_tensor, prefix="image", start_sequence=0, output_dir="./output", format="png", num_workers=4, compression_level=None, quality=None, max_retries=5):
+def save_images(
+        image,
+        prefix="image",
+        start_sequence=0,
+        output_dir="./output",
+        format="png",
+        num_workers=4,
+        compression_level=None,
+        quality=None,
+        max_retries=5,
+        **kwargs, # Accept and ignore extra kwargs
+    ):
     """
     Save a ComfyUI image tensor to disk as PNG, WebP, or JPG images.
     
     Args:
-        image_tensor (torch.Tensor): ComfyUI image tensor with shape (batch, height, width, channels)
+        image (torch.Tensor): ComfyUI image tensor with shape (batch, height, width, channels)
         prefix (str): Prefix for the filename
         start_sequence (int): Starting sequence number
         output_dir (str): Directory to save images to
@@ -94,11 +105,11 @@ def save_images(image_tensor, prefix="image", start_sequence=0, output_dir="./ou
     os.makedirs(output_dir, exist_ok=True)
     
     # Convert tensor to numpy and ensure proper data type and range
-    if isinstance(image_tensor, torch.Tensor):
+    if isinstance(image, torch.Tensor):
         # ComfyUI images are typically in range [0, 1] with shape (batch, height, width, channels)
-        images_np = image_tensor.detach().cpu().numpy()
+        images_np = image.detach().cpu().numpy()
     else:
-        images_np = image_tensor
+        images_np = image
     
     # Ensure values are in [0, 1] range and convert to [0, 255] uint8
     images_np = np.clip(images_np, 0.0, 1.0)
@@ -747,7 +758,8 @@ class DiskImage:
                  image: torch.Tensor,
                  prefetch_count=2,
                  compression_level=None,
-                 quality=None):
+                 quality=None,
+                 **kwargs): # Accept and ignore extra kwargs
         self.prefix = prefix
         self.start_sequence = start_sequence
         self.number_of_images = number_of_images

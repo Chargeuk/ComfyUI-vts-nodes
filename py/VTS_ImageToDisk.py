@@ -41,43 +41,23 @@ class VTSImageToDisk:
 
     CATEGORY = "image/postprocessing"
 
-    def save_to_disk(self,
-                     image: torch.Tensor,
-                     prefix: str = "image",
-                     start_sequence: int = 0,
-                     output_dir: str = "./tmp/image_cache",
-                     format: str = "png",
-                     passthrough: bool = False,
-                     num_workers: int = 4,
-                     compression_level: int = 4,
-                     quality: int = 95) -> tuple:
+    def save_to_disk(self, passthrough: bool = False, **kwargs) -> tuple:
         if passthrough:
-            return (image,)
+            return (kwargs.get("image"),)
 
+        quality = kwargs.get("quality", 95)
         if quality > 100:
-            quality = None  # Use lossless if quality > 100
+            kwargs["quality"] = None
 
         saved_paths = save_images(
-            image_tensor=image,
-            prefix=prefix,
-            start_sequence=start_sequence,
-            output_dir=output_dir,
-            format=format,
-            num_workers=num_workers,
-            compression_level=compression_level,
-            quality=quality
+            **kwargs
         )
 
-        print(f"Saved {len(saved_paths)} images to {output_dir}")
+        print(f"Saved {len(saved_paths)} images to {kwargs.get('output_dir', './output')}")
 
         newImageData = DiskImage(
-            prefix,
-            start_sequence, len(saved_paths),
-            output_dir,
-            format,
-            image,
-            compression_level=compression_level,
-            quality=quality
+            number_of_images=len(saved_paths),
+            **kwargs  # Now DiskImage will ignore num_workers
         )
 
         return (newImageData,)
