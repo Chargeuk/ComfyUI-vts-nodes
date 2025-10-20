@@ -440,9 +440,10 @@ class DiskImage:
         result = load_images(prefix=self.prefix, start_sequence=start_sequence, count=count, input_dir=self.output_dir, format=self.format)
         return result
     
-    def transform_and_save(self, transform_fn, batch_size=80, edit_in_place=False, new_prefix=None, new_output_dir=None):
+    def transform_and_save(self, transform_fn, batch_size=80, edit_in_place=False, new_prefix=None, new_output_dir=None, num_workers=4):
         """
         Apply a transformation function to all images and save results.
+        Uses a pipeline approach with parallel loading and saving for optimal performance.
         
         Args:
             transform_fn: Function that takes a tensor (B, H, W, C) and returns transformed tensor
@@ -450,34 +451,73 @@ class DiskImage:
             edit_in_place: If True, overwrite original files. If False, create new files.
             new_prefix: Prefix for new files (required if edit_in_place=False)
             new_output_dir: Directory for new files (defaults to self.output_dir)
+            num_workers: Number of parallel workers for saving images (default 4)
         
         Returns:
             DiskImage: New DiskImage object pointing to transformed images
         """
+        from concurrent.futures import ThreadPoolExecutor, Future
+        import threading
+        
         if not edit_in_place and new_prefix is None:
             raise ValueError("new_prefix must be provided when edit_in_place=False")
         
         output_dir = new_output_dir if new_output_dir is not None else self.output_dir
         prefix = self.prefix if edit_in_place else new_prefix
         
-        # Process in batches
-        for i in range(0, self.number_of_images, batch_size):
-            batch_count = min(batch_size, self.number_of_images - i)
+        # Calculate number of batches
+        num_batches = (self.number_of_images + batch_size - 1) // batch_size
+        
+        # Use executor for background loading and saving
+        with ThreadPoolExecutor(max_workers=num_workers + 1) as executor:
+            # Prefetch first batch
+            next_batch_future = None
+            batch_num = 0
             
-            # Load batch
-            batch_images = self.load_images(start_sequence=self.start_sequence + i, count=batch_count)
-            
-            # Apply transformation
-            transformed = transform_fn(batch_images)
-            
-            # Save batch
-            save_images(
-                transformed,
-                prefix=prefix,
-                start_sequence=self.start_sequence + i,
-                output_dir=output_dir,
-                format=self.format
-            )
+            for batch_idx in range(0, self.number_of_images, batch_size):
+                batch_count = min(batch_size, self.number_of_images - batch_idx)
+                batch_num += 1
+                
+                # If we don't have a prefetch in progress, load synchronously (first iteration)
+                if next_batch_future is None:
+                    print(f"Loading batch {batch_num}/{num_batches}")
+                    batch_images = self.load_images(start_sequence=self.start_sequence + batch_idx, count=batch_count)
+                else:
+                    # Wait for the prefetched batch to finish loading
+                    print(f"Waiting for prefetched batch {batch_num}/{num_batches}")
+                    batch_images = next_batch_future.result()
+                
+                # Start loading next batch in background (if there is one)
+                next_batch_idx = batch_idx + batch_size
+                if next_batch_idx < self.number_of_images:
+                    next_batch_count = min(batch_size, self.number_of_images - next_batch_idx)
+                    print(f"Prefetching batch {batch_num + 1}/{num_batches} in background")
+                    next_batch_future = executor.submit(
+                        self.load_images,
+                        start_sequence=self.start_sequence + next_batch_idx,
+                        count=next_batch_count
+                    )
+                else:
+                    next_batch_future = None
+                
+                # Transform current batch (while next batch loads in background)
+                print(f"Transforming batch {batch_num}/{num_batches}")
+                transformed = transform_fn(batch_images)
+                
+                # Save transformed batch in background
+                print(f"Saving batch {batch_num}/{num_batches} in background")
+                save_future = executor.submit(
+                    save_images,
+                    transformed.cpu() if hasattr(transformed, 'cpu') else transformed,
+                    prefix=prefix,
+                    start_sequence=self.start_sequence + batch_idx,
+                    output_dir=output_dir,
+                    format=self.format,
+                    num_workers=num_workers
+                )
+                
+                # Clean up current batch
+                del batch_images, transformed
         
         # Return new DiskImage
         result = DiskImage(
@@ -493,3 +533,5 @@ class DiskImage:
         result.ndim = self.ndim
         
         return result
+
+
