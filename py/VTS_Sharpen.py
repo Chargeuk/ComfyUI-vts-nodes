@@ -75,7 +75,7 @@ class VTSSharpen:
             return (image,)
         
         # Check if input is a DiskImage and route to appropriate method
-        if isinstance(image, DiskImage):
+        if not isinstance(image, torch.Tensor):
             return self.sharpen_disk_image(image, sharpen_radius, sigma, alpha, batch_size, edit_in_place)
         else:
             return self.sharpen_tensor(image, sharpen_radius, sigma, alpha, batch_size, edit_in_place)

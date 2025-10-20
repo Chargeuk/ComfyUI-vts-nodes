@@ -660,7 +660,8 @@ class DiskImage:
             edit_in_place=edit_in_place,
             new_prefix=new_prefix,
             new_output_dir=new_output_dir,
-            num_workers=num_workers
+            num_workers=num_workers,
+            output_format=self.format
         )
 
 
