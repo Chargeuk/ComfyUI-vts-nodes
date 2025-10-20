@@ -1,7 +1,6 @@
 # Modified from https://github.com/madebyollin/taehv/blob/main/taehv.py
 
 # ruff: noqa: N806
-
 from __future__ import annotations
 
 import math
@@ -23,6 +22,15 @@ if TYPE_CHECKING:
     from taeVid_base import VideoModelInfo
 
 F = torch.nn.functional
+
+# Add the py directory to sys.path to allow imports
+import sys
+import os
+import_dir = os.path.join(os.path.dirname(__file__), "..", "vtsUtils")
+if import_dir not in sys.path:
+    sys.path.append(import_dir)
+
+from vtsUtils import load_images
 
 
 class TWorkItem(NamedTuple):
@@ -884,6 +892,18 @@ class TAEVid(nn.Module):
             return decoded, updated_tile_mem
         return decoded
 
+    def convertImageTensorToTeaImageTensor(self, img_tensor: torch.Tensor) -> torch.Tensor:
+        # the provided image is likely to have a shape of B, H, W, C
+        if img_tensor.ndim < 5:
+            img_tensor = img_tensor.unsqueeze(0)
+        if img_tensor.ndim < 5:
+            img_tensor = img_tensor.unsqueeze(0)
+        if img_tensor.ndim != 5:
+            raise ValueError("Expected input shape (N,T,C,H,W)")
+        img_tensor = img_tensor[..., :3].movedim(-1, 2)
+        N, T_total, _, H, W = img_tensor.shape
+        return img_tensor
+
     def encode_tiled(
         self,
         x: torch.Tensor,
@@ -933,13 +953,51 @@ class TAEVid(nn.Module):
                          Use torch.float16 to save memory (both GPU and CPU).
                          Default torch.float32 for maximum precision.
         """
-        if x.ndim != 5:
-            raise ValueError("Expected input shape (N,T,C,H,W)")
 
-        N, T_total, _, H, W = x.shape
+        # the provided image is likely to have a shape of B, H, W, C
+        # if x.ndim < 5:
+        #     x = x.unsqueeze(0)
+        # if x.ndim < 5:
+        #     x = x.unsqueeze(0)
+        # if x.ndim != 5:
+        #     raise ValueError("Expected input shape (N,T,C,H,W)")
+
+        # x = x[..., :3].movedim(-1, 2)
+        output_dir = None
+        prefix = None
+        format = None
+        if isinstance(x, dict):
+            output_dir = x.get("output_dir", None)
+            prefix = x.get("prefix", None)
+            format = x.get("format", "png")
+        if output_dir is not None:
+            print(f"Encoding image sequence shape {x.shape} from directory: {output_dir}")
+        else:
+            print(f"Encoding image sequence shape {x.shape} from tensor")
+
+        # Calculate dimensions based on input shape
+        if x.ndim == 3:  # (H, W, C)
+            N, T_total = 1, 1
+            H, W, C = x.shape
+        elif x.ndim == 4:  # (B, H, W, C) or (T, H, W, C)
+            N, T_total = 1, x.shape[0]  # Assume batch=1, T=first dim
+            H, W, C = x.shape[1], x.shape[2], x.shape[3]
+        elif x.ndim == 5:  # (N, T, H, W, C) - channels last
+            N, T_total, H, W, C = x.shape
+        else:
+            raise ValueError(f"Unexpected input shape: {x.shape}")
+        
+        if output_dir is None:
+            x = self.convertImageTensorToTeaImageTensor(img_tensor=x)
+        print(f"Starting encoding of {N} images with shape {x.shape} tile size ({pixel_tile_size_x},{pixel_tile_size_y}), stride ({pixel_tile_stride_x},{pixel_tile_stride_y}) and time chunk {time_chunk}")
 
         # Fast path (no chunking)
         if (time_chunk is None) or (time_chunk >= T_total):
+            if output_dir is not None:
+                # the image sequence is stored to disk and is not a tensor
+                # as there is no chunking, we will load it and use the loaded sequence
+                x = load_images(prefix=prefix, start_sequence=0, input_dir=output_dir, format=format)
+                x = self.convertImageTensorToTeaImageTensor(img_tensor=x)
             return self._encode_tiled_core(
                 x,
                 pixel_tile_size_x,
@@ -958,7 +1016,6 @@ class TAEVid(nn.Module):
                 accumulate_dtype=accumulate_dtype,
             )
 
-        print(f"Starting encoding of {N} images with tile size ({pixel_tile_size_x},{pixel_tile_size_y}), stride ({pixel_tile_stride_x},{pixel_tile_stride_y}) and time chunk {time_chunk}")
 
         # Build tile task list ONCE (need for per-tile memory arrays)
         spatial_factor = 1
@@ -1013,9 +1070,17 @@ class TAEVid(nn.Module):
         encoded_chunks: list[torch.Tensor] = []
         start = 0
         chunk_index = 0
+        loadedTensor = None
         while start < T_total:
             end = min(start + time_chunk, T_total)
-            x_chunk = x[:, start:end]
+            number_of_frames_in_chunk = end - start
+            if output_dir is not None:
+                # the image sequence is stored to disk and is not a tensor
+                # as there is no chunking, we will load it and use the loaded sequence
+                loadedTensor = load_images(prefix=prefix, start_sequence=start, count=number_of_frames_in_chunk,input_dir=output_dir, format=format)
+                x_chunk = self.convertImageTensorToTeaImageTensor(img_tensor=loadedTensor)
+            else:
+                x_chunk = x[:, start:end]
 
             if keep_temporal_continuity:
                 enc_chunk, tile_mem_states = self._encode_tiled_core(
@@ -1084,6 +1149,9 @@ class TAEVid(nn.Module):
 
             # Explicit cleanup
             del x_chunk, enc_chunk
+            if loadedTensor is not None:
+                del loadedTensor
+                loadedTensor = None
             start = end
             chunk_index += 1
             if torch.cuda.is_available():

@@ -50,7 +50,9 @@ class VTSImageToDisk:
             "start_sequence": start_sequence,
             "output_dir": output_dir,
             "format": format,
-            "shape": image.shape
+            "shape": image.shape,
+            "ndim": image.ndim,
+            "dtype": image.dtype,
         }
         
         return (newImageData,)

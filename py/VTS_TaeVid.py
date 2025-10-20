@@ -305,12 +305,12 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
         
         # Keep image on CPU initially to avoid OOM - let chunked processing handle device transfers
         image = image.detach()
-        if image.ndim < 5:
-            image = image.unsqueeze(0)
-        if image.ndim < 5:
-            image = image.unsqueeze(0)
-        if image.ndim != 5:
-            raise ValueError("Unexpected input image dimensions")
+        # if image.ndim < 5:
+        #     image = image.unsqueeze(0)
+        # if image.ndim < 5:
+        #     image = image.unsqueeze(0)
+        # if image.ndim != 5:
+        #     raise ValueError("Unexpected input image dimensions")
         
         # DON'T pad the entire video here - let the chunked encoder handle it per chunk
         frames = image.shape[1]
@@ -323,7 +323,7 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
         with amp_ctx:
             if use_tiled:
                 latent = model.encode_tiled(
-                    image[..., :3].movedim(-1, 2),
+                    image, # [..., :3].movedim(-1, 2),
                     pixel_tile_size_x=tileX,
                     pixel_tile_size_y=tileY,
                     pixel_tile_stride_x=overlapX,

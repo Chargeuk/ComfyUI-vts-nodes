@@ -79,7 +79,8 @@ def save_images(image_tensor, prefix="image", start_sequence=0, output_dir="./ou
             pil_image = Image.fromarray(image_np.squeeze(-1), mode='L')
         else:
             raise ValueError(f"Unsupported number of channels: {image_np.shape[-1]}")
-        
+
+        print(f"Saving {filepath} as {format.upper()}")
         # Save with format-specific options
         if format == "png":
             # PNG: lossless with maximum compression
