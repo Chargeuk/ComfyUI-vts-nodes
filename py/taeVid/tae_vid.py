@@ -963,13 +963,9 @@ class TAEVid(nn.Module):
         #     raise ValueError("Expected input shape (N,T,C,H,W)")
 
         # x = x[..., :3].movedim(-1, 2)
-        output_dir = None
-        prefix = None
-        format = None
-        if isinstance(x, dict):
-            output_dir = x.get("output_dir", None)
-            prefix = x.get("prefix", None)
-            format = x.get("format", "png")
+        output_dir = x.output_dir
+        prefix = x.prefix
+        format = x.format
         if output_dir is not None:
             print(f"Encoding image sequence shape {x.shape} from directory: {output_dir}")
         else:

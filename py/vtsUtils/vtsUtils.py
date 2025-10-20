@@ -2,6 +2,51 @@ import os
 import torch
 from PIL import Image
 import numpy as np
+import comfy
+import comfy.utils
+
+class DiskImage:
+    def __init__(self,
+                 prefix,
+                 start_sequence,
+                 number_of_images,
+                 output_dir,
+                 format,
+                 image: torch.Tensor):
+        self.prefix = prefix
+        self.start_sequence = start_sequence
+        self.number_of_images = number_of_images
+        self.output_dir = output_dir
+        self.format = format
+        self.shape = None
+        self.dtype = None
+        self.ndim = 1
+        if image is not None:
+            self.shape = image.shape
+            self.dtype = image.dtype
+            self.ndim = image.ndim
+
+    def clone(self):
+        selfCopy =  DiskImage(
+            prefix=self.prefix,
+            start_sequence=self.start_sequence,
+            number_of_images=self.number_of_images,
+            output_dir=self.output_dir,
+            format=self.format,
+            image=None
+        )
+        selfCopy.shape = self.shape
+        selfCopy.dtype = self.dtype
+        selfCopy.ndim = self.ndim
+        return selfCopy
+
+    def detach(self):
+        return self.clone()
+
+    def to(self, *args, device=None, dtype=None, **kwargs):
+        # Ignore device and dtype since DiskImage stores on disk
+        return self.clone()
+
 
 # taken from comfyUi samplers.py to match the behavior of the sampler function
 def get_mask_aabb(masks):
@@ -28,7 +73,7 @@ def get_mask_aabb(masks):
     return bounding_boxes, is_empty
 
 
-def save_images(image_tensor, prefix="image", start_sequence=0, output_dir="./output", format="png"):
+def save_images(image_tensor, prefix="image", start_sequence=0, output_dir="./output", format="png", num_workers=4, compression_level=None, quality=None):
     """
     Save a ComfyUI image tensor to disk as lossless PNG or WebP images.
     
@@ -37,15 +82,36 @@ def save_images(image_tensor, prefix="image", start_sequence=0, output_dir="./ou
         prefix (str): Prefix for the filename
         start_sequence (int): Starting sequence number
         output_dir (str): Directory to save images to
-        format (str): Image format - "png" or "webp" (lossless)
+        format (str): Image format - "png" or "webp" (lossless/lossy)
+        num_workers (int): Number of parallel workers for saving images (0 = sequential)
+        compression_level (int): PNG compression (0-9, default 6) or WebP method (0-6, default 4 for speed)
+        quality (int): For lossy WebP only (1-100, default None = lossless). PNG ignores this.
     
     Returns:
         list: List of saved file paths
     """
+    from concurrent.futures import ThreadPoolExecutor
     # Validate format
     format = format.lower()
     if format not in ["png", "webp"]:
         raise ValueError(f"Unsupported format: {format}. Must be 'png' or 'webp'")
+    
+    # Set default compression levels for speed vs size
+    if compression_level is None:
+        if format == "png":
+            compression_level = 6  # Default PNG compression (0=none, 9=max)
+        else:  # webp
+            compression_level = 4  # Default WebP method (0=fast, 6=slow/small)
+    
+    # Validate compression level ranges
+    if format == "png" and not (0 <= compression_level <= 9):
+        raise ValueError(f"PNG compression_level must be 0-9, got {compression_level}")
+    if format == "webp" and not (0 <= compression_level <= 6):
+        raise ValueError(f"WebP compression_level (method) must be 0-6, got {compression_level}")
+    
+    # Validate quality for WebP
+    if quality is not None and not (1 <= quality <= 100):
+        raise ValueError(f"Quality must be 1-100, got {quality}")
     
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
@@ -60,12 +126,13 @@ def save_images(image_tensor, prefix="image", start_sequence=0, output_dir="./ou
     # Ensure values are in [0, 1] range and convert to [0, 255] uint8
     images_np = np.clip(images_np, 0.0, 1.0)
     images_np = (images_np * 255).astype(np.uint8)
+    number_of_images = images_np.shape[0]
+    pbar = comfy.utils.ProgressBar(number_of_images)
+
     
-    saved_paths = []
-    
-    # Save each image in the batch
-    for i, image_np in enumerate(images_np):
-        # Generate filename with sequence number
+    def save_single_image(args):
+        """Helper function to save a single image"""
+        i, image_np = args
         sequence_num = start_sequence + i
         filename = f"{prefix}_{sequence_num:06d}.{format}"
         filepath = os.path.join(output_dir, filename)
@@ -80,20 +147,52 @@ def save_images(image_tensor, prefix="image", start_sequence=0, output_dir="./ou
         else:
             raise ValueError(f"Unsupported number of channels: {image_np.shape[-1]}")
 
-        print(f"Saving {filepath} as {format.upper()}")
         # Save with format-specific options
         if format == "png":
-            # PNG: lossless with maximum compression
-            pil_image.save(filepath, format='PNG', optimize=True)
+            # PNG compression levels: 0=no compression (fast/large), 9=max compression (slow/small)
+            # optimize=True enables additional optimization passes
+            pil_image.save(
+                filepath, 
+                format='PNG', 
+                compress_level=compression_level,
+                optimize=(compression_level > 0)
+            )
         elif format == "webp":
-            # WebP: lossless mode
-            pil_image.save(filepath, format='WEBP', lossless=True, quality=100, method=6)
-        
-        saved_paths.append(filepath)
+            # WebP can be lossless or lossy based on if quality is set from 0 to 100 or is none
+            if quality is None:
+                # Lossless WebP
+                pil_image.save(
+                    filepath, 
+                    format='WEBP', 
+                    lossless=True, 
+                    quality=100,
+                    method=compression_level
+                )
+            else:
+                # Lossy WebP (much smaller files)
+                pil_image.save(
+                    filepath, 
+                    format='WEBP', 
+                    lossless=False, 
+                    quality=quality,
+                    method=compression_level
+                )
+        pbar.update(1)
         print(f"Saved: {filepath}")
+        return filepath
+    
+    # Prepare arguments for parallel processing
+    save_args = list(enumerate(images_np))
+    
+    # Save images in parallel if num_workers > 0
+    if num_workers > 0 and len(save_args) > 1:
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            saved_paths = list(executor.map(save_single_image, save_args))
+    else:
+        # Sequential processing
+        saved_paths = [save_single_image(args) for args in save_args]
     
     return saved_paths
-
 # Backward compatibility alias
 def save_images_to_png(image_tensor, prefix="image", start_sequence=0, output_dir="./output"):
     """Deprecated: Use save_images() instead. This is kept for backward compatibility."""
