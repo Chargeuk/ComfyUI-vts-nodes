@@ -12,7 +12,7 @@ import_dir = os.path.join(os.path.dirname(__file__), "vtsUtils")
 if import_dir not in sys.path:
     sys.path.append(import_dir)
 
-from vtsUtils import save_images, DiskImage, vtsImageTypes, get_default_image_input_types, deep_merge, ensure_image_defaults
+from vtsUtils import DiskImage, transform_and_save_images, get_default_image_input_types, deep_merge, ensure_image_defaults
 
 def gaussian_kernel(kernel_size: int, sigma: float, device=None):
     x, y = torch.meshgrid(torch.linspace(-1, 1, kernel_size, device=device), torch.linspace(-1, 1, kernel_size, device=device), indexing="ij")
@@ -85,11 +85,14 @@ class VTSSharpen:
         if sharpen_radius == 0:
             return (image,)
         
-        # Check if input is a DiskImage and route to appropriate method
-        if not isinstance(image, torch.Tensor):
-            return self.sharpen_disk_image(image, sharpen_radius, sigma, alpha, batch_size, edit_in_place, kwargs)
-        else:
-            return self.sharpen_tensor(image, sharpen_radius, sigma, alpha, batch_size, edit_in_place)
+        return self.sharpen_disk_image(image, sharpen_radius, sigma, alpha, batch_size, edit_in_place, kwargs)
+
+        
+        # # Check if input is a DiskImage and route to appropriate method
+        # if not isinstance(image, torch.Tensor):
+        #     return self.sharpen_disk_image(image, sharpen_radius, sigma, alpha, batch_size, edit_in_place, kwargs)
+        # else:
+        #     return self.sharpen_tensor(image, sharpen_radius, sigma, alpha, batch_size, edit_in_place)
 
     def sharpen_disk_image(self, image: DiskImage, sharpen_radius: int, sigma: float, alpha: float, batch_size: int, edit_in_place: bool, kwargs) -> tuple:
         """
@@ -106,7 +109,8 @@ class VTSSharpen:
         Returns:
             tuple: (DiskImage,) pointing to sharpened images
         """
-        logging.info(f"VTSSharpen - Processing DiskImage with {image.number_of_images} images")
+        B, H, W, C = image.shape
+        logging.info(f"VTSSharpen - Processing DiskImage with {B} images")
         
         # Define the sharpen transformation function
         def sharpen_transform(batch_images):
@@ -139,22 +143,37 @@ class VTSSharpen:
             
             return batch_result
         
+        result = transform_and_save_images(
+            image=image,
+            transform_fn=sharpen_transform,
+            batch_size=batch_size,
+            edit_in_place=edit_in_place,
+            **kwargs
+            # prefix=None,
+            # output_dir=None,
+            # num_workers=16,
+            # format="png",
+            # return_type=None,
+            # compression_level=None,
+            # quality=None
+        )
+        
         # Determine output configuration based on edit_in_place
-        if edit_in_place:
-            logging.info("VTSSharpen - edit_in_place=True, will overwrite original disk images")
-            result = image.transform_and_save(
-                transform_fn=sharpen_transform,
-                batch_size=batch_size,
-                edit_in_place=True
-            )
-        else:
-            logging.info("VTSSharpen - edit_in_place=False, creating new disk images with '_sharpened' suffix")
-            result = image.transform_and_save(
-                transform_fn=sharpen_transform,
-                batch_size=batch_size,
-                edit_in_place=False,
-                new_prefix=f"{image.prefix}_sharpened"
-            )
+        # if edit_in_place:
+        #     logging.info("VTSSharpen - edit_in_place=True, will overwrite original disk images")
+        #     result = image.transform_and_save(
+        #         transform_fn=sharpen_transform,
+        #         batch_size=batch_size,
+        #         edit_in_place=True
+        #     )
+        # else:
+        #     logging.info("VTSSharpen - edit_in_place=False, creating new disk images with '_sharpened' suffix")
+        #     result = image.transform_and_save(
+        #         transform_fn=sharpen_transform,
+        #         batch_size=batch_size,
+        #         edit_in_place=False,
+        #         new_prefix=f"{image.prefix}_sharpened"
+        #     )
         
         return (result,)
 

@@ -567,7 +567,7 @@ def transform_images(
 
 
 def transform_and_save_images(
-    images,
+    image,
     transform_fn,
     batch_size=80,
     edit_in_place=False,
@@ -577,14 +577,15 @@ def transform_and_save_images(
     format="png",
     return_type=None,
     compression_level=None,
-    quality=None
+    quality=None,
+    **kwargs, # Accept and ignore extra kwargs
 ):
     """
     Apply a transformation function to images and save results.
     Uses a pipeline approach with parallel loading and saving for optimal performance.
     
     Args:
-        images (DiskImage or torch.Tensor): DiskImage instance or tensor with shape (batch, height, width, channels)
+        image (DiskImage or torch.Tensor): DiskImage instance or tensor with shape (batch, height, width, channels)
         transform_fn: Function that takes a tensor (B, H, W, C) and returns transformed tensor
                      Can return different number of images than input.
         batch_size: Number of images to process at once
@@ -605,7 +606,7 @@ def transform_and_save_images(
     from concurrent.futures import ThreadPoolExecutor
     
     # Determine if input is a tensor or DiskImage
-    is_tensor = isinstance(images, torch.Tensor)
+    is_tensor = isinstance(image, torch.Tensor)
     
     # If return_type is None, default to the same type as input
     if return_type is None or return_type == "Input":
@@ -624,10 +625,10 @@ def transform_and_save_images(
                 raise ValueError("output_dir must be provided when images is a tensor and return_type is DiskImage")
 
         # Extract metadata from tensor
-        number_of_images = images.shape[0]
-        original_shape = images.shape
-        original_dtype = images.dtype
-        original_ndim = images.ndim
+        number_of_images = image.shape[0]
+        original_shape = image.shape
+        original_dtype = image.dtype
+        original_ndim = image.ndim
         input_format = format
         if prefix is None:
             prefix = "tmp"
@@ -637,35 +638,35 @@ def transform_and_save_images(
         # Create a simple loader function for tensor batches
         def load_batch(batch_start, batch_count):
             batch_end = min(batch_start + batch_count, number_of_images)
-            return images[batch_start:batch_end]
+            return image[batch_start:batch_end]
             
     else:
         # Handle DiskImage input
         if return_type == "DiskImage" and not edit_in_place and prefix is None:
             raise ValueError("prefix must be provided when edit_in_place=False")
         
-        number_of_images = images.number_of_images
-        original_shape = images.shape
-        original_dtype = images.dtype
-        original_ndim = images.ndim if images.ndim is not None else 1
+        number_of_images = image.number_of_images
+        original_shape = image.shape
+        original_dtype = image.dtype
+        original_ndim = image.ndim if image.ndim is not None else 1
         input_format = format
         if edit_in_place or input_format is None:
-            input_format = images.format
-        output_dir = output_dir if output_dir is not None else images.output_dir
-        prefix = images.prefix if edit_in_place else (prefix if prefix else "temp")
-        start_sequence = images.start_sequence
+            input_format = image.format
+        output_dir = output_dir if output_dir is not None else image.output_dir
+        prefix = image.prefix if edit_in_place else (prefix if prefix else "temp")
+        start_sequence = image.start_sequence
 
         if compression_level is None:
             # Apply compression level to the image saving process
-            compression_level = images.compression_level
+            compression_level = image.compression_level
 
         if quality is None:
-            quality = images.quality
+            quality = image.quality
 
         # Create loader function for DiskImage
         def load_batch(batch_start, batch_count):
-            return images.load_images(start_sequence=images.start_sequence + batch_start, count=batch_count)
-    
+            return image.load_images(start_sequence=image.start_sequence + batch_start, count=batch_count)
+
     # Calculate number of batches
     num_batches = (number_of_images + batch_size - 1) // batch_size
     
@@ -740,10 +741,10 @@ def transform_and_save_images(
                     # Copy transformed batch back into original tensor
                     batch_end = batch_idx + batch_count
                     if isinstance(transformed, torch.Tensor):
-                        images[batch_idx:batch_end] = transformed.to(images.device)
+                        image[batch_idx:batch_end] = transformed.to(image.device)
                     else:
-                        images[batch_idx:batch_end] = torch.tensor(transformed, device=images.device)
-                    
+                        image[batch_idx:batch_end] = torch.tensor(transformed, device=image.device)
+
                     print(f"Updated input tensor in-place: indices {batch_idx} to {batch_end-1}")
                 else:
                     # For tensor return without edit_in_place, collect the transformed batch (no disk writes)
@@ -787,8 +788,8 @@ def transform_and_save_images(
         # If editing in place, return the modified input tensor
         if is_tensor and edit_in_place:
             print(f"Transform complete: {number_of_images} images transformed in-place")
-            return images
-        
+            return image
+
         # Otherwise, concatenate all batches into a single tensor
         if transformed_batches:
             if isinstance(transformed_batches[0], torch.Tensor):
@@ -1015,7 +1016,7 @@ class DiskImage:
         """
         # Call the standalone function and return the result directly
         return transform_and_save_images(
-            images=self,
+            image=self,
             transform_fn=transform_fn,
             batch_size=batch_size,
             edit_in_place=edit_in_place,
