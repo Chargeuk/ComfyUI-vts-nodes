@@ -7,6 +7,69 @@ import comfy.utils
 import time
 
 vtsImageTypes = ["webp", "jpg", "png"]
+vtsReturnTypes = ["Input", "DiskImage", "Tensor"]
+
+
+def get_default_image_input_types():
+    return {
+            "required": {
+                "return_type": (vtsReturnTypes, {"default": vtsReturnTypes[0]}),
+                "image": ("IMAGE",),
+                "batch_size": ("INT", {"default": 80, "min": 1}),
+                "edit_in_place": ("BOOLEAN", {"default": False}),
+                "prefix": ("STRING", {"default": "image", "multiline": False}),
+                "start_sequence": ("INT", {"default": 0, "min": 0}),
+                "output_dir": ("STRING", {"default": "./output", "multiline": False}),
+                "format": (vtsImageTypes, {"default": vtsImageTypes[0]}),
+                "num_workers": ("INT", {"default": 4, "min": 1}),
+                "compression_level": ("INT", {"default": 4, "min": 0, "max": 9, "tooltip": "Image compression level (0-9 for png and 0-6 for WebP)"}),
+                "quality": ("INT", {"default": 95, "min": 1, "max": 101, "tooltip": "Image quality (1-100), or 101 for lossless. Only affects WebP"}),
+            }
+        }
+
+def ensure_image_defaults(image_data: dict) -> dict:
+    """
+    Ensure that all required fields are present in the image data dictionary.
+    If a field is missing, it will be added with a default value.
+
+    Args:
+        image_data: The image data dictionary to check
+
+    Returns:
+        The updated image data dictionary with defaults applied
+    """
+    defaults = get_default_image_input_types()
+    for key, value in defaults["required"].items():
+        if key not in image_data or image_data[key] is None:
+            image_data[key] = value[1]["default"]
+
+    quality = image_data.get("quality", 95)
+    if quality > 100:
+        image_data["quality"] = None
+    return image_data
+
+def deep_merge(base: dict, override: dict) -> dict:
+    """
+    Deep merge two dictionaries. Values from override will overwrite values in base.
+    
+    Args:
+        base: The base dictionary
+        override: Dictionary with values to merge/overwrite
+        
+    Returns:
+        A new merged dictionary
+    """
+    result = base.copy()
+    
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            # Recursively merge nested dictionaries
+            result[key] = deep_merge(result[key], value)
+        else:
+            # Overwrite with the new value
+            result[key] = value
+    
+    return result
 
 # taken from comfyUi samplers.py to match the behavior of the sampler function
 def get_mask_aabb(masks):
@@ -508,10 +571,10 @@ def transform_and_save_images(
     transform_fn,
     batch_size=80,
     edit_in_place=False,
-    new_prefix=None,
-    new_output_dir=None,
+    prefix=None,
+    output_dir=None,
     num_workers=16,
-    output_format="png",
+    format="png",
     return_type=None,
     compression_level=None,
     quality=None
@@ -526,11 +589,11 @@ def transform_and_save_images(
                      Can return different number of images than input.
         batch_size: Number of images to process at once
         edit_in_place: If True, overwrite original files (only for DiskImage). If False, create new files.
-        new_prefix: Prefix for new files (required if edit_in_place=False or images is a tensor and return_type is DiskImage)
-        new_output_dir: Directory for new files (required if images is a tensor and return_type is DiskImage, defaults to images.output_dir for DiskImage)
+        prefix: Prefix for new files (required if edit_in_place=False or images is a tensor and return_type is DiskImage)
+        output_dir: Directory for new files (required if images is a tensor and return_type is DiskImage, defaults to images.output_dir for DiskImage)
         num_workers: Number of parallel workers for saving images (default 16)
-        output_format: Image format for output (default "png", only used if images is a tensor)
-        return_type: Return type - "DiskImage", "tensor", or None (default None)
+        format: Image format for output (default "png", only used if images is a tensor)
+        return_type: Return type - "DiskImage", "tensor", "Input", or None (default None)
                     If None, returns the same type as the input images.
                     If "tensor", loads all transformed images into memory and returns as tensor (no disk writes).
                     If "DiskImage", saves to disk and returns a DiskImage object pointing to saved files.
@@ -544,7 +607,7 @@ def transform_and_save_images(
     is_tensor = isinstance(images, torch.Tensor)
     
     # If return_type is None, default to the same type as input
-    if return_type is None:
+    if return_type is None or return_type == "Input":
         return_type = "tensor" if is_tensor else "DiskImage"
     
     # Validate return_type
@@ -554,19 +617,20 @@ def transform_and_save_images(
     if is_tensor:
         # Handle tensor input
         if return_type == "DiskImage":
-            if new_prefix is None:
-                raise ValueError("new_prefix must be provided when images is a tensor and return_type is DiskImage")
-            if new_output_dir is None:
-                raise ValueError("new_output_dir must be provided when images is a tensor and return_type is DiskImage")
-        
+            if prefix is None:
+                raise ValueError("prefix must be provided when images is a tensor and return_type is DiskImage")
+            if output_dir is None:
+                raise ValueError("output_dir must be provided when images is a tensor and return_type is DiskImage")
+
         # Extract metadata from tensor
         number_of_images = images.shape[0]
         original_shape = images.shape
         original_dtype = images.dtype
         original_ndim = images.ndim
-        input_format = output_format
-        prefix = new_prefix if new_prefix else "temp"
-        output_dir = new_output_dir if new_output_dir else "./temp"
+        input_format = format
+        if prefix is None:
+            prefix = "tmp"
+        output_dir = output_dir if output_dir else "./temp"
         start_sequence = 0
         
         # Create a simple loader function for tensor batches
@@ -576,18 +640,18 @@ def transform_and_save_images(
             
     else:
         # Handle DiskImage input
-        if return_type == "DiskImage" and not edit_in_place and new_prefix is None:
-            raise ValueError("new_prefix must be provided when edit_in_place=False")
+        if return_type == "DiskImage" and not edit_in_place and prefix is None:
+            raise ValueError("prefix must be provided when edit_in_place=False")
         
         number_of_images = images.number_of_images
         original_shape = images.shape
         original_dtype = images.dtype
         original_ndim = images.ndim if images.ndim is not None else 1
-        input_format = output_format
+        input_format = format
         if edit_in_place or input_format is None:
             input_format = images.format
-        output_dir = new_output_dir if new_output_dir is not None else images.output_dir
-        prefix = images.prefix if edit_in_place else (new_prefix if new_prefix else "temp")
+        output_dir = output_dir if output_dir is not None else images.output_dir
+        prefix = images.prefix if edit_in_place else (prefix if prefix else "temp")
         start_sequence = images.start_sequence
 
         if compression_level is None:
@@ -931,10 +995,10 @@ class DiskImage:
             transform_fn=transform_fn,
             batch_size=batch_size,
             edit_in_place=edit_in_place,
-            new_prefix=new_prefix,
-            new_output_dir=new_output_dir,
+            prefix=new_prefix,
+            output_dir=new_output_dir,
             num_workers=num_workers,
-            output_format=self.format,
+            format=self.format,
             return_type=return_type
         )
 

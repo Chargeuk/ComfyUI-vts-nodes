@@ -12,7 +12,7 @@ import_dir = os.path.join(os.path.dirname(__file__), "vtsUtils")
 if import_dir not in sys.path:
     sys.path.append(import_dir)
 
-from vtsUtils import save_images, DiskImage, vtsImageTypes
+from vtsUtils import save_images, DiskImage, vtsImageTypes, get_default_image_input_types, deep_merge, ensure_image_defaults
 
 
 # class VTSImageUpscaleWithModel:
@@ -22,19 +22,14 @@ class VTSImageToDisk:
 
     @classmethod
     def INPUT_TYPES(s):
-        return {
+        defaults = get_default_image_input_types()
+        input_types =  {
             "required": {
-                "image": ("IMAGE",),
-                "prefix": ("STRING", {"default": "image", "multiline": False}),
-                "start_sequence": ("INT", {"default": 0, "min": 0}),
-                "output_dir": ("STRING", {"default": "./output", "multiline": False}),
-                "format": (vtsImageTypes, {"default": vtsImageTypes[0]}),
-                "num_workers": ("INT", {"default": 4, "min": 1}),
-                "compression_level": ("INT", {"default": 4, "min": 0, "max": 9, "tooltip": "Image compression level (0-9 for png and 0-6 for WebP)"}),
-                "quality": ("INT", {"default": 95, "min": 1, "max": 101, "tooltip": "Image quality (1-100), or 101 for lossless. Only affects WebP"}),
                 "passthrough": ("BOOLEAN", {"default": False, "tooltip": "When true, bypass processing and return images unchanged"}),
             }
         }
+        result = deep_merge(defaults, input_types)
+        return result
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "save_to_disk"
@@ -45,10 +40,8 @@ class VTSImageToDisk:
         if passthrough:
             return (kwargs.get("image"),)
 
-        quality = kwargs.get("quality", 95)
-        if quality > 100:
-            kwargs["quality"] = None
-
+        kwargs = ensure_image_defaults(kwargs)
+        
         saved_paths = save_images(
             **kwargs
         )
