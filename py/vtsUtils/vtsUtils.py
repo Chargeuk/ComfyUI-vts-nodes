@@ -326,47 +326,78 @@ def transform_and_save_images(
     edit_in_place=False,
     new_prefix=None,
     new_output_dir=None,
-    num_workers=16
+    num_workers=16,
+    output_format="png"
 ):
     """
-    Apply a transformation function to images from a DiskImage instance and save results.
+    Apply a transformation function to images and save results.
     Uses a pipeline approach with parallel loading and saving for optimal performance.
     
     Args:
-        images (DiskImage): DiskImage instance containing the images to transform
+        images (DiskImage or torch.Tensor): DiskImage instance or tensor with shape (batch, height, width, channels)
         transform_fn: Function that takes a tensor (B, H, W, C) and returns transformed tensor
                      Can return different number of images than input.
         batch_size: Number of images to process at once
-        edit_in_place: If True, overwrite original files. If False, create new files.
-        new_prefix: Prefix for new files (required if edit_in_place=False)
-        new_output_dir: Directory for new files (defaults to images.output_dir)
+        edit_in_place: If True, overwrite original files (only for DiskImage). If False, create new files.
+        new_prefix: Prefix for new files (required if edit_in_place=False or images is a tensor)
+        new_output_dir: Directory for new files (required if images is a tensor, defaults to images.output_dir for DiskImage)
         num_workers: Number of parallel workers for saving images (default 16)
+        output_format: Image format for output (default "png", only used if images is a tensor)
     
     Returns:
-        dict: Dictionary with keys:
-            - 'prefix': Output prefix
-            - 'start_sequence': Output starting sequence
-            - 'number_of_images': Total output images
-            - 'output_dir': Output directory
-            - 'format': Image format
-            - 'shape': Output shape (if available)
-            - 'dtype': Output dtype (if available)
-            - 'ndim': Output ndim
+        DiskImage: New DiskImage object pointing to the transformed images
     """
     from concurrent.futures import ThreadPoolExecutor
     
-    if not edit_in_place and new_prefix is None:
-        raise ValueError("new_prefix must be provided when edit_in_place=False")
+    # Determine if input is a tensor or DiskImage
+    is_tensor = isinstance(images, torch.Tensor)
     
-    output_dir = new_output_dir if new_output_dir is not None else images.output_dir
-    prefix = images.prefix if edit_in_place else new_prefix
+    if is_tensor:
+        # Handle tensor input
+        if new_prefix is None:
+            raise ValueError("new_prefix must be provided when images is a tensor")
+        if new_output_dir is None:
+            raise ValueError("new_output_dir must be provided when images is a tensor")
+        
+        # Extract metadata from tensor
+        number_of_images = images.shape[0]
+        original_shape = images.shape
+        original_dtype = images.dtype
+        original_ndim = images.ndim
+        input_format = output_format
+        prefix = new_prefix
+        output_dir = new_output_dir
+        start_sequence = 0
+        
+        # Create a simple loader function for tensor batches
+        def load_batch(batch_start, batch_count):
+            batch_end = min(batch_start + batch_count, number_of_images)
+            return images[batch_start:batch_end]
+            
+    else:
+        # Handle DiskImage input
+        if not edit_in_place and new_prefix is None:
+            raise ValueError("new_prefix must be provided when edit_in_place=False")
+        
+        number_of_images = images.number_of_images
+        original_shape = images.shape
+        original_dtype = images.dtype
+        original_ndim = images.ndim if images.ndim is not None else 1
+        input_format = images.format
+        output_dir = new_output_dir if new_output_dir is not None else images.output_dir
+        prefix = images.prefix if edit_in_place else new_prefix
+        start_sequence = images.start_sequence
+        
+        # Create loader function for DiskImage
+        def load_batch(batch_start, batch_count):
+            return images.load_images(start_sequence=images.start_sequence + batch_start, count=batch_count)
     
     # Calculate number of batches
-    num_batches = (images.number_of_images + batch_size - 1) // batch_size
+    num_batches = (number_of_images + batch_size - 1) // batch_size
     
     # Track total output images and current output sequence
     total_output_images = 0
-    current_output_sequence = images.start_sequence if edit_in_place else 0
+    current_output_sequence = start_sequence if edit_in_place else 0
     output_shape = None
     output_dtype = None
     
@@ -377,14 +408,14 @@ def transform_and_save_images(
         batch_num = 0
         save_futures = []  # Track save operations to ensure completion
         
-        for batch_idx in range(0, images.number_of_images, batch_size):
-            batch_count = min(batch_size, images.number_of_images - batch_idx)
+        for batch_idx in range(0, number_of_images, batch_size):
+            batch_count = min(batch_size, number_of_images - batch_idx)
             batch_num += 1
             
             # If we don't have a prefetch in progress, load synchronously (first iteration)
             if next_batch_future is None:
                 print(f"Loading batch {batch_num}/{num_batches}")
-                batch_images = images.load_images(start_sequence=images.start_sequence + batch_idx, count=batch_count)
+                batch_images = load_batch(batch_idx, batch_count)
             else:
                 # Wait for the prefetched batch to finish loading
                 print(f"Waiting for prefetched batch {batch_num}/{num_batches}")
@@ -392,13 +423,13 @@ def transform_and_save_images(
             
             # Start loading next batch in background (if there is one)
             next_batch_idx = batch_idx + batch_size
-            if next_batch_idx < images.number_of_images:
-                next_batch_count = min(batch_size, images.number_of_images - next_batch_idx)
+            if next_batch_idx < number_of_images:
+                next_batch_count = min(batch_size, number_of_images - next_batch_idx)
                 print(f"Prefetching batch {batch_num + 1}/{num_batches} in background")
                 next_batch_future = executor.submit(
-                    images.load_images,
-                    start_sequence=images.start_sequence + next_batch_idx,
-                    count=next_batch_count
+                    load_batch,
+                    next_batch_idx,
+                    next_batch_count
                 )
             else:
                 next_batch_future = None
@@ -426,7 +457,7 @@ def transform_and_save_images(
                 prefix=prefix,
                 start_sequence=current_output_sequence,
                 output_dir=output_dir,
-                format=images.format,
+                format=input_format,
                 num_workers=num_workers
             )
             save_futures.append(save_future)
@@ -446,27 +477,31 @@ def transform_and_save_images(
     # Prepare result dictionary
     result_shape = None
     result_dtype = None
-    result_ndim = images.ndim if images.ndim is not None else 1
+    result_ndim = original_ndim
     
     if output_shape is not None:
         result_shape = (total_output_images,) + output_shape[1:]
         result_dtype = output_dtype
     else:
-        result_shape = images.shape
-        result_dtype = images.dtype
+        result_shape = original_shape
+        result_dtype = original_dtype
     
-    print(f"Transform complete: {images.number_of_images} input images -> {total_output_images} output images")
+    print(f"Transform complete: {number_of_images} input images -> {total_output_images} output images")
     
-    return {
-        'prefix': prefix,
-        'start_sequence': images.start_sequence if edit_in_place else 0,
-        'number_of_images': total_output_images,
-        'output_dir': output_dir,
-        'format': images.format,
-        'shape': result_shape,
-        'dtype': result_dtype,
-        'ndim': result_ndim
-    }
+    # Create and return new DiskImage
+    result = DiskImage(
+        prefix=prefix,
+        start_sequence=start_sequence if edit_in_place else 0,
+        number_of_images=total_output_images,
+        output_dir=output_dir,
+        format=input_format,
+        image=None
+    )
+    result.shape = result_shape
+    result.dtype = result_dtype
+    result.ndim = result_ndim
+    
+    return result
 
 
 class DiskImage:
@@ -617,8 +652,8 @@ class DiskImage:
         Returns:
             DiskImage: New DiskImage object pointing to transformed images
         """
-        # Call the standalone function
-        result_info = transform_and_save_images(
+        # Call the standalone function and return the result directly
+        return transform_and_save_images(
             images=self,
             transform_fn=transform_fn,
             batch_size=batch_size,
@@ -627,21 +662,6 @@ class DiskImage:
             new_output_dir=new_output_dir,
             num_workers=num_workers
         )
-        
-        # Create and return new DiskImage from result
-        result = DiskImage(
-            prefix=result_info['prefix'],
-            start_sequence=result_info['start_sequence'],
-            number_of_images=result_info['number_of_images'],
-            output_dir=result_info['output_dir'],
-            format=result_info['format'],
-            image=None
-        )
-        result.shape = result_info['shape']
-        result.dtype = result_info['dtype']
-        result.ndim = result_info['ndim']
-        
-        return result
 
 
 
