@@ -457,6 +457,7 @@ class DiskImage:
         
         Args:
             transform_fn: Function that takes a tensor (B, H, W, C) and returns transformed tensor
+                        Can return different number of images than input.
             batch_size: Number of images to process at once
             edit_in_place: If True, overwrite original files. If False, create new files.
             new_prefix: Prefix for new files (required if edit_in_place=False)
@@ -478,11 +479,18 @@ class DiskImage:
         # Calculate number of batches
         num_batches = (self.number_of_images + batch_size - 1) // batch_size
         
+        # Track total output images and current output sequence
+        total_output_images = 0
+        current_output_sequence = self.start_sequence if edit_in_place else 0
+        output_shape = None
+        output_dtype = None
+        
         # Use executor for background loading and saving
         with ThreadPoolExecutor(max_workers=num_workers + 1) as executor:
             # Prefetch first batch
             next_batch_future = None
             batch_num = 0
+            save_futures = []  # Track save operations to ensure completion
             
             for batch_idx in range(0, self.number_of_images, batch_size):
                 batch_count = min(batch_size, self.number_of_images - batch_idx)
@@ -514,32 +522,65 @@ class DiskImage:
                 print(f"Transforming batch {batch_num}/{num_batches}")
                 transformed = transform_fn(batch_images)
                 
+                # Determine number of output images from this batch
+                if isinstance(transformed, torch.Tensor):
+                    num_output = transformed.shape[0]
+                    if output_shape is None:
+                        output_shape = (None,) + transformed.shape[1:]  # Store H, W, C
+                        output_dtype = transformed.dtype
+                else:
+                    num_output = len(transformed)
+                
+                print(f"Batch {batch_num}/{num_batches}: {batch_count} input -> {num_output} output")
+                
                 # Save transformed batch in background
-                print(f"Saving batch {batch_num}/{num_batches} in background")
+                print(f"Saving batch {batch_num}/{num_batches} in background (sequence {current_output_sequence} to {current_output_sequence + num_output - 1})")
                 save_future = executor.submit(
                     save_images,
                     transformed.cpu() if hasattr(transformed, 'cpu') else transformed,
                     prefix=prefix,
-                    start_sequence=self.start_sequence + batch_idx,
+                    start_sequence=current_output_sequence,
                     output_dir=output_dir,
                     format=self.format,
                     num_workers=num_workers
                 )
+                save_futures.append(save_future)
+                
+                # Update counters
+                total_output_images += num_output
+                current_output_sequence += num_output
                 
                 # Clean up current batch
                 del batch_images, transformed
+            
+            # Wait for all saves to complete
+            print("Waiting for all save operations to complete...")
+            for future in save_futures:
+                future.result()
         
         # Return new DiskImage
         result = DiskImage(
             prefix=prefix,
-            start_sequence=self.start_sequence,
-            number_of_images=self.number_of_images,
+            start_sequence=self.start_sequence if edit_in_place else 0,
+            number_of_images=total_output_images,
             output_dir=output_dir,
             format=self.format,
             image=None
         )
-        result.shape = self.shape
-        result.dtype = self.dtype
-        result.ndim = self.ndim
+        
+        # Update shape if we captured it
+        if output_shape is not None:
+            result.shape = (total_output_images,) + output_shape[1:]
+            result.dtype = output_dtype
+            result.ndim = self.ndim
+        else:
+            result.shape = self.shape
+            result.dtype = self.dtype
+            result.ndim = self.ndim
+        
+        print(f"Transform complete: {self.number_of_images} input images -> {total_output_images} output images")
         
         return result
+
+
+
