@@ -151,20 +151,6 @@ def save_images(image_tensor, prefix="image", start_sequence=0, output_dir="./ou
         saved_paths = [save_single_image(args) for args in save_args]
     
     return saved_paths
-# Backward compatibility alias
-def save_images_to_png(image_tensor, prefix="image", start_sequence=0, output_dir="./output"):
-    """Deprecated: Use save_images() instead. This is kept for backward compatibility."""
-    return save_images(image_tensor, prefix, start_sequence, output_dir, format="png")
-
-
-# Example usage that would fit your VTS_Images_ScaleToMin class pattern:
-def save_images_to_disk(self, image, prefix="scaled", start_sequence=0, output_dir="./output", format="png"):
-    """
-    Example method to save images after scaling - could be added to your VTS_Images_ScaleToMin class
-    """
-    saved_paths = save_images(image, prefix, start_sequence, output_dir, format)
-    print(f"Saved {len(saved_paths)} images to {output_dir}")
-    return saved_paths
 
 
 def load_images(prefix="image", start_sequence=0, count=None, input_dir="./output", format="png", num_workers=4):
@@ -258,11 +244,6 @@ def load_images(prefix="image", start_sequence=0, count=None, input_dir="./outpu
     
     print(f"Created tensor with shape: {images_tensor.shape}")
     return images_tensor
-
-# Backward compatibility alias
-def load_images_from_png(prefix="image", start_sequence=0, count=None, input_dir="./output"):
-    """Deprecated: Use load_images() instead. This is kept for backward compatibility."""
-    return load_images(prefix, start_sequence, count, input_dir, format="png")
 
 
 def load_images_by_pattern(pattern, input_dir="./output", sort=True):
