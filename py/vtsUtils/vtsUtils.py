@@ -6,6 +6,7 @@ import comfy
 import comfy.utils
 
 class DiskImage:
+    # this class represents a series of images stored to disk
     def __init__(self,
                  prefix,
                  start_sequence,
@@ -22,6 +23,7 @@ class DiskImage:
         self.dtype = None
         self.ndim = 1
         if image is not None:
+            # the provided image is likely to have a shape of B, H, W, C
             self.shape = image.shape
             self.dtype = image.dtype
             self.ndim = image.ndim
@@ -46,6 +48,46 @@ class DiskImage:
     def to(self, *args, device=None, dtype=None, **kwargs):
         # Ignore device and dtype since DiskImage stores on disk
         return self.clone()
+
+    def len(self):
+        numberOfImages = self.number_of_images
+        return numberOfImages
+    
+    def __len__(self):
+        return self.number_of_images
+
+    def __getitem__(self, index):
+        """Load a single image from disk by index"""
+        if index < 0 or index >= self.number_of_images:
+            raise IndexError(f"Index {index} out of range [0, {self.number_of_images})")
+        
+        sequence_num = self.start_sequence + index
+        filename = f"{self.prefix}_{sequence_num:06d}.{self.format}"
+        filepath = os.path.join(self.output_dir, filename)
+        
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"Image not found: {filepath}")
+        
+        # Load image and convert to tensor matching expected format
+        pil_image = Image.open(filepath)
+        
+        # Convert to numpy array in [0, 1] range
+        if pil_image.mode == 'RGBA':
+            image_np = np.array(pil_image).astype(np.float32) / 255.0
+        elif pil_image.mode in ['L', 'P']:
+            image_np = np.array(pil_image.convert('RGB')).astype(np.float32) / 255.0
+        elif pil_image.mode == 'RGB':
+            image_np = np.array(pil_image).astype(np.float32) / 255.0
+        else:
+            image_np = np.array(pil_image.convert('RGB')).astype(np.float32) / 255.0
+        
+        # Convert to torch tensor with shape (H, W, C)
+        return torch.from_numpy(image_np)
+
+    def __iter__(self):
+        """Make DiskImage iterable for use in VideoCombine"""
+        for i in range(self.number_of_images):
+            yield self[i]
 
 
 # taken from comfyUi samplers.py to match the behavior of the sampler function
