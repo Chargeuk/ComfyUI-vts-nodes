@@ -167,9 +167,10 @@ def save_images_to_disk(self, image, prefix="scaled", start_sequence=0, output_d
     return saved_paths
 
 
-def load_images(prefix="image", start_sequence=0, count=None, input_dir="./output", format="png"):
+def load_images(prefix="image", start_sequence=0, count=None, input_dir="./output", format="png", num_workers=4):
     """
     Load PNG or WebP images from disk into a ComfyUI image tensor.
+    Uses parallel loading for improved performance.
     
     Args:
         prefix (str): Prefix of the filenames to load
@@ -177,10 +178,13 @@ def load_images(prefix="image", start_sequence=0, count=None, input_dir="./outpu
         count (int): Number of images to load. If None, loads all matching images.
         input_dir (str): Directory to load images from
         format (str): Image format - "png" or "webp"
+        num_workers (int): Number of parallel workers for loading images (default 4)
     
     Returns:
         torch.Tensor: ComfyUI image tensor with shape (batch, height, width, channels)
     """
+    from concurrent.futures import ThreadPoolExecutor
+    
     # Validate format
     format = format.lower()
     if format not in ["png", "webp"]:
@@ -220,9 +224,8 @@ def load_images(prefix="image", start_sequence=0, count=None, input_dir="./outpu
     
     print(f"Loading {len(matching_files)} {format.upper()} images from {input_dir}")
     
-    # Load images
-    images = []
-    for filename in matching_files:
+    def load_single_image(filename):
+        """Helper function to load a single image"""
         filepath = os.path.join(input_dir, filename)
         pil_image = Image.open(filepath)
         
@@ -239,15 +242,22 @@ def load_images(prefix="image", start_sequence=0, count=None, input_dir="./outpu
             # Convert any other mode to RGB
             image_np = np.array(pil_image.convert('RGB')).astype(np.float32) / 255.0
         
-        images.append(image_np)
         print(f"Loaded: {filepath}")
+        return image_np
+    
+    # Load images in parallel
+    if num_workers > 0 and len(matching_files) > 1:
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            images = list(executor.map(load_single_image, matching_files))
+    else:
+        # Sequential loading
+        images = [load_single_image(filename) for filename in matching_files]
     
     # Stack into batch tensor
     images_tensor = torch.from_numpy(np.stack(images, axis=0))
     
     print(f"Created tensor with shape: {images_tensor.shape}")
     return images_tensor
-
 
 # Backward compatibility alias
 def load_images_from_png(prefix="image", start_sequence=0, count=None, input_dir="./output"):
@@ -440,7 +450,7 @@ class DiskImage:
         result = load_images(prefix=self.prefix, start_sequence=start_sequence, count=count, input_dir=self.output_dir, format=self.format)
         return result
     
-    def transform_and_save(self, transform_fn, batch_size=80, edit_in_place=False, new_prefix=None, new_output_dir=None, num_workers=4):
+    def transform_and_save(self, transform_fn, batch_size=80, edit_in_place=False, new_prefix=None, new_output_dir=None, num_workers=16):
         """
         Apply a transformation function to all images and save results.
         Uses a pipeline approach with parallel loading and saving for optimal performance.
@@ -533,5 +543,3 @@ class DiskImage:
         result.ndim = self.ndim
         
         return result
-
-
