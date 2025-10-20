@@ -4,6 +4,7 @@ from PIL import Image
 import numpy as np
 import comfy
 import comfy.utils
+import time
 
 vtsImageTypes = ["webp", "jpg", "png"]
 
@@ -32,7 +33,7 @@ def get_mask_aabb(masks):
     return bounding_boxes, is_empty
 
 
-def save_images(image_tensor, prefix="image", start_sequence=0, output_dir="./output", format="png", num_workers=4, compression_level=None, quality=None):
+def save_images(image_tensor, prefix="image", start_sequence=0, output_dir="./output", format="png", num_workers=4, compression_level=None, quality=None, max_retries=5):
     """
     Save a ComfyUI image tensor to disk as PNG, WebP, or JPG images.
     
@@ -45,6 +46,7 @@ def save_images(image_tensor, prefix="image", start_sequence=0, output_dir="./ou
         num_workers (int): Number of parallel workers for saving images (0 = sequential)
         compression_level (int): PNG compression (0-9, default 6) or WebP method (0-6, default 4 for speed). Ignored for JPG.
         quality (int): For lossy WebP (1-100, default None = lossless) or JPG (1-100, default 95). PNG ignores this.
+        max_retries (int): Maximum number of retry attempts for file save operations (default 5)
     
     Returns:
         list: List of saved file paths
@@ -64,6 +66,10 @@ def save_images(image_tensor, prefix="image", start_sequence=0, output_dir="./ou
         elif format == "webp":
             compression_level = 4  # Default WebP method (0=fast, 6=slow/small)
         # JPG doesn't use compression_level
+
+    if compression_level < 0:
+        print(f"Warning: compression_level < 0 ({compression_level}), clamping to 0")
+        compression_level = 0
     
     # Set default quality
     if quality is None:
@@ -72,15 +78,18 @@ def save_images(image_tensor, prefix="image", start_sequence=0, output_dir="./ou
         # PNG doesn't use quality, WebP defaults to lossless (None)
     
     # Validate compression level ranges
-    if format == "png" and not (0 <= compression_level <= 9):
-        raise ValueError(f"PNG compression_level must be 0-9, got {compression_level}")
-    if format == "webp" and compression_level is not None and not (0 <= compression_level <= 6):
-        raise ValueError(f"WebP compression_level (method) must be 0-6, got {compression_level}")
-    
+    if format == "png" and not (compression_level <= 9):
+        print(f"Warning: PNG compression_level > 9 ({compression_level}), clamping to 9")
+        compression_level = 9
+    if format == "webp" and compression_level is not None and not (compression_level <= 6):
+        print(f"Warning: WebP compression_level (method) must be 0-6, got {compression_level}, clamping to 6")
+        compression_level = 6  # Default WebP method (0=fast, 6=slow/small)
+
     # Validate quality for WebP and JPG
     if quality is not None and not (1 <= quality <= 100):
-        raise ValueError(f"Quality must be 1-100, got {quality}")
-    
+        print(f"Warning: Quality must be 1-100, got {quality}. defaulting to 95")
+        quality = 95  # Default JPG quality
+
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
     
@@ -99,13 +108,13 @@ def save_images(image_tensor, prefix="image", start_sequence=0, output_dir="./ou
 
     
     def save_single_image(args):
-        """Helper function to save a single image"""
+        """Helper function to save a single image with retry logic"""
         i, image_np = args
         sequence_num = start_sequence + i
         filename = f"{prefix}_{sequence_num:06d}.{format}"
         filepath = os.path.join(output_dir, filename)
         
-        # Convert to PIL Image and save
+        # Convert to PIL Image
         if image_np.shape[-1] == 3:  # RGB
             pil_image = Image.fromarray(image_np, mode='RGB')
         elif image_np.shape[-1] == 4:  # RGBA
@@ -123,47 +132,70 @@ def save_images(image_tensor, prefix="image", start_sequence=0, output_dir="./ou
         else:
             raise ValueError(f"Unsupported number of channels: {image_np.shape[-1]}")
 
-        # Save with format-specific options
-        if format == "png":
-            # PNG compression levels: 0=no compression (fast/large), 9=max compression (slow/small)
-            # optimize=True enables additional optimization passes
-            pil_image.save(
-                filepath, 
-                format='PNG', 
-                compress_level=compression_level,
-                optimize=(compression_level > 0)
-            )
-        elif format == "webp":
-            # WebP can be lossless or lossy based on if quality is set from 0 to 100 or is none
-            if quality is None:
-                # Lossless WebP
-                pil_image.save(
-                    filepath, 
-                    format='WEBP', 
-                    lossless=True, 
-                    quality=100,
-                    method=compression_level
-                )
-            else:
-                # Lossy WebP (much smaller files)
-                pil_image.save(
-                    filepath, 
-                    format='WEBP', 
-                    lossless=False, 
-                    quality=quality,
-                    method=compression_level
-                )
-        elif format == "jpg":
-            # JPG is always lossy, quality 1-100 (higher is better)
-            # optimize=True enables additional optimization
-            pil_image.save(
-                filepath,
-                format='JPEG',
-                quality=quality,
-                optimize=True
-            )
-        pbar.update(1)
-        print(f"Saved: {filepath} compression_level={compression_level} quality={quality}")
+        # Save with retry logic and exponential backoff
+        last_exception = None
+        for attempt in range(max_retries):
+            try:
+                # Save with format-specific options
+                if format == "png":
+                    # PNG compression levels: 0=no compression (fast/large), 9=max compression (slow/small)
+                    # optimize=True enables additional optimization passes
+                    pil_image.save(
+                        filepath, 
+                        format='PNG', 
+                        compress_level=compression_level,
+                        optimize=(compression_level > 0)
+                    )
+                elif format == "webp":
+                    # WebP can be lossless or lossy based on if quality is set from 0 to 100 or is none
+                    if quality is None:
+                        # Lossless WebP
+                        pil_image.save(
+                            filepath, 
+                            format='WEBP', 
+                            lossless=True, 
+                            quality=100,
+                            method=compression_level
+                        )
+                    else:
+                        # Lossy WebP (much smaller files)
+                        pil_image.save(
+                            filepath, 
+                            format='WEBP', 
+                            lossless=False, 
+                            quality=quality,
+                            method=compression_level
+                        )
+                elif format == "jpg":
+                    # JPG is always lossy, quality 1-100 (higher is better)
+                    # optimize=True enables additional optimization
+                    pil_image.save(
+                        filepath,
+                        format='JPEG',
+                        quality=quality,
+                        optimize=True
+                    )
+                
+                # If save succeeded, break out of retry loop
+                pbar.update(1)
+                print(f"Saved: {filepath} compression_level={compression_level} quality={quality}")
+                return filepath
+                
+            except (OSError, IOError) as e:
+                last_exception = e
+                if attempt < max_retries - 1:
+                    # Exponential backoff: 0.1s, 0.2s, 0.4s, 0.8s, 1.6s
+                    wait_time = 0.1 * (2 ** attempt)
+                    print(f"Warning: Failed to save {filepath} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait_time:.1f}s...")
+                    time.sleep(wait_time)
+                else:
+                    # Final attempt failed, raise the exception
+                    print(f"Error: Failed to save {filepath} after {max_retries} attempts: {e}")
+                    raise
+        
+        # Should never reach here, but just in case
+        if last_exception:
+            raise last_exception
         return filepath
     
     # Prepare arguments for parallel processing
@@ -180,7 +212,7 @@ def save_images(image_tensor, prefix="image", start_sequence=0, output_dir="./ou
     return saved_paths
 
 
-def load_images(prefix="image", start_sequence=0, count=None, input_dir="./output", format="png", num_workers=4):
+def load_images(prefix="image", start_sequence=0, count=None, input_dir="./output", format="png", num_workers=4, max_retries=5):
     """
     Load PNG, WebP, or JPG images from disk into a ComfyUI image tensor.
     Uses parallel loading for improved performance.
@@ -192,6 +224,7 @@ def load_images(prefix="image", start_sequence=0, count=None, input_dir="./outpu
         input_dir (str): Directory to load images from
         format (str): Image format - "png", "webp", "jpg", or "jpeg"
         num_workers (int): Number of parallel workers for loading images (default 4)
+        max_retries (int): Maximum number of retry attempts for file load operations (default 5)
     
     Returns:
         torch.Tensor: ComfyUI image tensor with shape (batch, height, width, channels)
@@ -240,24 +273,47 @@ def load_images(prefix="image", start_sequence=0, count=None, input_dir="./outpu
     print(f"Loading {len(matching_files)} {format.upper()} images from {input_dir}")
     
     def load_single_image(filename):
-        """Helper function to load a single image"""
+        """Helper function to load a single image with retry logic"""
         filepath = os.path.join(input_dir, filename)
-        pil_image = Image.open(filepath)
         
-        # Convert to RGB if necessary (handles RGBA, L, etc.)
-        if pil_image.mode == 'RGBA':
-            # Keep alpha channel
-            image_np = np.array(pil_image).astype(np.float32) / 255.0
-        elif pil_image.mode == 'L':
-            # Convert grayscale to RGB
-            image_np = np.array(pil_image.convert('RGB')).astype(np.float32) / 255.0
-        elif pil_image.mode == 'RGB':
-            image_np = np.array(pil_image).astype(np.float32) / 255.0
-        else:
-            # Convert any other mode to RGB
-            image_np = np.array(pil_image.convert('RGB')).astype(np.float32) / 255.0
+        # Load with retry logic and exponential backoff
+        last_exception = None
+        for attempt in range(max_retries):
+            try:
+                pil_image = Image.open(filepath)
+                
+                # Convert to RGB if necessary (handles RGBA, L, etc.)
+                if pil_image.mode == 'RGBA':
+                    # Keep alpha channel
+                    image_np = np.array(pil_image).astype(np.float32) / 255.0
+                elif pil_image.mode == 'L':
+                    # Convert grayscale to RGB
+                    image_np = np.array(pil_image.convert('RGB')).astype(np.float32) / 255.0
+                elif pil_image.mode == 'RGB':
+                    image_np = np.array(pil_image).astype(np.float32) / 255.0
+                else:
+                    # Convert any other mode to RGB
+                    image_np = np.array(pil_image.convert('RGB')).astype(np.float32) / 255.0
+                
+                # If load succeeded, break out of retry loop
+                print(f"Loaded: {filepath}")
+                return image_np
+                
+            except (OSError, IOError) as e:
+                last_exception = e
+                if attempt < max_retries - 1:
+                    # Exponential backoff: 0.1s, 0.2s, 0.4s, 0.8s, 1.6s
+                    wait_time = 0.1 * (2 ** attempt)
+                    print(f"Warning: Failed to load {filepath} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait_time:.1f}s...")
+                    time.sleep(wait_time)
+                else:
+                    # Final attempt failed, raise the exception
+                    print(f"Error: Failed to load {filepath} after {max_retries} attempts: {e}")
+                    raise
         
-        print(f"Loaded: {filepath}")
+        # Should never reach here, but just in case
+        if last_exception:
+            raise last_exception
         return image_np
     
     # Load images in parallel
@@ -275,7 +331,7 @@ def load_images(prefix="image", start_sequence=0, count=None, input_dir="./outpu
     return images_tensor
 
 
-def load_images_by_pattern(pattern, input_dir="./output", sort=True):
+def load_images_by_pattern(pattern, input_dir="./output", sort=True, max_retries=5):
     """
     Load PNG images from disk using a glob pattern.
     
@@ -283,6 +339,7 @@ def load_images_by_pattern(pattern, input_dir="./output", sort=True):
         pattern (str): Glob pattern to match files (e.g., "image_*.png", "frame_00*.png")
         input_dir (str): Directory to load images from
         sort (bool): Whether to sort files alphabetically before loading
+        max_retries (int): Maximum number of retry attempts for file load operations (default 5)
     
     Returns:
         torch.Tensor: ComfyUI image tensor with shape (batch, height, width, channels)
@@ -304,23 +361,41 @@ def load_images_by_pattern(pattern, input_dir="./output", sort=True):
     
     print(f"Loading {len(matching_files)} images from {input_dir}")
     
-    # Load images
+    # Load images with retry logic
     images = []
     for filepath in matching_files:
-        pil_image = Image.open(filepath)
-        
-        # Convert to RGB if necessary
-        if pil_image.mode == 'RGBA':
-            image_np = np.array(pil_image).astype(np.float32) / 255.0
-        elif pil_image.mode == 'L':
-            image_np = np.array(pil_image.convert('RGB')).astype(np.float32) / 255.0
-        elif pil_image.mode == 'RGB':
-            image_np = np.array(pil_image).astype(np.float32) / 255.0
-        else:
-            image_np = np.array(pil_image.convert('RGB')).astype(np.float32) / 255.0
-        
-        images.append(image_np)
-        print(f"Loaded: {filepath}")
+        # Load with retry logic and exponential backoff
+        last_exception = None
+        for attempt in range(max_retries):
+            try:
+                pil_image = Image.open(filepath)
+                
+                # Convert to RGB if necessary
+                if pil_image.mode == 'RGBA':
+                    image_np = np.array(pil_image).astype(np.float32) / 255.0
+                elif pil_image.mode == 'L':
+                    image_np = np.array(pil_image.convert('RGB')).astype(np.float32) / 255.0
+                elif pil_image.mode == 'RGB':
+                    image_np = np.array(pil_image).astype(np.float32) / 255.0
+                else:
+                    image_np = np.array(pil_image.convert('RGB')).astype(np.float32) / 255.0
+                
+                # If load succeeded, break out of retry loop
+                images.append(image_np)
+                print(f"Loaded: {filepath}")
+                break
+                
+            except (OSError, IOError) as e:
+                last_exception = e
+                if attempt < max_retries - 1:
+                    # Exponential backoff: 0.1s, 0.2s, 0.4s, 0.8s, 1.6s
+                    wait_time = 0.1 * (2 ** attempt)
+                    print(f"Warning: Failed to load {filepath} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait_time:.1f}s...")
+                    time.sleep(wait_time)
+                else:
+                    # Final attempt failed, raise the exception
+                    print(f"Error: Failed to load {filepath} after {max_retries} attempts: {e}")
+                    raise
     
     # Stack into batch tensor
     images_tensor = torch.from_numpy(np.stack(images, axis=0))
@@ -634,7 +709,7 @@ class DiskImage:
         return self.number_of_images
 
     def __getitem__(self, index):
-        """Load a single image from disk by index"""
+        """Load a single image from disk by index with retry logic"""
         if index < 0 or index >= self.number_of_images:
             raise IndexError(f"Index {index} out of range [0, {self.number_of_images})")
         
@@ -645,21 +720,42 @@ class DiskImage:
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"Image not found: {filepath}")
         
-        # Load image and convert to tensor matching expected format
-        pil_image = Image.open(filepath)
+        # Load with retry logic and exponential backoff
+        max_retries = 5
+        last_exception = None
+        for attempt in range(max_retries):
+            try:
+                # Load image and convert to tensor matching expected format
+                pil_image = Image.open(filepath)
+                
+                # Convert to numpy array in [0, 1] range
+                if pil_image.mode == 'RGBA':
+                    image_np = np.array(pil_image).astype(np.float32) / 255.0
+                elif pil_image.mode in ['L', 'P']:
+                    image_np = np.array(pil_image.convert('RGB')).astype(np.float32) / 255.0
+                elif pil_image.mode == 'RGB':
+                    image_np = np.array(pil_image).astype(np.float32) / 255.0
+                else:
+                    image_np = np.array(pil_image.convert('RGB')).astype(np.float32) / 255.0
+                
+                # Convert to torch tensor with shape (H, W, C)
+                return torch.from_numpy(image_np)
+                
+            except (OSError, IOError) as e:
+                last_exception = e
+                if attempt < max_retries - 1:
+                    # Exponential backoff: 0.1s, 0.2s, 0.4s, 0.8s, 1.6s
+                    wait_time = 0.1 * (2 ** attempt)
+                    print(f"Warning: Failed to load {filepath} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait_time:.1f}s...")
+                    time.sleep(wait_time)
+                else:
+                    # Final attempt failed, raise the exception
+                    print(f"Error: Failed to load {filepath} after {max_retries} attempts: {e}")
+                    raise
         
-        # Convert to numpy array in [0, 1] range
-        if pil_image.mode == 'RGBA':
-            image_np = np.array(pil_image).astype(np.float32) / 255.0
-        elif pil_image.mode in ['L', 'P']:
-            image_np = np.array(pil_image.convert('RGB')).astype(np.float32) / 255.0
-        elif pil_image.mode == 'RGB':
-            image_np = np.array(pil_image).astype(np.float32) / 255.0
-        else:
-            image_np = np.array(pil_image.convert('RGB')).astype(np.float32) / 255.0
-        
-        # Convert to torch tensor with shape (H, W, C)
-        return torch.from_numpy(image_np)
+        # Should never reach here, but just in case
+        if last_exception:
+            raise last_exception
 
     def __iter__(self):
         """Make DiskImage iterable for use in VideoCombine"""
