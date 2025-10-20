@@ -5,133 +5,6 @@ import numpy as np
 import comfy
 import comfy.utils
 
-class DiskImage:
-    # this class represents a series of images stored to disk
-    def __init__(self,
-                 prefix,
-                 start_sequence,
-                 number_of_images,
-                 output_dir,
-                 format,
-                 image: torch.Tensor,
-                 prefetch_count=2):
-        self.prefix = prefix
-        self.start_sequence = start_sequence
-        self.number_of_images = number_of_images
-        self.output_dir = output_dir
-        self.format = format
-        self.shape = None
-        self.dtype = None
-        self.ndim = 1
-        self.prefetch_count = prefetch_count
-        if image is not None:
-            # the provided image is likely to have a shape of B, H, W, C
-            self.shape = image.shape
-            self.dtype = image.dtype
-            self.ndim = image.ndim
-
-    def clone(self):
-        selfCopy =  DiskImage(
-            prefix=self.prefix,
-            start_sequence=self.start_sequence,
-            number_of_images=self.number_of_images,
-            output_dir=self.output_dir,
-            format=self.format,
-            image=None,
-            prefetch_count=self.prefetch_count
-        )
-        selfCopy.shape = self.shape
-        selfCopy.dtype = self.dtype
-        selfCopy.ndim = self.ndim
-        return selfCopy
-
-    def detach(self):
-        return self.clone()
-
-    def to(self, *args, device=None, dtype=None, **kwargs):
-        # Ignore device and dtype since DiskImage stores on disk
-        return self.clone()
-
-    def len(self):
-        numberOfImages = self.number_of_images
-        return numberOfImages
-    
-    def __len__(self):
-        return self.number_of_images
-
-    def __getitem__(self, index):
-        """Load a single image from disk by index"""
-        if index < 0 or index >= self.number_of_images:
-            raise IndexError(f"Index {index} out of range [0, {self.number_of_images})")
-        
-        sequence_num = self.start_sequence + index
-        filename = f"{self.prefix}_{sequence_num:06d}.{self.format}"
-        filepath = os.path.join(self.output_dir, filename)
-        
-        if not os.path.exists(filepath):
-            raise FileNotFoundError(f"Image not found: {filepath}")
-        
-        # Load image and convert to tensor matching expected format
-        pil_image = Image.open(filepath)
-        
-        # Convert to numpy array in [0, 1] range
-        if pil_image.mode == 'RGBA':
-            image_np = np.array(pil_image).astype(np.float32) / 255.0
-        elif pil_image.mode in ['L', 'P']:
-            image_np = np.array(pil_image.convert('RGB')).astype(np.float32) / 255.0
-        elif pil_image.mode == 'RGB':
-            image_np = np.array(pil_image).astype(np.float32) / 255.0
-        else:
-            image_np = np.array(pil_image.convert('RGB')).astype(np.float32) / 255.0
-        
-        # Convert to torch tensor with shape (H, W, C)
-        return torch.from_numpy(image_np)
-
-    def __iter__(self):
-        """Make DiskImage iterable for use in VideoCombine"""
-        return self.iter_with_prefetch(prefetch_count=self.prefetch_count)
-
-    def iter_with_prefetch(self, prefetch_count=None):
-        """
-        Alternative iterator with configurable prefetch count.
-        Allows per-iteration override of the default prefetch_count.
-        
-        Args:
-            prefetch_count (int): Number of images to prefetch ahead. 
-                                 If None, uses self.prefetch_count
-        
-        Yields:
-            torch.Tensor: Images loaded from disk
-        """
-        from concurrent.futures import ThreadPoolExecutor
-        
-        if prefetch_count is None:
-            prefetch_count = self.prefetch_count
-        
-        if self.number_of_images == 0:
-            return
-        
-        with ThreadPoolExecutor(max_workers=prefetch_count) as executor:
-            # Submit initial batch of prefetch tasks
-            futures = {}
-            for i in range(min(prefetch_count, self.number_of_images)):
-                futures[i] = executor.submit(self.__getitem__, i)
-            
-            # Yield images and submit new prefetch tasks
-            for i in range(self.number_of_images):
-                # Get the current image (will wait if not ready)
-                image = futures[i].result()
-                
-                # Submit next prefetch task
-                next_idx = i + prefetch_count
-                if next_idx < self.number_of_images:
-                    futures[next_idx] = executor.submit(self.__getitem__, next_idx)
-                
-                # Clean up used future
-                del futures[i]
-                
-                yield image
-
 
 # taken from comfyUi samplers.py to match the behavior of the sampler function
 def get_mask_aabb(masks):
@@ -434,3 +307,189 @@ def load_images_by_pattern(pattern, input_dir="./output", sort=True):
     
     print(f"Created tensor with shape: {images_tensor.shape}")
     return images_tensor
+
+
+class DiskImage:
+    # this class represents a series of images stored to disk
+    def __init__(self,
+                 prefix,
+                 start_sequence,
+                 number_of_images,
+                 output_dir,
+                 format,
+                 image: torch.Tensor,
+                 prefetch_count=2):
+        self.prefix = prefix
+        self.start_sequence = start_sequence
+        self.number_of_images = number_of_images
+        self.output_dir = output_dir
+        self.format = format
+        self.shape = None
+        self.dtype = None
+        self.ndim = 1
+        self.prefetch_count = prefetch_count
+        if image is not None:
+            # the provided image is likely to have a shape of B, H, W, C
+            self.shape = image.shape
+            self.dtype = image.dtype
+            self.ndim = image.ndim
+
+    def clone(self):
+        selfCopy =  DiskImage(
+            prefix=self.prefix,
+            start_sequence=self.start_sequence,
+            number_of_images=self.number_of_images,
+            output_dir=self.output_dir,
+            format=self.format,
+            image=None,
+            prefetch_count=self.prefetch_count
+        )
+        selfCopy.shape = self.shape
+        selfCopy.dtype = self.dtype
+        selfCopy.ndim = self.ndim
+        return selfCopy
+
+    def detach(self):
+        return self.clone()
+
+    def to(self, *args, device=None, dtype=None, **kwargs):
+        # Ignore device and dtype since DiskImage stores on disk
+        return self.clone()
+
+    def len(self):
+        numberOfImages = self.number_of_images
+        return numberOfImages
+    
+    def __len__(self):
+        return self.number_of_images
+
+    def __getitem__(self, index):
+        """Load a single image from disk by index"""
+        if index < 0 or index >= self.number_of_images:
+            raise IndexError(f"Index {index} out of range [0, {self.number_of_images})")
+        
+        sequence_num = self.start_sequence + index
+        filename = f"{self.prefix}_{sequence_num:06d}.{self.format}"
+        filepath = os.path.join(self.output_dir, filename)
+        
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"Image not found: {filepath}")
+        
+        # Load image and convert to tensor matching expected format
+        pil_image = Image.open(filepath)
+        
+        # Convert to numpy array in [0, 1] range
+        if pil_image.mode == 'RGBA':
+            image_np = np.array(pil_image).astype(np.float32) / 255.0
+        elif pil_image.mode in ['L', 'P']:
+            image_np = np.array(pil_image.convert('RGB')).astype(np.float32) / 255.0
+        elif pil_image.mode == 'RGB':
+            image_np = np.array(pil_image).astype(np.float32) / 255.0
+        else:
+            image_np = np.array(pil_image.convert('RGB')).astype(np.float32) / 255.0
+        
+        # Convert to torch tensor with shape (H, W, C)
+        return torch.from_numpy(image_np)
+
+    def __iter__(self):
+        """Make DiskImage iterable for use in VideoCombine"""
+        return self.iter_with_prefetch(prefetch_count=self.prefetch_count)
+
+    def iter_with_prefetch(self, prefetch_count=None):
+        """
+        Alternative iterator with configurable prefetch count.
+        Allows per-iteration override of the default prefetch_count.
+        
+        Args:
+            prefetch_count (int): Number of images to prefetch ahead. 
+                                 If None, uses self.prefetch_count
+        
+        Yields:
+            torch.Tensor: Images loaded from disk
+        """
+        from concurrent.futures import ThreadPoolExecutor
+        
+        if prefetch_count is None:
+            prefetch_count = self.prefetch_count
+        
+        if self.number_of_images == 0:
+            return
+        
+        with ThreadPoolExecutor(max_workers=prefetch_count) as executor:
+            # Submit initial batch of prefetch tasks
+            futures = {}
+            for i in range(min(prefetch_count, self.number_of_images)):
+                futures[i] = executor.submit(self.__getitem__, i)
+            
+            # Yield images and submit new prefetch tasks
+            for i in range(self.number_of_images):
+                # Get the current image (will wait if not ready)
+                image = futures[i].result()
+                
+                # Submit next prefetch task
+                next_idx = i + prefetch_count
+                if next_idx < self.number_of_images:
+                    futures[next_idx] = executor.submit(self.__getitem__, next_idx)
+                
+                # Clean up used future
+                del futures[i]
+                
+                yield image
+
+    def load_images(self, start_sequence=0, count=None):
+        result = load_images(prefix=self.prefix, start_sequence=start_sequence, count=count, input_dir=self.output_dir, format=self.format)
+        return result
+    
+    def transform_and_save(self, transform_fn, batch_size=80, edit_in_place=False, new_prefix=None, new_output_dir=None):
+        """
+        Apply a transformation function to all images and save results.
+        
+        Args:
+            transform_fn: Function that takes a tensor (B, H, W, C) and returns transformed tensor
+            batch_size: Number of images to process at once
+            edit_in_place: If True, overwrite original files. If False, create new files.
+            new_prefix: Prefix for new files (required if edit_in_place=False)
+            new_output_dir: Directory for new files (defaults to self.output_dir)
+        
+        Returns:
+            DiskImage: New DiskImage object pointing to transformed images
+        """
+        if not edit_in_place and new_prefix is None:
+            raise ValueError("new_prefix must be provided when edit_in_place=False")
+        
+        output_dir = new_output_dir if new_output_dir is not None else self.output_dir
+        prefix = self.prefix if edit_in_place else new_prefix
+        
+        # Process in batches
+        for i in range(0, self.number_of_images, batch_size):
+            batch_count = min(batch_size, self.number_of_images - i)
+            
+            # Load batch
+            batch_images = self.load_images(start_sequence=self.start_sequence + i, count=batch_count)
+            
+            # Apply transformation
+            transformed = transform_fn(batch_images)
+            
+            # Save batch
+            save_images(
+                transformed,
+                prefix=prefix,
+                start_sequence=self.start_sequence + i,
+                output_dir=output_dir,
+                format=self.format
+            )
+        
+        # Return new DiskImage
+        result = DiskImage(
+            prefix=prefix,
+            start_sequence=self.start_sequence,
+            number_of_images=self.number_of_images,
+            output_dir=output_dir,
+            format=self.format,
+            image=None
+        )
+        result.shape = self.shape
+        result.dtype = self.dtype
+        result.ndim = self.ndim
+        
+        return result

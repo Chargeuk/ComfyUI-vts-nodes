@@ -4,10 +4,10 @@ import logging
 from comfy import model_management
 import torch
 import torch.nn.functional as F
-import sys
-import os
 
 # Add the py directory to sys.path to allow imports
+import sys
+import os
 import_dir = os.path.join(os.path.dirname(__file__), "vtsUtils")
 if import_dir not in sys.path:
     sys.path.append(import_dir)
