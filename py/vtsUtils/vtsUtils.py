@@ -5,6 +5,7 @@ import numpy as np
 import comfy
 import comfy.utils
 
+vtsImageTypes = ["webp", "jpg", "png"]
 
 # taken from comfyUi samplers.py to match the behavior of the sampler function
 def get_mask_aabb(masks):
@@ -33,17 +34,17 @@ def get_mask_aabb(masks):
 
 def save_images(image_tensor, prefix="image", start_sequence=0, output_dir="./output", format="png", num_workers=4, compression_level=None, quality=None):
     """
-    Save a ComfyUI image tensor to disk as lossless PNG or WebP images.
+    Save a ComfyUI image tensor to disk as PNG, WebP, or JPG images.
     
     Args:
         image_tensor (torch.Tensor): ComfyUI image tensor with shape (batch, height, width, channels)
         prefix (str): Prefix for the filename
         start_sequence (int): Starting sequence number
         output_dir (str): Directory to save images to
-        format (str): Image format - "png" or "webp" (lossless/lossy)
+        format (str): Image format - "png", "webp", "jpg", or "jpeg"
         num_workers (int): Number of parallel workers for saving images (0 = sequential)
-        compression_level (int): PNG compression (0-9, default 6) or WebP method (0-6, default 4 for speed)
-        quality (int): For lossy WebP only (1-100, default None = lossless). PNG ignores this.
+        compression_level (int): PNG compression (0-9, default 6) or WebP method (0-6, default 4 for speed). Ignored for JPG.
+        quality (int): For lossy WebP (1-100, default None = lossless) or JPG (1-100, default 95). PNG ignores this.
     
     Returns:
         list: List of saved file paths
@@ -51,23 +52,32 @@ def save_images(image_tensor, prefix="image", start_sequence=0, output_dir="./ou
     from concurrent.futures import ThreadPoolExecutor
     # Validate format
     format = format.lower()
-    if format not in ["png", "webp"]:
-        raise ValueError(f"Unsupported format: {format}. Must be 'png' or 'webp'")
+    if format == "jpeg":
+        format = "jpg"  # Normalize jpeg to jpg
+    if format not in ["png", "webp", "jpg"]:
+        raise ValueError(f"Unsupported format: {format}. Must be 'png', 'webp', 'jpg', or 'jpeg'")
     
     # Set default compression levels for speed vs size
     if compression_level is None:
         if format == "png":
             compression_level = 6  # Default PNG compression (0=none, 9=max)
-        else:  # webp
+        elif format == "webp":
             compression_level = 4  # Default WebP method (0=fast, 6=slow/small)
+        # JPG doesn't use compression_level
+    
+    # Set default quality
+    if quality is None:
+        if format == "jpg":
+            quality = 95  # Default JPG quality (1-100, higher is better)
+        # PNG doesn't use quality, WebP defaults to lossless (None)
     
     # Validate compression level ranges
     if format == "png" and not (0 <= compression_level <= 9):
         raise ValueError(f"PNG compression_level must be 0-9, got {compression_level}")
-    if format == "webp" and not (0 <= compression_level <= 6):
+    if format == "webp" and compression_level is not None and not (0 <= compression_level <= 6):
         raise ValueError(f"WebP compression_level (method) must be 0-6, got {compression_level}")
     
-    # Validate quality for WebP
+    # Validate quality for WebP and JPG
     if quality is not None and not (1 <= quality <= 100):
         raise ValueError(f"Quality must be 1-100, got {quality}")
     
@@ -99,7 +109,15 @@ def save_images(image_tensor, prefix="image", start_sequence=0, output_dir="./ou
         if image_np.shape[-1] == 3:  # RGB
             pil_image = Image.fromarray(image_np, mode='RGB')
         elif image_np.shape[-1] == 4:  # RGBA
-            pil_image = Image.fromarray(image_np, mode='RGBA')
+            # JPG doesn't support alpha channel, convert to RGB
+            if format == "jpg":
+                # Convert RGBA to RGB by compositing on white background
+                image_rgba = Image.fromarray(image_np, mode='RGBA')
+                background = Image.new('RGB', image_rgba.size, (255, 255, 255))
+                background.paste(image_rgba, mask=image_rgba.split()[3])  # Use alpha channel as mask
+                pil_image = background
+            else:
+                pil_image = Image.fromarray(image_np, mode='RGBA')
         elif image_np.shape[-1] == 1:  # Grayscale
             pil_image = Image.fromarray(image_np.squeeze(-1), mode='L')
         else:
@@ -135,8 +153,17 @@ def save_images(image_tensor, prefix="image", start_sequence=0, output_dir="./ou
                     quality=quality,
                     method=compression_level
                 )
+        elif format == "jpg":
+            # JPG is always lossy, quality 1-100 (higher is better)
+            # optimize=True enables additional optimization
+            pil_image.save(
+                filepath,
+                format='JPEG',
+                quality=quality,
+                optimize=True
+            )
         pbar.update(1)
-        print(f"Saved: {filepath}")
+        print(f"Saved: {filepath} compression_level={compression_level} quality={quality}")
         return filepath
     
     # Prepare arguments for parallel processing
@@ -155,7 +182,7 @@ def save_images(image_tensor, prefix="image", start_sequence=0, output_dir="./ou
 
 def load_images(prefix="image", start_sequence=0, count=None, input_dir="./output", format="png", num_workers=4):
     """
-    Load PNG or WebP images from disk into a ComfyUI image tensor.
+    Load PNG, WebP, or JPG images from disk into a ComfyUI image tensor.
     Uses parallel loading for improved performance.
     
     Args:
@@ -163,7 +190,7 @@ def load_images(prefix="image", start_sequence=0, count=None, input_dir="./outpu
         start_sequence (int): Starting sequence number
         count (int): Number of images to load. If None, loads all matching images.
         input_dir (str): Directory to load images from
-        format (str): Image format - "png" or "webp"
+        format (str): Image format - "png", "webp", "jpg", or "jpeg"
         num_workers (int): Number of parallel workers for loading images (default 4)
     
     Returns:
@@ -173,8 +200,10 @@ def load_images(prefix="image", start_sequence=0, count=None, input_dir="./outpu
     
     # Validate format
     format = format.lower()
-    if format not in ["png", "webp"]:
-        raise ValueError(f"Unsupported format: {format}. Must be 'png' or 'webp'")
+    if format == "jpeg":
+        format = "jpg"  # Normalize jpeg to jpg
+    if format not in ["png", "webp", "jpg"]:
+        raise ValueError(f"Unsupported format: {format}. Must be 'png', 'webp', 'jpg', or 'jpeg'")
     
     if not os.path.exists(input_dir):
         raise ValueError(f"Input directory does not exist: {input_dir}")

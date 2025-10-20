@@ -12,7 +12,7 @@ import_dir = os.path.join(os.path.dirname(__file__), "vtsUtils")
 if import_dir not in sys.path:
     sys.path.append(import_dir)
 
-from vtsUtils import save_images, DiskImage
+from vtsUtils import save_images, DiskImage, vtsImageTypes
 
 
 # class VTSImageUpscaleWithModel:
@@ -28,7 +28,7 @@ class VTSImageToDisk:
                 "prefix": ("STRING", {"default": "image", "multiline": False}),
                 "start_sequence": ("INT", {"default": 0, "min": 0}),
                 "output_dir": ("STRING", {"default": "./output", "multiline": False}),
-                "format": ("STRING", {"default": "png", "choices": ["png", "webp"]}),
+                "format": (vtsImageTypes, {"default": vtsImageTypes[0]}),
                 "num_workers": ("INT", {"default": 4, "min": 1}),
                 "compression_level": ("INT", {"default": 4, "min": 0, "max": 9, "tooltip": "Image compression level (0-9 for png and 0-6 for WebP)"}),
                 "quality": ("INT", {"default": 95, "min": 1, "max": 101, "tooltip": "Image quality (1-100), or 101 for lossless. Only affects WebP"}),
