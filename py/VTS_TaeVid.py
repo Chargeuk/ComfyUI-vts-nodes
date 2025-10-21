@@ -45,7 +45,7 @@ class VTS_TAEVideoNodeBase:
                         "tooltip": "Parallel mode is faster but requires more memory.",
                     },
                 ),
-                "batch_window_size": (
+                "batch_size": (
                     "INT",
                     {
                         "default": 88,
@@ -192,7 +192,7 @@ class VTS_TAEVideoNodeBase:
         return dtype_map.get(dtype_str, torch.float16)
 
     @classmethod
-    def go(cls, *, latent, latent_type: str, dtype: str, parallel_mode: bool, batch_window_size: int, # overlap_frames: int,
+    def go(cls, *, latent, latent_type: str, dtype: str, parallel_mode: bool, batch_size: int, # overlap_frames: int,
            tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float, clamp_mode: str, accumulate_on_cpu: bool, accumulate_dtype: str,
            **kwargs) -> tuple:
         raise NotImplementedError
@@ -216,17 +216,18 @@ class VTS_TAEVideoDecode(VTS_TAEVideoNodeBase):
         return result
 
     @classmethod
-    def go(cls, *, latent: dict, latent_type: str, dtype: str, parallel_mode: bool, batch_window_size: int, # overlap_frames: int,
+    def go(cls, *, latent: dict, latent_type: str, dtype: str, parallel_mode: bool, # batch_size: int, # overlap_frames: int,
             tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float, clamp_mode: str, accumulate_on_cpu: bool, accumulate_dtype: str,
             **kwargs) -> tuple:
         kwargs = ensure_image_defaults(kwargs)
+        batch_size = kwargs.get("batch_size", 20)
         samples = latent["samples"]
 
-        # decode images in batch_window_size sized batches with overlap
+        # decode images in batch_size sized batches with overlap
         a, b, total_items, c, d = samples.shape
         decoded_images = None  # Initialize as None instead of list
-        print(f"Starting decoding of {total_items} latents with pixel batch size {batch_window_size}, tileX {tileX}, tileY {tileY}, overlapX {overlapX}, overlapY {overlapY}")
-        latent_time_chunk = batch_window_size // 4
+        print(f"Starting decoding of {total_items} latents with pixel batch size {batch_size}, tileX {tileX}, tileY {tileY}, overlapX {overlapX}, overlapY {overlapY}")
+        latent_time_chunk = batch_size // 4
         decoded_images = cls.execute(latent=latent, latent_type=latent_type, dtype=dtype, parallel_mode=parallel_mode,
                                  tileX=tileX, tileY=tileY, overlapX=overlapX, overlapY=overlapY, use_tiled=use_tiled,
                                  blend_mode=blend_mode, blend_exp=blend_exp, min_border_fraction=min_border_fraction, clamp_mode=clamp_mode,
@@ -290,17 +291,17 @@ class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
         return result
 
     @classmethod
-    def go(cls, *, image: torch.Tensor, latent_type: str, dtype: str, parallel_mode: bool, batch_window_size: int, # overlap_frames: int,
+    def go(cls, *, image: torch.Tensor, latent_type: str, dtype: str, parallel_mode: bool, batch_size: int, # overlap_frames: int,
             tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float, clamp_mode: str, accumulate_on_cpu: bool, accumulate_dtype: str) -> tuple:
-        # decode images in batch_window_size sized batches with overlap
+        # decode images in batch_size sized batches with overlap
         total_items, image_height, image_width, C = image.shape
         encoded_latents = None  # Initialize as None instead of list
-        print(f"Starting encoding of {total_items} images with batch size {batch_window_size}, tileX {tileX}, tileY {tileY}, overlapX {overlapX}, overlapY {overlapY}")
+        print(f"Starting encoding of {total_items} images with batch size {batch_size}, tileX {tileX}, tileY {tileY}, overlapX {overlapX}, overlapY {overlapY}")
 
         encoded_latents = cls.execute(image=image, latent_type=latent_type, dtype=dtype, parallel_mode=parallel_mode,
                                   tileX=tileX, tileY=tileY, overlapX=overlapX, overlapY=overlapY, use_tiled=use_tiled,
                                   blend_mode=blend_mode, blend_exp=blend_exp, min_border_fraction=min_border_fraction, clamp_mode=clamp_mode,
-                                  time_chunk=batch_window_size, accumulate_on_cpu=accumulate_on_cpu, accumulate_dtype=accumulate_dtype)
+                                  time_chunk=batch_size, accumulate_on_cpu=accumulate_on_cpu, accumulate_dtype=accumulate_dtype)
          # No concatenation step needed anymore
         print(f"Final encoded latents shape: {encoded_latents.shape}")
 
