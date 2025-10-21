@@ -93,7 +93,6 @@ def composite(destination, source, x, y, color_match_method, color_match_strengt
     destination[:, :, top:bottom, left:right] = source_portion + destination_portion
     return destination
 
-
 class VTS_ImageCompositeMasked:
     @classmethod
     def INPUT_TYPES(s):

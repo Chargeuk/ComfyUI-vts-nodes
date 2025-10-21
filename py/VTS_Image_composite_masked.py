@@ -152,11 +152,19 @@ class VTS_Image_Composite_Masked:
     CATEGORY = "VTS"
 
 
-    def composite(self, source, x, y, resize_source, mask = None, **kwargs):
+    def composite(self, source, x, y, resize_source, color_match_method, color_match_strength = 0.0, mask = None, **kwargs):
         def transform_fn(batch_tensor):
             batch_tensor, updated_source = image_alpha_fix(batch_tensor, source)
             batch_tensor = batch_tensor.movedim(-1, 1)
-            output = composite(batch_tensor, updated_source.movedim(-1, 1), x, y, mask, 1, resize_source).movedim(1, -1)
+            output = composite(destination=batch_tensor,
+                               source=updated_source.movedim(-1, 1),
+                               x=x,
+                               y=y,
+                               color_match_method=color_match_method,
+                               color_match_strength=color_match_strength,
+                               mask=mask,
+                               multiplier=1,
+                               resize_source=resize_source).movedim(1, -1)
             return output
 
         result = transform_and_save_images(
