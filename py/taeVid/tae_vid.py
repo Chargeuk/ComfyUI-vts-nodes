@@ -693,7 +693,7 @@ class TAEVid(nn.Module):
             return newImageData
         else:
             # Final concatenate (on CPU if offloaded, move back to target device if needed)
-            out = torch.cat(decoded_chunks, dim=1)
+            out = torch.cat(decoded_chunks, dim=0)
             if not offload_chunk_to_cpu or device is None:
                 return out
             
