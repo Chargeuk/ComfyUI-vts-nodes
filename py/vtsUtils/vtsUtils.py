@@ -494,6 +494,66 @@ def load_images(prefix="image", start_sequence=0, count=None, input_dir="./outpu
     return images_tensor
 
 
+def load_images_async(prefix="image", start_sequence=0, count=None, input_dir="./output", format="png", num_workers=4, max_retries=5):
+    """
+    Load PNG, WebP, or JPG images from disk asynchronously in a background thread.
+    Returns immediately with a Future object that can be checked or waited on.
+    
+    Args:
+        prefix (str): Prefix of the filenames to load
+        start_sequence (int): Starting sequence number
+        count (int): Number of images to load. If None, loads all matching images.
+        input_dir (str): Directory to load images from
+        format (str): Image format - "png", "webp", "jpg", or "jpeg"
+        num_workers (int): Number of parallel workers for loading images (default 4)
+        max_retries (int): Maximum number of retry attempts for file load operations (default 5)
+    
+    Returns:
+        concurrent.futures.Future: A Future object representing the load operation.
+                                   Call .result() to wait for completion and get the image tensor.
+                                   Call .done() to check if the operation is complete without blocking.
+                                   Call .cancel() to attempt to cancel the operation.
+    
+    Example:
+        # Start loading in background
+        future = load_images_async(prefix="frame", input_dir="./output", count=100)
+        
+        # Do other work...
+        
+        # Check if done (non-blocking)
+        if future.done():
+            print("Load complete!")
+        
+        # Wait for completion and get results
+        images_tensor = future.result()
+        print(f"Loaded tensor with shape: {images_tensor.shape}")
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    
+    # Create a single-thread executor for the background load operation
+    executor = ThreadPoolExecutor(max_workers=1)
+    
+    # Submit the load_images function to run in background
+    future = executor.submit(
+        load_images,
+        prefix=prefix,
+        start_sequence=start_sequence,
+        count=count,
+        input_dir=input_dir,
+        format=format,
+        num_workers=num_workers,
+        max_retries=max_retries
+    )
+    
+    # Attach cleanup callback to shutdown executor when done
+    def cleanup(f):
+        executor.shutdown(wait=False)
+    
+    future.add_done_callback(cleanup)
+    
+    return future
+
+
 def load_images_by_pattern(pattern, input_dir="./output", sort=True, max_retries=5):
     """
     Load PNG images from disk using a glob pattern.

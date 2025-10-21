@@ -30,7 +30,7 @@ import_dir = os.path.join(os.path.dirname(__file__), "..", "vtsUtils")
 if import_dir not in sys.path:
     sys.path.append(import_dir)
 
-from vtsUtils import load_images, save_images, save_images_async, DiskImage
+from vtsUtils import load_images, save_images, save_images_async, DiskImage, load_images_async
 
 
 class TWorkItem(NamedTuple):
@@ -1104,14 +1104,27 @@ class TAEVid(nn.Module):
         start = 0
         chunk_index = 0
         loadedTensor = None
+        nextLoad = None
         while start < T_total:
             end = min(start + time_chunk, T_total)
             number_of_frames_in_chunk = end - start
             if output_dir is not None:
                 # the image sequence is stored to disk and is not a tensor
                 # as there is no chunking, we will load it and use the loaded sequence
-                loadedTensor = load_images(prefix=prefix, start_sequence=start, count=number_of_frames_in_chunk,input_dir=output_dir, format=format)
+                if nextLoad is None:
+                    loadedTensor = load_images(prefix=prefix, start_sequence=start, count=number_of_frames_in_chunk,input_dir=output_dir, format=format)
+                else:
+                    loadedTensor = nextLoad.result()
+                    nextLoad = None
                 x_chunk = self.convertImageTensorToTeaImageTensor(img_tensor=loadedTensor)
+
+                if end < T_total:
+                    # work out the next iteration values
+                    next_start = end
+                    next_end = min(next_start + time_chunk, T_total)
+                    number_of_frames_in_next_chunk = next_end - next_start
+                    # load the next chunk in the background
+                    nextLoad = load_images_async(prefix=prefix, start_sequence=next_start, count=number_of_frames_in_next_chunk,input_dir=output_dir, format=format)
             else:
                 x_chunk = x[:, start:end]
 
