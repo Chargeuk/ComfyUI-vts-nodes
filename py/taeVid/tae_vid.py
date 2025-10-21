@@ -963,9 +963,16 @@ class TAEVid(nn.Module):
         #     raise ValueError("Expected input shape (N,T,C,H,W)")
 
         # x = x[..., :3].movedim(-1, 2)
-        output_dir = x.output_dir
-        prefix = x.prefix
-        format = x.format
+        is_tensor = isinstance(x, torch.Tensor)
+        if not is_tensor:
+            output_dir = x.output_dir
+            prefix = x.prefix
+            format = x.format
+        else:
+            output_dir = None
+            prefix = None
+            format = None
+
         if output_dir is not None:
             print(f"Encoding image sequence shape {x.shape} from directory: {output_dir}")
         else:
