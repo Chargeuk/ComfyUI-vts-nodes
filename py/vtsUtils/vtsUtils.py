@@ -999,7 +999,7 @@ def transform_and_save_images(
             if isinstance(transformed, torch.Tensor):
                 num_output = transformed.shape[0]
                 if output_shape is None:
-                    output_shape = (None,) + transformed.shape[1:]  # Store H, W, C
+                    output_shape = transformed.shape[1:]  # Store H, W, C (spatial dimensions only)
                     output_dtype = transformed.dtype
             else:
                 num_output = len(transformed)
@@ -1090,7 +1090,7 @@ def transform_and_save_images(
         result_ndim = original_ndim
         
         if output_shape is not None:
-            result_shape = (total_output_images,) + output_shape[1:]
+            result_shape = (total_output_images,) + output_shape  # Combine batch size with spatial dimensions
             result_dtype = output_dtype
         else:
             result_shape = original_shape
