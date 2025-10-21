@@ -19,7 +19,7 @@ def get_default_image_input_types():
                 "edit_in_place": ("BOOLEAN", {"default": False}),
                 "prefix": ("STRING", {"default": "image", "multiline": False}),
                 "start_sequence": ("INT", {"default": 0, "min": 0}),
-                "output_dir": ("STRING", {"default": "./output", "multiline": False}),
+                "output_dir": ("STRING", {"default": "./tmp/images", "multiline": False}),
                 "format": (vtsImageTypes, {"default": vtsImageTypes[0]}),
                 "num_workers": ("INT", {"default": 16, "min": 1}),
                 "compression_level": ("INT", {"default": 9, "min": 0, "max": 9, "tooltip": "Image compression level (0-9 for png and 0-6 for WebP)"}),
@@ -38,6 +38,19 @@ def ensure_image_defaults(image_data: dict) -> dict:
     Returns:
         The updated image data dictionary with defaults applied
     """
+    # first, get the return type
+    return_type = image_data.get("return_type", None)
+    if return_type is None or return_type == "Input":
+        image = image_data.get("image", None)
+        if image is not None and not isinstance(image, torch.Tensor):
+            # we have to make all fields equal to the input image's fields
+            image_data["prefix"] = image.prefix
+            image_data["start_sequence"] = image.start_sequence
+            image_data["output_dir"] = image.output_dir
+            image_data["format"] = image.format
+            image_data["compression_level"] = image.compression_level
+            image_data["quality"] = image.quality
+
     defaults = get_default_image_input_types()
     for key, value in defaults["required"].items():
         if key not in image_data or image_data[key] is None:
@@ -595,9 +608,9 @@ def transform_and_save_images(
         output_dir: Directory for new files (required if images is a tensor and return_type is DiskImage, defaults to images.output_dir for DiskImage)
         num_workers: Number of parallel workers for saving images (default 16)
         format: Image format for output (default "png", only used if images is a tensor)
-        return_type: Return type - "DiskImage", "tensor", "Input", or None (default None)
+        return_type: Return type - "DiskImage", "Tensor", "Input", or None (default None)
                     If None, returns the same type as the input images.
-                    If "tensor", loads all transformed images into memory and returns as tensor (no disk writes).
+                    If "Tensor", loads all transformed images into memory and returns as tensor (no disk writes).
                     If "DiskImage", saves to disk and returns a DiskImage object pointing to saved files.
     
     Returns:
@@ -610,12 +623,12 @@ def transform_and_save_images(
     
     # If return_type is None, default to the same type as input
     if return_type is None or return_type == "Input":
-        return_type = "tensor" if is_tensor else "DiskImage"
-    
+        return_type = "Tensor" if is_tensor else "DiskImage"
+
     # Validate return_type
-    if return_type not in ["DiskImage", "tensor"]:
-        raise ValueError(f"return_type must be 'DiskImage', 'tensor', or None, got '{return_type}'")
-    
+    if return_type not in ["DiskImage", "Tensor"]:
+        raise ValueError(f"return_type must be 'DiskImage', 'Tensor', or None, got '{return_type}'")
+
     if is_tensor:
         # Handle tensor input
         if return_type == "DiskImage":
@@ -681,7 +694,7 @@ def transform_and_save_images(
     output_dtype = None
     
     # For tensor return type, collect all transformed batches (only if not editing in place)
-    transformed_batches = [] if (return_type == "tensor" and not (is_tensor and edit_in_place)) else None
+    transformed_batches = [] if (return_type == "Tensor" and not (is_tensor and edit_in_place)) else None
     
     # Use executor for background loading and saving
     with ThreadPoolExecutor(max_workers=num_workers + 1) as executor:
@@ -732,7 +745,7 @@ def transform_and_save_images(
             print(f"Batch {batch_num}/{num_batches}: {batch_count} input -> {num_output} output")
             
             # Handle based on return type
-            if return_type == "tensor":
+            if return_type == "Tensor":
                 # Check if we're doing in-place editing on a tensor
                 if is_tensor and edit_in_place:
                     # Verify batch size matches
@@ -778,7 +791,7 @@ def transform_and_save_images(
             
             # Clean up current batch
             del batch_images
-            if return_type != "tensor" or (is_tensor and edit_in_place):
+            if return_type != "Tensor" or (is_tensor and edit_in_place):
                 del transformed
         
         # Wait for all saves to complete (only if saving to disk)
@@ -788,7 +801,7 @@ def transform_and_save_images(
                 future.result()
     
     # Return based on return_type
-    if return_type == "tensor":
+    if return_type == "Tensor":
         # If editing in place, return the modified input tensor
         if is_tensor and edit_in_place:
             print(f"Transform complete: {number_of_images} images transformed in-place")
@@ -1012,7 +1025,7 @@ class DiskImage:
             new_prefix: Prefix for new files (required if edit_in_place=False and return_type is DiskImage)
             new_output_dir: Directory for new files (defaults to self.output_dir)
             num_workers: Number of parallel workers for saving images (default 16)
-            return_type: Return type - "DiskImage", "tensor", or None (default None)
+            return_type: Return type - "DiskImage", "Tensor", or None (default None)
                         If None, returns DiskImage (same as input type).
         
         Returns:
