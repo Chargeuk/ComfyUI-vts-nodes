@@ -10,14 +10,14 @@ vtsImageTypes = ["jpg", "webp", "png"]
 vtsReturnTypes = ["Input", "DiskImage", "Tensor"]
 
 
-def get_default_image_input_types():
+def get_default_image_input_types(prefix="image"):
     return {
             "required": {
                 "return_type": (vtsReturnTypes, {"default": vtsReturnTypes[0]}),
                 "image": ("IMAGE",),
                 "batch_size": ("INT", {"default": 20, "min": 1}),
                 "edit_in_place": ("BOOLEAN", {"default": False}),
-                "prefix": ("STRING", {"default": "image", "multiline": False}),
+                "prefix": ("STRING", {"default": prefix, "multiline": False}),
                 "start_sequence": ("INT", {"default": 0, "min": 0}),
                 "output_dir": ("STRING", {"default": "./tmp/images", "multiline": False}),
                 "format": (vtsImageTypes, {"default": vtsImageTypes[0]}),
