@@ -135,10 +135,10 @@ class VTS_ImageCompositeMasked:
 # A dictionary that contains all nodes you want to export with their names
 # NOTE: names should be globally unique
 NODE_CLASS_MAPPINGS = {
-    "VTS Image Composite Masked": VTS_ImageCompositeMasked
+    "VTS Image Composite Masked Old": VTS_ImageCompositeMasked
 }
 
 # A dictionary that contains the friendly/humanly readable titles for the nodes
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "VTS Image Composite Masked": "VTS Image Composite Masked"
+    "VTS Image Composite Masked Old": "VTS Image Composite Masked Old"
 }
