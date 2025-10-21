@@ -6,7 +6,7 @@ import comfy
 import comfy.utils
 import time
 
-vtsImageTypes = ["webp", "jpg", "png"]
+vtsImageTypes = ["jpg", "webp", "png"]
 vtsReturnTypes = ["Input", "DiskImage", "Tensor"]
 
 
@@ -15,14 +15,14 @@ def get_default_image_input_types():
             "required": {
                 "return_type": (vtsReturnTypes, {"default": vtsReturnTypes[0]}),
                 "image": ("IMAGE",),
-                "batch_size": ("INT", {"default": 80, "min": 1}),
+                "batch_size": ("INT", {"default": 20, "min": 1}),
                 "edit_in_place": ("BOOLEAN", {"default": False}),
                 "prefix": ("STRING", {"default": "image", "multiline": False}),
                 "start_sequence": ("INT", {"default": 0, "min": 0}),
                 "output_dir": ("STRING", {"default": "./output", "multiline": False}),
                 "format": (vtsImageTypes, {"default": vtsImageTypes[0]}),
-                "num_workers": ("INT", {"default": 4, "min": 1}),
-                "compression_level": ("INT", {"default": 4, "min": 0, "max": 9, "tooltip": "Image compression level (0-9 for png and 0-6 for WebP)"}),
+                "num_workers": ("INT", {"default": 16, "min": 1}),
+                "compression_level": ("INT", {"default": 9, "min": 0, "max": 9, "tooltip": "Image compression level (0-9 for png and 0-6 for WebP)"}),
                 "quality": ("INT", {"default": 95, "min": 1, "max": 101, "tooltip": "Image quality (1-100), or 101 for lossless. Only affects WebP"}),
             }
         }
@@ -130,7 +130,7 @@ def save_images(
     format = format.lower()
     if format == "jpeg":
         format = "jpg"  # Normalize jpeg to jpg
-    if format not in ["png", "webp", "jpg"]:
+    if format not in vtsImageTypes:
         raise ValueError(f"Unsupported format: {format}. Must be 'png', 'webp', 'jpg', or 'jpeg'")
     
     # Set default compression levels for speed vs size
@@ -187,7 +187,7 @@ def save_images(
         sequence_num = start_sequence + i
         filename = f"{prefix}_{sequence_num:06d}.{format}"
         filepath = os.path.join(output_dir, filename)
-        
+
         # Convert to PIL Image
         if image_np.shape[-1] == 3:  # RGB
             pil_image = Image.fromarray(image_np, mode='RGB')
@@ -255,7 +255,7 @@ def save_images(
                 print(f"Saved: {filepath} compression_level={compression_level} quality={quality}")
                 return filepath
                 
-            except (OSError, IOError) as e:
+            except Exception as e:
                 last_exception = e
                 if attempt < max_retries - 1:
                     # Exponential backoff: 0.1s, 0.2s, 0.4s, 0.8s, 1.6s
@@ -309,7 +309,7 @@ def load_images(prefix="image", start_sequence=0, count=None, input_dir="./outpu
     format = format.lower()
     if format == "jpeg":
         format = "jpg"  # Normalize jpeg to jpg
-    if format not in ["png", "webp", "jpg"]:
+    if format not in vtsImageTypes:
         raise ValueError(f"Unsupported format: {format}. Must be 'png', 'webp', 'jpg', or 'jpeg'")
     
     if not os.path.exists(input_dir):
@@ -574,7 +574,7 @@ def transform_and_save_images(
     prefix=None,
     output_dir=None,
     num_workers=16,
-    format="png",
+    format=None,
     return_type=None,
     compression_level=None,
     quality=None,
@@ -630,6 +630,8 @@ def transform_and_save_images(
         original_dtype = image.dtype
         original_ndim = image.ndim
         input_format = format
+        if input_format is None:
+            input_format = vtsImageTypes[0]  # Default to first item in vtsImageTypes
         if prefix is None:
             prefix = "tmp"
         output_dir = output_dir if output_dir else "./temp"
@@ -652,6 +654,8 @@ def transform_and_save_images(
         input_format = format
         if edit_in_place or input_format is None:
             input_format = image.format
+        if input_format is None:
+            input_format = vtsImageTypes[0]  # Default to first item in vtsImageTypes
         output_dir = output_dir if output_dir is not None else image.output_dir
         prefix = image.prefix if edit_in_place else (prefix if prefix else "temp")
         start_sequence = image.start_sequence
