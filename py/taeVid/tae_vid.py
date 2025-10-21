@@ -956,6 +956,7 @@ class TAEVid(nn.Module):
         collect_ipc: bool = False,                     # NEW: call torch.cuda.ipc_collect()
         accumulate_on_cpu: bool = False,               # NEW: accumulate tile results on CPU to save VRAM
         accumulate_dtype: torch.dtype = torch.float32, # NEW: precision for accumulation buffers
+        num_workers: int = 16
     ) -> torch.Tensor:
         """
         Tiled spatial encode with optional temporal chunking and per-tile continuity.
@@ -985,14 +986,6 @@ class TAEVid(nn.Module):
         """
 
         # the provided image is likely to have a shape of B, H, W, C
-        # if x.ndim < 5:
-        #     x = x.unsqueeze(0)
-        # if x.ndim < 5:
-        #     x = x.unsqueeze(0)
-        # if x.ndim != 5:
-        #     raise ValueError("Expected input shape (N,T,C,H,W)")
-
-        # x = x[..., :3].movedim(-1, 2)
         is_tensor = isinstance(x, torch.Tensor)
         if not is_tensor:
             output_dir = x.output_dir
@@ -1112,7 +1105,7 @@ class TAEVid(nn.Module):
                 # the image sequence is stored to disk and is not a tensor
                 # as there is no chunking, we will load it and use the loaded sequence
                 if nextLoad is None:
-                    loadedTensor = load_images(prefix=prefix, start_sequence=start, count=number_of_frames_in_chunk,input_dir=output_dir, format=format)
+                    loadedTensor = load_images(prefix=prefix, start_sequence=start, count=number_of_frames_in_chunk,input_dir=output_dir, format=format, num_workers=num_workers)
                 else:
                     loadedTensor = nextLoad.result()
                     nextLoad = None
@@ -1124,7 +1117,7 @@ class TAEVid(nn.Module):
                     next_end = min(next_start + time_chunk, T_total)
                     number_of_frames_in_next_chunk = next_end - next_start
                     # load the next chunk in the background
-                    nextLoad = load_images_async(prefix=prefix, start_sequence=next_start, count=number_of_frames_in_next_chunk,input_dir=output_dir, format=format)
+                    nextLoad = load_images_async(prefix=prefix, start_sequence=next_start, count=number_of_frames_in_next_chunk,input_dir=output_dir, format=format, num_workers=num_workers)
             else:
                 x_chunk = x[:, start:end]
 
