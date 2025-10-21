@@ -5,9 +5,23 @@ import numpy as np
 import comfy
 import comfy.utils
 import time
+import glob
+import re
 
 vtsImageTypes = ["jpg", "webp", "png"]
 vtsReturnTypes = ["Input", "DiskImage", "Tensor"]
+
+
+def _conditional_print(message, enable=True):
+    """
+    Wrapper around print that only prints if enable is True.
+    
+    Args:
+        message: The message to print
+        enable: Whether to actually print (default True)
+    """
+    if enable:
+        print(message)
 
 
 def get_default_image_input_types(prefix="image"):
@@ -109,6 +123,106 @@ def get_mask_aabb(masks):
     return bounding_boxes, is_empty
 
 
+def delete_all_saved_images(dry_run=False):
+    """
+    Delete all images that have been saved and tracked in DiskImage._saved_images.
+    
+    Args:
+        dry_run (bool): If True, only print what would be deleted without actually deleting
+    
+    Returns:
+        dict: Statistics about the deletion operation with keys:
+              - 'patterns_processed': Number of patterns processed
+              - 'files_found': Total number of files found
+              - 'files_deleted': Number of files successfully deleted
+              - 'files_failed': Number of files that failed to delete
+              - 'errors': List of error messages
+    """
+    stats = {
+        'patterns_processed': 0,
+        'files_found': 0,
+        'files_deleted': 0,
+        'files_failed': 0,
+        'errors': []
+    }
+    
+    if not DiskImage._saved_images:
+        print("No saved images to delete.")
+        return stats
+    
+    print(f"Processing {len(DiskImage._saved_images)} image patterns...")
+    
+    for pattern in DiskImage._saved_images:
+        stats['patterns_processed'] += 1
+        
+        # Convert the regex pattern to a glob pattern
+        # Pattern format: ./output/image_\d{6}\.png
+        # Convert to glob: ./output/image_*.png
+        glob_pattern = re.sub(r'\\d\{\d+\}', '*', pattern)  # Replace \d{6} with *
+        glob_pattern = glob_pattern.replace('\\.', '.')      # Replace \. with .
+        
+        print(f"\nPattern {stats['patterns_processed']}: {pattern}")
+        print(f"Glob pattern: {glob_pattern}")
+        
+        # Find all matching files
+        matching_files = glob.glob(glob_pattern)
+        stats['files_found'] += len(matching_files)
+        
+        if not matching_files:
+            print(f"  No files found matching pattern")
+            continue
+        
+        print(f"  Found {len(matching_files)} files")
+        
+        # Delete each file
+        for filepath in matching_files:
+            try:
+                if dry_run:
+                    print(f"  [DRY RUN] Would delete: {filepath}")
+                    stats['files_deleted'] += 1
+                else:
+                    os.remove(filepath)
+                    print(f"  Deleted: {filepath}")
+                    stats['files_deleted'] += 1
+            except Exception as e:
+                error_msg = f"Failed to delete {filepath}: {e}"
+                print(f"  ERROR: {error_msg}")
+                stats['errors'].append(error_msg)
+                stats['files_failed'] += 1
+    
+    # Print summary
+    print("\n" + "="*60)
+    print("DELETION SUMMARY")
+    print("="*60)
+    print(f"Patterns processed: {stats['patterns_processed']}")
+    print(f"Files found: {stats['files_found']}")
+    print(f"Files deleted: {stats['files_deleted']}")
+    print(f"Files failed: {stats['files_failed']}")
+    
+    if stats['errors']:
+        print("\nErrors:")
+        for error in stats['errors']:
+            print(f"  - {error}")
+    
+    if not dry_run and stats['files_deleted'] > 0:
+        # Clear the saved images set since we've deleted them
+        DiskImage._saved_images.clear()
+        print("\nCleared DiskImage._saved_images")
+    
+    return stats
+
+
+def clear_saved_images_registry():
+    """
+    Clear the registry of saved images without deleting any files.
+    Useful if you want to reset tracking without removing files.
+    """
+    count = len(DiskImage._saved_images)
+    DiskImage._saved_images.clear()
+    print(f"Cleared {count} patterns from DiskImage._saved_images")
+    return count
+
+
 def save_images(
         image,
         prefix="image",
@@ -119,6 +233,7 @@ def save_images(
         compression_level=None,
         quality=None,
         max_retries=5,
+        enableLogging=False,
         **kwargs, # Accept and ignore extra kwargs
     ):
     """
@@ -134,10 +249,15 @@ def save_images(
         compression_level (int): PNG compression (0-9, default 6) or WebP method (0-6, default 4 for speed). Ignored for JPG.
         quality (int): For lossy WebP (1-100, default None = lossless) or JPG (1-100, default 95). PNG ignores this.
         max_retries (int): Maximum number of retry attempts for file save operations (default 5)
+        enableLogging (bool): Enable logging output (default False)
     
     Returns:
         list: List of saved file paths
     """
+    # Create a regex pattern to match all images with this prefix and format
+    # Example: ./output/image/png would match image_000000.png, image_000001.png, etc.
+    basePattern = os.path.join(output_dir, f"{prefix}_\\d{{6}}\\.{format}")
+    DiskImage._saved_images.add(basePattern)
     from concurrent.futures import ThreadPoolExecutor
     # Validate format
     format = format.lower()
@@ -155,7 +275,7 @@ def save_images(
         # JPG doesn't use compression_level
 
     if compression_level < 0:
-        print(f"Warning: compression_level < 0 ({compression_level}), clamping to 0")
+        _conditional_print(f"Warning: compression_level < 0 ({compression_level}), clamping to 0", enableLogging)
         compression_level = 0
     
     # Set default quality
@@ -166,15 +286,15 @@ def save_images(
     
     # Validate compression level ranges
     if format == "png" and not (compression_level <= 9):
-        print(f"Warning: PNG compression_level > 9 ({compression_level}), clamping to 9")
+        _conditional_print(f"Warning: PNG compression_level > 9 ({compression_level}), clamping to 9", enableLogging)
         compression_level = 9
     if format == "webp" and compression_level is not None and not (compression_level <= 6):
-        print(f"Warning: WebP compression_level (method) must be 0-6, got {compression_level}, clamping to 6")
+        _conditional_print(f"Warning: WebP compression_level (method) must be 0-6, got {compression_level}, clamping to 6", enableLogging)
         compression_level = 6  # Default WebP method (0=fast, 6=slow/small)
 
     # Validate quality for WebP and JPG
     if quality is not None and not (1 <= quality <= 100):
-        print(f"Warning: Quality must be 1-100, got {quality}. defaulting to 95")
+        _conditional_print(f"Warning: Quality must be 1-100, got {quality}. defaulting to 95", enableLogging)
         quality = 95  # Default JPG quality
 
     # Ensure output directory exists
@@ -265,7 +385,7 @@ def save_images(
                 
                 # If save succeeded, break out of retry loop
                 pbar.update(1)
-                print(f"Saved: {filepath} compression_level={compression_level} quality={quality}")
+                _conditional_print(f"Saved: {filepath} compression_level={compression_level} quality={quality}", enableLogging)
                 return filepath
                 
             except Exception as e:
@@ -273,11 +393,11 @@ def save_images(
                 if attempt < max_retries - 1:
                     # Exponential backoff: 0.1s, 0.2s, 0.4s, 0.8s, 1.6s
                     wait_time = 0.1 * (2 ** attempt)
-                    print(f"Warning: Failed to save {filepath} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait_time:.1f}s...")
+                    _conditional_print(f"Warning: Failed to save {filepath} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait_time:.1f}s...", enableLogging)
                     time.sleep(wait_time)
                 else:
                     # Final attempt failed, raise the exception
-                    print(f"Error: Failed to save {filepath} after {max_retries} attempts: {e}")
+                    _conditional_print(f"Error: Failed to save {filepath} after {max_retries} attempts: {e}", enableLogging)
                     raise
         
         # Should never reach here, but just in case
@@ -309,6 +429,7 @@ def save_images_async(
         compression_level=None,
         quality=None,
         max_retries=5,
+        enableLogging=False,
         **kwargs,
     ):
     """
@@ -325,6 +446,7 @@ def save_images_async(
         compression_level (int): PNG compression (0-9, default 6) or WebP method (0-6, default 4 for speed). Ignored for JPG.
         quality (int): For lossy WebP (1-100, default None = lossless) or JPG (1-100, default 95). PNG ignores this.
         max_retries (int): Maximum number of retry attempts for file save operations (default 5)
+        enableLogging (bool): Enable logging output (default False)
     
     Returns:
         concurrent.futures.Future: A Future object representing the save operation.
@@ -363,6 +485,7 @@ def save_images_async(
         compression_level=compression_level,
         quality=quality,
         max_retries=max_retries,
+        enableLogging=enableLogging,
         **kwargs
     )
     
@@ -375,7 +498,7 @@ def save_images_async(
     return future
 
 
-def load_images(prefix="image", start_sequence=0, count=None, input_dir="./output", format="png", num_workers=4, max_retries=5):
+def load_images(prefix="image", start_sequence=0, count=None, input_dir="./output", format="png", num_workers=4, max_retries=5, enableLogging=False):
     """
     Load PNG, WebP, or JPG images from disk into a ComfyUI image tensor.
     Uses parallel loading for improved performance.
@@ -388,6 +511,7 @@ def load_images(prefix="image", start_sequence=0, count=None, input_dir="./outpu
         format (str): Image format - "png", "webp", "jpg", or "jpeg"
         num_workers (int): Number of parallel workers for loading images (default 4)
         max_retries (int): Maximum number of retry attempts for file load operations (default 5)
+        enableLogging (bool): Enable logging output (default False)
     
     Returns:
         torch.Tensor: ComfyUI image tensor with shape (batch, height, width, channels)
@@ -428,12 +552,12 @@ def load_images(prefix="image", start_sequence=0, count=None, input_dir="./outpu
             if os.path.exists(os.path.join(input_dir, filename)):
                 matching_files.append(filename)
             else:
-                print(f"Warning: Expected file not found: {filename}")
+                _conditional_print(f"Warning: Expected file not found: {filename}", enableLogging)
     
     if not matching_files:
         raise ValueError(f"No matching images found with prefix '{prefix}' and format '{format}' in {input_dir}")
     
-    print(f"Loading {len(matching_files)} {format.upper()} images from {input_dir}")
+    _conditional_print(f"Loading {len(matching_files)} {format.upper()} images from {input_dir}", enableLogging)
     
     def load_single_image(filename):
         """Helper function to load a single image with retry logic"""
@@ -459,7 +583,7 @@ def load_images(prefix="image", start_sequence=0, count=None, input_dir="./outpu
                     image_np = np.array(pil_image.convert('RGB')).astype(np.float32) / 255.0
                 
                 # If load succeeded, break out of retry loop
-                print(f"Loaded: {filepath}")
+                _conditional_print(f"Loaded: {filepath}", enableLogging)
                 return image_np
                 
             except (OSError, IOError) as e:
@@ -467,11 +591,11 @@ def load_images(prefix="image", start_sequence=0, count=None, input_dir="./outpu
                 if attempt < max_retries - 1:
                     # Exponential backoff: 0.1s, 0.2s, 0.4s, 0.8s, 1.6s
                     wait_time = 0.1 * (2 ** attempt)
-                    print(f"Warning: Failed to load {filepath} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait_time:.1f}s...")
+                    _conditional_print(f"Warning: Failed to load {filepath} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait_time:.1f}s...", enableLogging)
                     time.sleep(wait_time)
                 else:
                     # Final attempt failed, raise the exception
-                    print(f"Error: Failed to load {filepath} after {max_retries} attempts: {e}")
+                    _conditional_print(f"Error: Failed to load {filepath} after {max_retries} attempts: {e}", enableLogging)
                     raise
         
         # Should never reach here, but just in case
@@ -490,7 +614,7 @@ def load_images(prefix="image", start_sequence=0, count=None, input_dir="./outpu
     # Stack into batch tensor
     images_tensor = torch.from_numpy(np.stack(images, axis=0))
     
-    print(f"Created tensor with shape: {images_tensor.shape}")
+    _conditional_print(f"Created tensor with shape: {images_tensor.shape}", enableLogging)
     return images_tensor
 
 
@@ -727,6 +851,7 @@ def transform_and_save_images(
     return_type=None,
     compression_level=None,
     quality=None,
+    enableLogging=False,
     **kwargs, # Accept and ignore extra kwargs
 ):
     """
@@ -748,6 +873,7 @@ def transform_and_save_images(
                     If None, returns the same type as the input images.
                     If "Tensor", loads all transformed images into memory and returns as tensor (no disk writes).
                     If "DiskImage", saves to disk and returns a DiskImage object pointing to saved files.
+        enableLogging (bool): Enable logging output (default False)
     
     Returns:
         DiskImage or torch.Tensor: Depending on return_type parameter (or input type if return_type is None)
@@ -845,18 +971,18 @@ def transform_and_save_images(
             
             # If we don't have a prefetch in progress, load synchronously (first iteration)
             if next_batch_future is None:
-                print(f"Loading batch {batch_num}/{num_batches}")
+                _conditional_print(f"Loading batch {batch_num}/{num_batches}", enableLogging)
                 batch_images = load_batch(batch_idx, batch_count)
             else:
                 # Wait for the prefetched batch to finish loading
-                print(f"Waiting for prefetched batch {batch_num}/{num_batches}")
+                _conditional_print(f"Waiting for prefetched batch {batch_num}/{num_batches}", enableLogging)
                 batch_images = next_batch_future.result()
             
             # Start loading next batch in background (if there is one)
             next_batch_idx = batch_idx + batch_size
             if next_batch_idx < number_of_images:
                 next_batch_count = min(batch_size, number_of_images - next_batch_idx)
-                print(f"Prefetching batch {batch_num + 1}/{num_batches} in background")
+                _conditional_print(f"Prefetching batch {batch_num + 1}/{num_batches} in background", enableLogging)
                 next_batch_future = executor.submit(
                     load_batch,
                     next_batch_idx,
@@ -866,7 +992,7 @@ def transform_and_save_images(
                 next_batch_future = None
             
             # Transform current batch (while next batch loads in background)
-            print(f"Transforming batch {batch_num}/{num_batches}")
+            _conditional_print(f"Transforming batch {batch_num}/{num_batches}", enableLogging)
             transformed = transform_fn(batch_images)
             
             # Determine number of output images from this batch
@@ -878,7 +1004,7 @@ def transform_and_save_images(
             else:
                 num_output = len(transformed)
             
-            print(f"Batch {batch_num}/{num_batches}: {batch_count} input -> {num_output} output")
+            _conditional_print(f"Batch {batch_num}/{num_batches}: {batch_count} input -> {num_output} output", enableLogging)
             
             # Handle based on return type
             if return_type == "Tensor":
@@ -898,7 +1024,7 @@ def transform_and_save_images(
                     else:
                         image[batch_idx:batch_end] = torch.tensor(transformed, device=image.device)
 
-                    print(f"Updated input tensor in-place: indices {batch_idx} to {batch_end-1}")
+                    _conditional_print(f"Updated input tensor in-place: indices {batch_idx} to {batch_end-1}", enableLogging)
                 else:
                     # For tensor return without edit_in_place, collect the transformed batch (no disk writes)
                     if isinstance(transformed, torch.Tensor):
@@ -907,7 +1033,7 @@ def transform_and_save_images(
                         transformed_batches.append(transformed)
             else:
                 # For DiskImage return, save to disk
-                print(f"Saving batch {batch_num}/{num_batches} in background (sequence {current_output_sequence} to {current_output_sequence + num_output - 1})")
+                _conditional_print(f"Saving batch {batch_num}/{num_batches} in background (sequence {current_output_sequence} to {current_output_sequence + num_output - 1})", enableLogging)
                 save_future = executor.submit(
                     save_images,
                     transformed.cpu() if hasattr(transformed, 'cpu') else transformed,
@@ -917,7 +1043,8 @@ def transform_and_save_images(
                     format=input_format,
                     num_workers=num_workers,
                     compression_level=compression_level,
-                    quality=quality
+                    quality=quality,
+                    enableLogging=enableLogging
                 )
                 save_futures.append(save_future)
             
@@ -932,7 +1059,7 @@ def transform_and_save_images(
         
         # Wait for all saves to complete (only if saving to disk)
         if return_type == "DiskImage":
-            print("Waiting for all save operations to complete...")
+            _conditional_print("Waiting for all save operations to complete...", enableLogging)
             for future in save_futures:
                 future.result()
     
@@ -940,7 +1067,7 @@ def transform_and_save_images(
     if return_type == "Tensor":
         # If editing in place, return the modified input tensor
         if is_tensor and edit_in_place:
-            print(f"Transform complete: {number_of_images} images transformed in-place")
+            _conditional_print(f"Transform complete: {number_of_images} images transformed in-place", enableLogging)
             return image
 
         # Otherwise, concatenate all batches into a single tensor
@@ -951,7 +1078,7 @@ def transform_and_save_images(
                 # If not tensors, try to stack as numpy then convert
                 result_tensor = torch.from_numpy(np.concatenate(transformed_batches, axis=0))
             
-            print(f"Transform complete: {number_of_images} input images -> {total_output_images} output images (returned as tensor)")
+            _conditional_print(f"Transform complete: {number_of_images} input images -> {total_output_images} output images (returned as tensor)", enableLogging)
             return result_tensor
         else:
             raise RuntimeError("No transformed batches were collected")
@@ -969,7 +1096,7 @@ def transform_and_save_images(
             result_shape = original_shape
             result_dtype = original_dtype
         
-        print(f"Transform complete: {number_of_images} input images -> {total_output_images} output images")
+        _conditional_print(f"Transform complete: {number_of_images} input images -> {total_output_images} output images", enableLogging)
         
         # Create and return new DiskImage
         result = DiskImage(
@@ -990,6 +1117,9 @@ def transform_and_save_images(
 
 
 class DiskImage:
+    # static set to keep track of all images that have been saved
+    _saved_images = set()
+
     # this class represents a series of images stored to disk
     def __init__(self,
                  prefix,

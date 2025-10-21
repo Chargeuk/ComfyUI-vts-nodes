@@ -103,6 +103,7 @@ class VTS_Clear_Ram:
         "freemem_after")
     FUNCTION = "VRAMdebug"
     CATEGORY = "VTS"
+    OUTPUT_NODE = True
     DESCRIPTION = """
     Returns the inputs unchanged, they are only used as triggers,  
     and performs comfy model management functions and garbage collection,  
