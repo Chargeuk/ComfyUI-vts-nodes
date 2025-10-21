@@ -19,6 +19,13 @@ if tae_dir not in sys.path:
 from taeVid_previewer import VIDEO_FORMATS, VideoModelInfo
 from tae_vid import TAEVid
 
+import_dir = os.path.join(os.path.dirname(__file__), "vtsUtils")
+if import_dir not in sys.path:
+    sys.path.append(import_dir)
+
+from vtsUtils import DiskImage, transform_and_save_images, get_default_image_input_types, deep_merge, ensure_image_defaults
+
+
 
 class VTS_TAEVideoNodeBase:
     FUNCTION = "go"
@@ -186,7 +193,8 @@ class VTS_TAEVideoNodeBase:
 
     @classmethod
     def go(cls, *, latent, latent_type: str, dtype: str, parallel_mode: bool, batch_window_size: int, # overlap_frames: int,
-           tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float, clamp_mode: str, accumulate_on_cpu: bool, accumulate_dtype: str) -> tuple:
+           tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float, clamp_mode: str, accumulate_on_cpu: bool, accumulate_dtype: str,
+           **kwargs) -> tuple:
         raise NotImplementedError
 
 
@@ -197,16 +205,21 @@ class VTS_TAEVideoDecode(VTS_TAEVideoNodeBase):
 
     @classmethod
     def INPUT_TYPES(cls) -> dict:
-        result = super().INPUT_TYPES()
-        result["required"] |= {
+        input_types = super().INPUT_TYPES()
+        input_types["required"] |= {
             "latent": ("LATENT",),
         }
+        defaults = get_default_image_input_types()
+        result = deep_merge(defaults, input_types)
+        # remove the input image
+        result["required"].pop("image", None)
         return result
 
     @classmethod
     def go(cls, *, latent: dict, latent_type: str, dtype: str, parallel_mode: bool, batch_window_size: int, # overlap_frames: int,
-            tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float, clamp_mode: str, accumulate_on_cpu: bool, accumulate_dtype: str) -> tuple:
-
+            tileX: int, tileY: int, overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float, clamp_mode: str, accumulate_on_cpu: bool, accumulate_dtype: str,
+            **kwargs) -> tuple:
+        kwargs = ensure_image_defaults(kwargs)
         samples = latent["samples"]
 
         # decode images in batch_window_size sized batches with overlap
@@ -217,13 +230,15 @@ class VTS_TAEVideoDecode(VTS_TAEVideoNodeBase):
         decoded_images = cls.execute(latent=latent, latent_type=latent_type, dtype=dtype, parallel_mode=parallel_mode,
                                  tileX=tileX, tileY=tileY, overlapX=overlapX, overlapY=overlapY, use_tiled=use_tiled,
                                  blend_mode=blend_mode, blend_exp=blend_exp, min_border_fraction=min_border_fraction, clamp_mode=clamp_mode,
-                                 time_chunk=latent_time_chunk, accumulate_on_cpu=accumulate_on_cpu, accumulate_dtype=accumulate_dtype)
+                                 time_chunk=latent_time_chunk, accumulate_on_cpu=accumulate_on_cpu, accumulate_dtype=accumulate_dtype,
+                                 kwargs=kwargs)
         return (decoded_images,)
 
 
     @classmethod
     def execute(cls, *, latent: dict, latent_type: str, dtype: str, parallel_mode: bool, tileX: int, tileY: int,
-                overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float, clamp_mode: str, time_chunk: int, accumulate_on_cpu: bool, accumulate_dtype: str):
+                overlapX: int, overlapY: int, use_tiled: bool, blend_mode: str, blend_exp: float, min_border_fraction: float, clamp_mode: str, time_chunk: int, accumulate_on_cpu: bool, accumulate_dtype: str,
+                kwargs):
         torch_dtype = cls.get_dtype_from_string(dtype)
         accumulate_torch_dtype = cls.get_dtype_from_string(accumulate_dtype)
         model, device, model_dtype, vmi = cls.get_taevid_model(latent_type, torch_dtype, clamp_mode)
@@ -250,6 +265,7 @@ class VTS_TAEVideoDecode(VTS_TAEVideoNodeBase):
                     time_chunk=time_chunk,
                     accumulate_on_cpu=accumulate_on_cpu,
                     accumulate_dtype=accumulate_torch_dtype,
+                    kwargs=kwargs,
                 )
             else:
                 img = model.decode(
@@ -257,12 +273,6 @@ class VTS_TAEVideoDecode(VTS_TAEVideoNodeBase):
                     parallel=parallel_mode,
                     show_progress=True,
                 )
-
-        img = (
-            img.movedim(2, -1)
-               .to(dtype=torch.float32, device="cpu")
-        )
-        img = img.reshape(-1, *img.shape[-3:])
         return img
 
 

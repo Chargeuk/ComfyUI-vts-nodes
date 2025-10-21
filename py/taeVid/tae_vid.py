@@ -30,7 +30,7 @@ import_dir = os.path.join(os.path.dirname(__file__), "..", "vtsUtils")
 if import_dir not in sys.path:
     sys.path.append(import_dir)
 
-from vtsUtils import load_images
+from vtsUtils import load_images, save_images, DiskImage
 
 
 class TWorkItem(NamedTuple):
@@ -514,6 +514,7 @@ class TAEVid(nn.Module):
         collect_ipc: bool = False,                     # NEW: call torch.cuda.ipc_collect()
         accumulate_on_cpu: bool = False,               # NEW: accumulate tile results on CPU to save VRAM
         accumulate_dtype: torch.dtype = torch.float32, # NEW: precision for accumulation buffers
+        kwargs,
     ) -> torch.Tensor:
         """
         Tiled spatial decode of latent video tensor with optional temporal chunking.
@@ -529,6 +530,8 @@ class TAEVid(nn.Module):
         if x.ndim != 5:
             raise ValueError("Expected latent tensor shape (N,T,C,H,W)")
         N, T_lat_total, _, _, _ = x.shape
+
+        outputToDisk = kwargs.get("return_type", None) == "DiskImage"
 
         # No temporal chunking path (original behavior)
         if (time_chunk is None) or (time_chunk >= T_lat_total):
@@ -592,6 +595,7 @@ class TAEVid(nn.Module):
         decoded_chunks: list[torch.Tensor] = []
         start = 0
         chunk_idx = 0
+        number_of_disk_images = 0
         while start < T_lat_total:
             end = min(start + time_chunk, T_lat_total)
             x_chunk = x[:, start:end]
@@ -649,17 +653,26 @@ class TAEVid(nn.Module):
                     accumulate_dtype=accumulate_dtype,
                 )
 
-            # Offload decoded chunk to CPU if requested
-            if offload_chunk_to_cpu:
-                if isinstance(dec_chunk, tuple):
-                    # Handle case where dec_chunk might be a tuple (shouldn't happen but be safe)
-                    dec_chunk_cpu = dec_chunk[0].cpu()
-                else:
-                    dec_chunk_cpu = dec_chunk.cpu()
-                decoded_chunks.append(dec_chunk_cpu)
-                del dec_chunk_cpu
+            if outputToDisk:
+                print(f"shape of dec_chunk={dec_chunk.shape}")
+                kwargs["image"] = dec_chunk
+                kwargs["start_sequence"] = number_of_disk_images
+                image_paths = save_images(
+                    **kwargs
+                )
+                number_of_disk_images += len(image_paths)
             else:
-                decoded_chunks.append(dec_chunk)
+                # Offload decoded chunk to CPU if requested
+                if offload_chunk_to_cpu:
+                    if isinstance(dec_chunk, tuple):
+                        # Handle case where dec_chunk might be a tuple (shouldn't happen but be safe)
+                        dec_chunk_cpu = dec_chunk[0].cpu()
+                    else:
+                        dec_chunk_cpu = dec_chunk.cpu()
+                    decoded_chunks.append(dec_chunk_cpu)
+                    del dec_chunk_cpu
+                else:
+                    decoded_chunks.append(dec_chunk)
 
             # Explicit cleanup
             del x_chunk, dec_chunk
@@ -671,16 +684,24 @@ class TAEVid(nn.Module):
             start = end
             chunk_idx += 1
 
-        # Final concatenate (on CPU if offloaded, move back to target device if needed)
-        out = torch.cat(decoded_chunks, dim=1)
-        if not offload_chunk_to_cpu or device is None:
+        if outputToDisk:
+            kwargs["start_sequence"] = 0
+            newImageData = DiskImage(
+                **kwargs,
+                number_of_images=number_of_disk_images
+            )
+            return newImageData
+        else:
+            # Final concatenate (on CPU if offloaded, move back to target device if needed)
+            out = torch.cat(decoded_chunks, dim=1)
+            if not offload_chunk_to_cpu or device is None:
+                return out
+            
+            # Move final result back to target device if user specified a CUDA device
+            target_device = torch.device(device) if isinstance(device, str) else device
+            if target_device is not None and target_device.type == "cuda":
+                out = out.to(target_device)
             return out
-        
-        # Move final result back to target device if user specified a CUDA device
-        target_device = torch.device(device) if isinstance(device, str) else device
-        if target_device is not None and target_device.type == "cuda":
-            out = out.to(target_device)
-        return out
 
     def _decode_tiled_core(
         self,
@@ -883,10 +904,10 @@ class TAEVid(nn.Module):
 
         weight.clamp_(min=1e-6)
         decoded = (values / weight).to(dtype=x.dtype)
-        
-        # Move final result back to compute device if accumulated on CPU
-        if accumulate_on_cpu and compute_device.type == 'cuda':
-            decoded = decoded.to(compute_device)
+
+        # convert to comfyUI image on the cpu
+        decoded = decoded.movedim(2, -1).to(dtype=torch.float32, device="cpu")
+        decoded = decoded.reshape(-1, *decoded.shape[-3:])
 
         if return_tile_mem:
             return decoded, updated_tile_mem

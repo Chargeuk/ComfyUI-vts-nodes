@@ -14,7 +14,7 @@ def get_default_image_input_types(prefix="image"):
     return {
             "required": {
                 "return_type": (vtsReturnTypes, {"default": vtsReturnTypes[0]}),
-                "image": ("IMAGE",),
+                "image": ("IMAGE", {"default": None }),
                 "batch_size": ("INT", {"default": 20, "min": 1}),
                 "edit_in_place": ("BOOLEAN", {"default": False}),
                 "prefix": ("STRING", {"default": prefix, "multiline": False}),
@@ -880,6 +880,11 @@ class DiskImage:
         if image is not None:
             # the provided image is likely to have a shape of B, H, W, C
             self.shape = image.shape
+            if self.number_of_images is None:
+                self.number_of_images = self.shape[0]
+
+            # Create new shape tuple with updated batch size
+            self.shape = (self.number_of_images,) + tuple(self.shape[1:])
             self.dtype = image.dtype
             self.ndim = image.ndim
 
