@@ -299,6 +299,82 @@ def save_images(
     return saved_paths
 
 
+def save_images_async(
+        image,
+        prefix="image",
+        start_sequence=0,
+        output_dir="./output",
+        format="png",
+        num_workers=4,
+        compression_level=None,
+        quality=None,
+        max_retries=5,
+        **kwargs,
+    ):
+    """
+    Save a ComfyUI image tensor to disk asynchronously in a background thread.
+    Returns immediately with a Future object that can be checked or waited on.
+    
+    Args:
+        image (torch.Tensor): ComfyUI image tensor with shape (batch, height, width, channels)
+        prefix (str): Prefix for the filename
+        start_sequence (int): Starting sequence number
+        output_dir (str): Directory to save images to
+        format (str): Image format - "png", "webp", "jpg", or "jpeg"
+        num_workers (int): Number of parallel workers for saving images (0 = sequential)
+        compression_level (int): PNG compression (0-9, default 6) or WebP method (0-6, default 4 for speed). Ignored for JPG.
+        quality (int): For lossy WebP (1-100, default None = lossless) or JPG (1-100, default 95). PNG ignores this.
+        max_retries (int): Maximum number of retry attempts for file save operations (default 5)
+    
+    Returns:
+        concurrent.futures.Future: A Future object representing the save operation.
+                                   Call .result() to wait for completion and get the list of saved file paths.
+                                   Call .done() to check if the operation is complete without blocking.
+                                   Call .cancel() to attempt to cancel the operation.
+    
+    Example:
+        # Start saving in background
+        future = save_images_async(images, prefix="frame", output_dir="./output")
+        
+        # Do other work...
+        
+        # Check if done (non-blocking)
+        if future.done():
+            print("Save complete!")
+        
+        # Wait for completion and get results
+        saved_paths = future.result()
+        print(f"Saved {len(saved_paths)} images")
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    
+    # Create a single-thread executor for the background save operation
+    executor = ThreadPoolExecutor(max_workers=1)
+    
+    # Submit the save_images function to run in background
+    future = executor.submit(
+        save_images,
+        image=image,
+        prefix=prefix,
+        start_sequence=start_sequence,
+        output_dir=output_dir,
+        format=format,
+        num_workers=num_workers,
+        compression_level=compression_level,
+        quality=quality,
+        max_retries=max_retries,
+        **kwargs
+    )
+    
+    # Attach cleanup callback to shutdown executor when done
+    def cleanup(f):
+        executor.shutdown(wait=False)
+    
+    future.add_done_callback(cleanup)
+    
+    return future
+
+
 def load_images(prefix="image", start_sequence=0, count=None, input_dir="./output", format="png", num_workers=4, max_retries=5):
     """
     Load PNG, WebP, or JPG images from disk into a ComfyUI image tensor.

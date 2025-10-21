@@ -30,7 +30,7 @@ import_dir = os.path.join(os.path.dirname(__file__), "..", "vtsUtils")
 if import_dir not in sys.path:
     sys.path.append(import_dir)
 
-from vtsUtils import load_images, save_images, DiskImage
+from vtsUtils import load_images, save_images, save_images_async, DiskImage
 
 
 class TWorkItem(NamedTuple):
@@ -596,6 +596,7 @@ class TAEVid(nn.Module):
         start = 0
         chunk_idx = 0
         number_of_disk_images = 0
+        save_futures = []
         while start < T_lat_total:
             end = min(start + time_chunk, T_lat_total)
             x_chunk = x[:, start:end]
@@ -655,12 +656,14 @@ class TAEVid(nn.Module):
 
             if outputToDisk:
                 print(f"shape of dec_chunk={dec_chunk.shape}")
+                number_of_images_to_write = dec_chunk.shape[0]
                 kwargs["image"] = dec_chunk
                 kwargs["start_sequence"] = number_of_disk_images
-                image_paths = save_images(
+                save_future = save_images_async(
                     **kwargs
                 )
-                number_of_disk_images += len(image_paths)
+                number_of_disk_images += number_of_images_to_write
+                save_futures.append(save_future)
             else:
                 # Offload decoded chunk to CPU if requested
                 if offload_chunk_to_cpu:
@@ -685,6 +688,12 @@ class TAEVid(nn.Module):
             chunk_idx += 1
 
         if outputToDisk:
+            # wait for all the futures to complete
+            for i, save_future in enumerate(save_futures):
+                saved_paths = save_future.result()
+                print(f"Saved chunk {i} of {len(saved_paths)} images to disk.")
+
+            print(f"All saves complete")
             kwargs["start_sequence"] = 0
             newImageData = DiskImage(
                 **kwargs,
