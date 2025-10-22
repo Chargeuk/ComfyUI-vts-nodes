@@ -26,7 +26,7 @@ class VTS_Images_ScaleToMin:
                               "largeMaxSize": ("INT", {"default": 512, "min": 0, "max": MAX_RESOLUTION, "step": 1}),
                               "divisible_by": ("INT", { "default": 2, "min": 0, "max": 512, "step": 1, }),
                               "crop": (s.crop_methods,),
-                              "scale_type": (s.scale_types, {"default": "small"}),
+                              "scale_type": (s.scale_types, {"default": "small", "tooltip": "The type of scaling to apply. Large does not maintain aspect ratio."}),
                               "edit_in_place": ("BOOLEAN", {"default": False}),
                               "batch_size": ("INT", {"default": 80, "min": 1, "max": 1000, "step": 1}),
                             }
@@ -85,8 +85,8 @@ class VTS_Images_ScaleToMin:
         aspect_ratio = largest_side / smallest_side
 
         # Calculate new dimensions based on aspect ratio and max sizes
-        new_largest_side = int(smallMaxSize * aspect_ratio)
-        new_smallest_side = int(largeMaxSize / aspect_ratio)
+        new_largest_side = round(smallMaxSize * aspect_ratio)
+        new_smallest_side = round(largeMaxSize / aspect_ratio)
 
         # Determine final dimensions
         if scale_type == "small":
@@ -157,11 +157,11 @@ class VTS_Images_ScaleToMin:
         if original_width < original_height:
             height = largeMaxSize
             heightRatio = height / original_height
-            width = int(original_width * heightRatio)
+            width = round(original_width * heightRatio)
         else:
             width = largeMaxSize
             widthRatio = width / original_width
-            height = int(original_height * widthRatio)
+            height = round(original_height * widthRatio)
         return width, height
 
 
