@@ -9,7 +9,8 @@ import glob
 import re
 
 vtsImageTypes = ["jpg", "webp", "png"]
-vtsReturnTypes = ["Input", "DiskImage", "Tensor"]
+vtsReturnTypes = ["Input", "DiskImage", "Input or DiskImage", "Tensor"]
+default_output_dir = "./tmp/images"
 
 
 def _conditional_print(message, enable=True):
@@ -27,13 +28,13 @@ def _conditional_print(message, enable=True):
 def get_default_image_input_types(prefix="image"):
     return {
             "required": {
-                "return_type": (vtsReturnTypes, {"default": vtsReturnTypes[0]}),
+                "return_type": (vtsReturnTypes, {"default": vtsReturnTypes[0], "tooltip": "The type of the return value. 'Input or DiskImage' will always output to disk, but the format will depend on the input."}),
                 "image": ("IMAGE", {"default": None }),
                 "batch_size": ("INT", {"default": 20, "min": 1}),
                 "edit_in_place": ("BOOLEAN", {"default": False}),
                 "prefix": ("STRING", {"default": prefix, "multiline": False}),
                 "start_sequence": ("INT", {"default": 0, "min": 0}),
-                "output_dir": ("STRING", {"default": "./tmp/images", "multiline": False}),
+                "output_dir": ("STRING", {"default": default_output_dir, "multiline": False}),
                 "format": (vtsImageTypes, {"default": vtsImageTypes[0]}),
                 "num_workers": ("INT", {"default": 16, "min": 1}),
                 "compression_level": ("INT", {"default": 9, "min": 0, "max": 9, "tooltip": "Image compression level (0-9 for png and 0-6 for WebP)"}),
@@ -54,8 +55,17 @@ def ensure_image_defaults(image_data: dict) -> dict:
     """
     # first, get the return type
     return_type = image_data.get("return_type", None)
+    image = image_data.get("image", None)
+    if image is not None and return_type == "Input or DiskImage":
+        if not isinstance(image, torch.Tensor):
+            # as the input is a DiskImage, we will set return_type to "Input", so we copy the existing DiskImage
+            return_type = "Input"
+        else:
+            # as the input is a Tensor, we will set return_type to "DiskImage", to ensure we write to disk
+            return_type = "DiskImage"
+        image_data["return_type"] = return_type
+
     if return_type is None or return_type == "Input":
-        image = image_data.get("image", None)
         if image is not None and not isinstance(image, torch.Tensor):
             # we have to make all fields equal to the input image's fields
             image_data["prefix"] = image.prefix
@@ -227,7 +237,7 @@ def save_images(
         image,
         prefix="image",
         start_sequence=0,
-        output_dir="./output",
+        output_dir=default_output_dir,
         format="png",
         num_workers=4,
         compression_level=None,
@@ -423,7 +433,7 @@ def save_images_async(
         image,
         prefix="image",
         start_sequence=0,
-        output_dir="./output",
+        output_dir=default_output_dir,
         format="png",
         num_workers=4,
         compression_level=None,
@@ -498,7 +508,7 @@ def save_images_async(
     return future
 
 
-def load_images(prefix="image", start_sequence=0, count=None, input_dir="./output", format="png", num_workers=4, max_retries=5, enableLogging=False):
+def load_images(prefix="image", start_sequence=0, count=None, input_dir=default_output_dir, format="png", num_workers=4, max_retries=5, enableLogging=False):
     """
     Load PNG, WebP, or JPG images from disk into a ComfyUI image tensor.
     Uses parallel loading for improved performance.
@@ -618,7 +628,7 @@ def load_images(prefix="image", start_sequence=0, count=None, input_dir="./outpu
     return images_tensor
 
 
-def load_images_async(prefix="image", start_sequence=0, count=None, input_dir="./output", format="png", num_workers=4, max_retries=5):
+def load_images_async(prefix="image", start_sequence=0, count=None, input_dir=default_output_dir, format="png", num_workers=4, max_retries=5):
     """
     Load PNG, WebP, or JPG images from disk asynchronously in a background thread.
     Returns immediately with a Future object that can be checked or waited on.
@@ -678,7 +688,7 @@ def load_images_async(prefix="image", start_sequence=0, count=None, input_dir=".
     return future
 
 
-def load_images_by_pattern(pattern, input_dir="./output", sort=True, max_retries=5):
+def load_images_by_pattern(pattern, input_dir=default_output_dir, sort=True, max_retries=5):
     """
     Load PNG images from disk using a glob pattern.
     
@@ -909,7 +919,7 @@ def transform_and_save_images(
             input_format = vtsImageTypes[0]  # Default to first item in vtsImageTypes
         if prefix is None:
             prefix = "tmp"
-        output_dir = output_dir if output_dir else "./temp"
+        output_dir = output_dir if output_dir else "default_output_dir"
         start_sequence = 0
         
         # Create a simple loader function for tensor batches
