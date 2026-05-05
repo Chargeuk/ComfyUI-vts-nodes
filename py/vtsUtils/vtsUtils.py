@@ -1191,6 +1191,67 @@ class DiskImage:
             self.dtype = image.dtype
             self.ndim = image.ndim
 
+    @property
+    def device(self):
+        return torch.device("cpu")
+
+    def dim(self):
+        return self.ndim
+
+    def size(self, dim=None):
+        if self.shape is None:
+            raise ValueError("DiskImage shape metadata is not available")
+        if dim is None:
+            return self.shape
+        return self.shape[dim]
+
+    def cpu(self):
+        return self.clone()
+
+    def _normalize_range(self, start=0, count=None):
+        total = self.number_of_images or 0
+        if total <= 0:
+            return 0, 0
+
+        if start < 0:
+            start = total + start
+        start = max(0, min(start, total))
+
+        if count is None:
+            count = total - start
+        count = max(0, min(count, total - start))
+        return start, count
+
+    def _view_from_relative_range(self, start=0, count=None):
+        start, count = self._normalize_range(start, count)
+        view = self.clone()
+        view.start_sequence = self.start_sequence + start
+        view.number_of_images = count
+        if self.shape is not None:
+            view.shape = (count,) + tuple(self.shape[1:])
+            view.ndim = len(view.shape)
+        return view
+
+    def select_range(self, start=0, length=None):
+        return self._view_from_relative_range(start=start, count=length)
+
+    def view(self, start=0, length=None):
+        return self.select_range(start=start, length=length)
+
+    def materialize(self, start=0, count=None):
+        start, count = self._normalize_range(start, count)
+        return self.load_images(start_sequence=self.start_sequence + start, count=count)
+
+    def size_bytes_estimate(self):
+        if self.shape is None:
+            return None
+        dtype = self.dtype if self.dtype is not None else torch.float32
+        element_size = torch.tensor([], dtype=dtype).element_size()
+        total_elements = 1
+        for dim in self.shape:
+            total_elements *= dim
+        return total_elements * element_size
+
     def clone(self):
         selfCopy =  DiskImage(
             prefix=self.prefix,
@@ -1223,7 +1284,20 @@ class DiskImage:
         return self.number_of_images
 
     def __getitem__(self, index):
-        """Load a single image from disk by index with retry logic"""
+        """Load a single image tensor or return a cheap subrange view for slices."""
+        if isinstance(index, slice):
+            start, stop, step = index.indices(self.number_of_images)
+            if step == 1:
+                return self._view_from_relative_range(start=start, count=max(0, stop - start))
+            indices = list(range(start, stop, step))
+            if len(indices) == 0:
+                if self.shape is not None:
+                    return torch.empty((0,) + tuple(self.shape[1:]), dtype=self.dtype or torch.float32)
+                return torch.empty((0,), dtype=self.dtype or torch.float32)
+            return torch.stack([self[i] for i in indices], dim=0)
+
+        if index < 0:
+            index = self.number_of_images + index
         if index < 0 or index >= self.number_of_images:
             raise IndexError(f"Index {index} out of range [0, {self.number_of_images})")
         
