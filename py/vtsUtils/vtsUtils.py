@@ -42,6 +42,33 @@ def get_default_image_input_types(prefix="image"):
             }
         }
 
+
+def get_default_image_output_types(prefix="image"):
+    return {
+            "required": {
+                "return_type": (["Tensor", "DiskImage"], {"default": "Tensor", "tooltip": "Return decoded images either as an in-memory tensor or as a DiskImage backed by files on disk."}),
+                "prefix": ("STRING", {"default": prefix, "multiline": False}),
+                "start_sequence": ("INT", {"default": 0, "min": 0}),
+                "output_dir": ("STRING", {"default": default_output_dir, "multiline": False}),
+                "format": (vtsImageTypes, {"default": vtsImageTypes[0]}),
+                "num_workers": ("INT", {"default": 16, "min": 1}),
+                "compression_level": ("INT", {"default": 9, "min": 0, "max": 9, "tooltip": "Image compression level (0-9 for png and 0-6 for WebP)"}),
+                "quality": ("INT", {"default": 95, "min": 1, "max": 101, "tooltip": "Image quality (1-100), or 101 for lossless. Only affects WebP"}),
+            }
+        }
+
+
+def ensure_image_output_defaults(image_data: dict) -> dict:
+    defaults = get_default_image_output_types()
+    for key, value in defaults["required"].items():
+        if key not in image_data or image_data[key] is None:
+            image_data[key] = value[1]["default"]
+
+    quality = image_data.get("quality", 95)
+    if quality > 100:
+        image_data["quality"] = None
+    return image_data
+
 def ensure_image_defaults(image_data: dict) -> dict:
     """
     Ensure that all required fields are present in the image data dictionary.
