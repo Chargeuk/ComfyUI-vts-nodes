@@ -20,6 +20,7 @@ VTS_WRAPPER_RETURN_TYPES = ["Input", "Tensor", "DiskImage"]
 _NO_SUPPORTED_KEY = "__no_supported_nodes__"
 _NO_FILTER_VALUE = "All"
 _DYNAMIC_ANCHOR_INPUT = "__vts_dynamic_anchor"
+_WRAPPED_INPUT_PREFIX = "wrapped__"
 _MAX_INPUT_COUNT = 12
 _MAX_COMBO_OPTIONS = 128
 _SAFE_SHARED_CONFIG_KEYS = {"tooltip", "lazy", "advanced"}
@@ -53,7 +54,7 @@ def _is_builtin_or_extra_node(node_cls):
     return module_name == "nodes" or module_name.startswith("comfy_extras.")
 
 
-def _gather_node_mappings():
+def _gather_node_mappings(include_custom=False):
     mappings = {}
     display_mappings = {}
 
@@ -61,7 +62,7 @@ def _gather_node_mappings():
     display_name_mappings = getattr(core_nodes, "NODE_DISPLAY_NAME_MAPPINGS", {})
 
     for node_name, node_cls in node_mappings.items():
-        if not _is_builtin_or_extra_node(node_cls):
+        if not include_custom and not _is_builtin_or_extra_node(node_cls):
             continue
         mappings[node_name] = node_cls
         if node_name in display_name_mappings:
@@ -309,8 +310,8 @@ def _convert_legacy_input(input_name, legacy_spec, optional=False):
     return None
 
 
-def _build_wrappable_specs():
-    mappings, display_mappings = _gather_node_mappings()
+def _build_wrappable_specs(include_custom=False):
+    mappings, display_mappings = _gather_node_mappings(include_custom=include_custom)
     specs = {}
 
     for node_name, node_cls in mappings.items():
@@ -356,6 +357,7 @@ def _build_wrappable_specs():
             )
         ]
         image_input_names = []
+        legacy_inputs = []
         supported = True
 
         for group_name, group_inputs in (("required", required_inputs), ("optional", optional_inputs)):
@@ -372,6 +374,11 @@ def _build_wrappable_specs():
                     supported = False
                     break
                 option_inputs.append(v3_input)
+                legacy_inputs.append({
+                    "name": input_name,
+                    "optional": group_name == "optional",
+                    "legacy_spec": legacy_spec,
+                })
 
                 raw_type = legacy_spec[0] if isinstance(legacy_spec, (tuple, list)) and len(legacy_spec) > 0 else None
                 if raw_type == "IMAGE":
@@ -391,6 +398,7 @@ def _build_wrappable_specs():
             "category": _get_node_category(node_cls),
             "package": _get_node_package(node_cls),
             "option_inputs": option_inputs,
+            "legacy_inputs": legacy_inputs,
             "image_input_names": set(image_input_names),
             "first_image_input_name": image_input_names[0] if image_input_names else None,
             "all_input_names": [v3_input.id for v3_input in option_inputs],
@@ -424,6 +432,113 @@ def _build_filter_options(specs, field_name):
     return [_NO_FILTER_VALUE] + values
 
 
+def _serialize_catalog_for_frontend(specs, option_keys):
+    catalog = {}
+    for option_key, node_name in option_keys.items():
+        spec = specs[node_name]
+        serialized_inputs = []
+        for item in spec["legacy_inputs"]:
+            serialized_inputs.append({
+                "name": item["name"],
+                "optional": item["optional"],
+                "legacy_spec": item["legacy_spec"],
+            })
+
+        catalog[option_key] = {
+            "node_name": spec["node_name"],
+            "display_name": spec["display_name"],
+            "category": spec["category"],
+            "package": spec["package"],
+            "has_image_input": spec["first_image_input_name"] is not None,
+            "first_image_input_name": spec["first_image_input_name"],
+            "legacy_inputs": serialized_inputs,
+        }
+    return catalog
+
+
+def _resolve_requested_return_type(spec, kwargs, requested_return_type):
+    if requested_return_type != "Input":
+        return requested_return_type
+
+    first_image_input_name = spec.get("first_image_input_name")
+    if not first_image_input_name:
+        return "Tensor"
+
+    wrapped_key = f"{_WRAPPED_INPUT_PREFIX}{first_image_input_name}"
+    input_value = kwargs.get(wrapped_key)
+    if isinstance(input_value, DiskImage):
+        return "DiskImage"
+
+    return "Tensor"
+
+
+def _execute_wrapped_node(spec, requested_return_type, prefix, start_sequence, output_dir, format, num_workers, compression_level, quality, kwargs):
+    resolved_return_type = _resolve_requested_return_type(spec, kwargs, requested_return_type)
+    node_kwargs = {}
+    materialized_inputs = []
+
+    for input_name in spec["all_input_names"]:
+        if input_name == _DYNAMIC_ANCHOR_INPUT:
+            continue
+
+        wrapped_key = f"{_WRAPPED_INPUT_PREFIX}{input_name}"
+        if wrapped_key not in kwargs:
+            continue
+
+        value = kwargs[wrapped_key]
+        if input_name in spec["image_input_names"] and isinstance(value, DiskImage):
+            value = value.materialize()
+            materialized_inputs.append(value)
+        node_kwargs[input_name] = value
+
+    node_instance = spec["class"]()
+    node_function = getattr(node_instance, spec["function_name"])
+
+    try:
+        result = node_function(**node_kwargs)
+        if not isinstance(result, tuple):
+            result = (result,)
+
+        if len(result) == 0:
+            raise ValueError(f"Wrapped node '{spec['node_name']}' returned no outputs.")
+
+        image = result[0]
+
+        if resolved_return_type == "Tensor":
+            return (image,)
+
+        saved_paths = save_images(
+            image=image,
+            prefix=prefix,
+            start_sequence=start_sequence,
+            output_dir=output_dir,
+            format=format,
+            num_workers=num_workers,
+            compression_level=compression_level,
+            quality=None if quality > 100 else quality,
+        )
+
+        disk_image = DiskImage(
+            prefix=prefix,
+            start_sequence=start_sequence,
+            number_of_images=len(saved_paths),
+            output_dir=output_dir,
+            format=format,
+            image=image,
+            compression_level=compression_level,
+            quality=None if quality > 100 else quality,
+        )
+
+        del image
+        model_management.soft_empty_cache()
+        return (disk_image,)
+    finally:
+        for materialized in materialized_inputs:
+            del materialized
+        if materialized_inputs:
+            model_management.soft_empty_cache()
+
+
 class VTS_Generic_Image_Wrapper(io.ComfyNode):
     _cached_specs = None
     _cached_option_keys = None
@@ -438,7 +553,7 @@ class VTS_Generic_Image_Wrapper(io.ComfyNode):
             or cls._cached_category_options is None
             or cls._cached_package_options is None
         ):
-            cls._cached_specs = _build_wrappable_specs()
+            cls._cached_specs = _build_wrappable_specs(include_custom=False)
             cls._cached_option_keys = _build_option_keys(cls._cached_specs)
             cls._cached_category_options = _build_filter_options(cls._cached_specs, "category")
             cls._cached_package_options = _build_filter_options(cls._cached_specs, "package")
@@ -471,7 +586,7 @@ class VTS_Generic_Image_Wrapper(io.ComfyNode):
 
         return io.Schema(
             node_id="VTSGenericImageWrapper",
-            display_name="VTS Generic Image Wrapper",
+            display_name="VTS Generic Image Wrapper OLD",
             category="VTS/image",
             description=(
                 "Wrap a safe subset of old-style image nodes so DiskImage inputs can be materialized automatically "
@@ -554,73 +669,147 @@ class VTS_Generic_Image_Wrapper(io.ComfyNode):
 
         node_name = option_keys[selected_key]
         spec = specs[node_name]
-        resolved_return_type = cls._resolve_return_type(spec, wrapped_node, return_type)
-        node_kwargs = {}
-        materialized_inputs = []
+        flat_kwargs = {
+            f"{_WRAPPED_INPUT_PREFIX}{key}": value
+            for key, value in wrapped_node.items()
+            if key != "wrapped_node"
+        }
+        return io.NodeOutput(*_execute_wrapped_node(
+            spec,
+            return_type,
+            prefix,
+            start_sequence,
+            output_dir,
+            format,
+            num_workers,
+            compression_level,
+            quality,
+            flat_kwargs,
+        ))
 
-        for input_name in spec["all_input_names"]:
-            if input_name == _DYNAMIC_ANCHOR_INPUT:
-                continue
-            if input_name not in wrapped_node:
-                continue
-            value = wrapped_node[input_name]
-            if input_name in spec["image_input_names"] and isinstance(value, DiskImage):
-                value = value.materialize()
-                materialized_inputs.append(value)
-            node_kwargs[input_name] = value
 
-        node_instance = spec["class"]()
-        node_function = getattr(node_instance, spec["function_name"])
+class VTS_Generic_Image_Wrapper_V2:
+    _cached_specs = None
+    _cached_option_keys = None
+    _cached_category_options = None
+    _cached_package_options = None
+    _cached_catalog = None
 
-        try:
-            result = node_function(**node_kwargs)
-            if not isinstance(result, tuple):
-                result = (result,)
+    @classmethod
+    def _get_specs(cls):
+        if (
+            cls._cached_specs is None
+            or cls._cached_option_keys is None
+            or cls._cached_category_options is None
+            or cls._cached_package_options is None
+            or cls._cached_catalog is None
+        ):
+            cls._cached_specs = _build_wrappable_specs(include_custom=True)
+            cls._cached_option_keys = _build_option_keys(cls._cached_specs)
+            cls._cached_category_options = _build_filter_options(cls._cached_specs, "category")
+            cls._cached_package_options = _build_filter_options(cls._cached_specs, "package")
+            cls._cached_catalog = _serialize_catalog_for_frontend(cls._cached_specs, cls._cached_option_keys)
+        return (
+            cls._cached_specs,
+            cls._cached_option_keys,
+            cls._cached_category_options,
+            cls._cached_package_options,
+            cls._cached_catalog,
+        )
 
-            if len(result) == 0:
-                raise ValueError(f"Wrapped node '{node_name}' returned no outputs.")
+    @classmethod
+    def INPUT_TYPES(cls):
+        _, option_keys, category_options, package_options, catalog = cls._get_specs()
+        wrapped_node_options = list(option_keys.keys()) if option_keys else [_NO_SUPPORTED_KEY]
+        return {
+            "required": {
+                "vts_category_filter": (
+                    category_options,
+                    {
+                        "default": _NO_FILTER_VALUE,
+                        "tooltip": "Filter wrapped nodes by their ComfyUI category.",
+                    },
+                ),
+                "vts_package_filter": (
+                    package_options,
+                    {
+                        "default": _NO_FILTER_VALUE,
+                        "tooltip": "Filter wrapped nodes by the package or source they come from.",
+                    },
+                ),
+                "vts_wrapped_node_name": (
+                    wrapped_node_options,
+                    {
+                        "default": wrapped_node_options[0],
+                        "tooltip": "Select a supported node to wrap.",
+                        "vts_node_catalog": catalog,
+                    },
+                ),
+                "vts_return_type": (
+                    VTS_WRAPPER_RETURN_TYPES,
+                    {
+                        "default": "Input",
+                        "tooltip": "Choose Tensor or DiskImage explicitly, or use Input to match the first IMAGE input when the wrapped node has one. If there is no IMAGE input, Input falls back to Tensor.",
+                    },
+                ),
+                "prefix": ("STRING", {"default": "generic_wrapper", "tooltip": "Filename prefix to use when writing DiskImage output."}),
+                "start_sequence": ("INT", {"default": 0, "min": 0}),
+                "output_dir": ("STRING", {"default": default_output_dir}),
+                "format": (vtsImageTypes, {"default": vtsImageTypes[0]}),
+                "num_workers": ("INT", {"default": 16, "min": 1}),
+                "compression_level": ("INT", {"default": 9, "min": 0, "max": 9, "tooltip": "Image compression level (0-9 for png and 0-6 for WebP)."}),
+                "quality": ("INT", {"default": 95, "min": 1, "max": 101, "tooltip": "Image quality (1-100), or 101 for lossless. Only affects WebP."}),
+            }
+        }
 
-            image = result[0]
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "execute"
+    CATEGORY = "VTS/image"
 
-            if resolved_return_type == "Tensor":
-                return io.NodeOutput(image)
+    def execute(
+        self,
+        vts_category_filter,
+        vts_package_filter,
+        vts_wrapped_node_name,
+        vts_return_type,
+        prefix,
+        start_sequence,
+        output_dir,
+        format,
+        num_workers,
+        compression_level,
+        quality,
+        **kwargs,
+    ):
+        specs, option_keys, _, _, _ = self._get_specs()
 
-            saved_paths = save_images(
-                image=image,
-                prefix=prefix,
-                start_sequence=start_sequence,
-                output_dir=output_dir,
-                format=format,
-                num_workers=num_workers,
-                compression_level=compression_level,
-                quality=None if quality > 100 else quality,
-            )
+        if vts_wrapped_node_name == _NO_SUPPORTED_KEY or vts_wrapped_node_name not in option_keys:
+            raise ValueError("No supported wrapped node is currently available.")
 
-            disk_image = DiskImage(
-                prefix=prefix,
-                start_sequence=start_sequence,
-                number_of_images=len(saved_paths),
-                output_dir=output_dir,
-                format=format,
-                image=image,
-                compression_level=compression_level,
-                quality=None if quality > 100 else quality,
-            )
+        node_name = option_keys[vts_wrapped_node_name]
+        spec = specs[node_name]
 
-            del image
-            model_management.soft_empty_cache()
-            return io.NodeOutput(disk_image)
-        finally:
-            for materialized in materialized_inputs:
-                del materialized
-            if materialized_inputs:
-                model_management.soft_empty_cache()
+        return _execute_wrapped_node(
+            spec,
+            vts_return_type,
+            prefix,
+            start_sequence,
+            output_dir,
+            format,
+            num_workers,
+            compression_level,
+            quality,
+            kwargs,
+        )
 
 
 NODE_CLASS_MAPPINGS = {
     "VTSGenericImageWrapper": VTS_Generic_Image_Wrapper,
+    "VTSGenericImageWrapperV2": VTS_Generic_Image_Wrapper_V2,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "VTSGenericImageWrapper": "VTS Generic Image Wrapper",
+    "VTSGenericImageWrapper": "VTS Generic Image Wrapper OLD",
+    "VTSGenericImageWrapperV2": "VTS Generic Image Wrapper",
 }
