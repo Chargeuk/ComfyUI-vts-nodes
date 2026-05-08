@@ -16,6 +16,7 @@ from vtsUtils import DiskImage, default_output_dir, save_images, vtsImageTypes
 
 VTS_WRAPPER_RETURN_TYPES = ["Tensor", "DiskImage"]
 _NO_SUPPORTED_KEY = "__no_supported_nodes__"
+_DYNAMIC_ANCHOR_INPUT = "__vts_dynamic_anchor"
 
 _OBJECT_IO_MAP = {
     "IMAGE": io.Image,
@@ -205,7 +206,14 @@ def _build_wrappable_specs():
         if hidden_inputs:
             continue
 
-        option_inputs = []
+        option_inputs = [
+            io.String.Input(
+                _DYNAMIC_ANCHOR_INPUT,
+                default="",
+                socketless=True,
+                extra_dict={"hidden": True},
+            )
+        ]
         image_input_names = []
         supported = True
 
@@ -339,6 +347,8 @@ class VTS_Generic_Image_Wrapper(io.ComfyNode):
         materialized_inputs = []
 
         for input_name in spec["all_input_names"]:
+            if input_name == _DYNAMIC_ANCHOR_INPUT:
+                continue
             if input_name not in wrapped_node:
                 continue
             value = wrapped_node[input_name]
