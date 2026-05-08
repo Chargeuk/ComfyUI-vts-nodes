@@ -20,6 +20,13 @@ VTS_WRAPPER_RETURN_TYPES = ["Input", "Tensor", "DiskImage"]
 _NO_SUPPORTED_KEY = "__no_supported_nodes__"
 _NO_FILTER_VALUE = "All"
 _DYNAMIC_ANCHOR_INPUT = "__vts_dynamic_anchor"
+_MAX_INPUT_COUNT = 12
+_MAX_COMBO_OPTIONS = 128
+_SAFE_SHARED_CONFIG_KEYS = {"tooltip", "lazy", "advanced"}
+_SAFE_COMBO_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default"}
+_SAFE_INT_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default", "min", "max", "step"}
+_SAFE_FLOAT_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default", "min", "max", "step", "round"}
+_SAFE_STRING_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default", "multiline", "placeholder", "dynamicPrompts"}
 
 _OBJECT_IO_MAP = {
     "IMAGE": io.Image,
@@ -109,6 +116,108 @@ def _get_legacy_input_config(node_cls):
 def _normalize_config_value(config, key, default=None):
     value = config.get(key, default)
     return value
+
+
+def _is_bool_or_none(value):
+    return value is None or isinstance(value, bool)
+
+
+def _is_number_or_none(value):
+    return value is None or isinstance(value, (int, float))
+
+
+def _is_string_or_none(value):
+    return value is None or isinstance(value, str)
+
+
+def _has_only_known_keys(config, allowed_keys):
+    return all(key in allowed_keys for key in config)
+
+
+def _is_safe_shared_config(config):
+    return (
+        _is_string_or_none(config.get("tooltip"))
+        and _is_bool_or_none(config.get("lazy"))
+        and _is_bool_or_none(config.get("advanced"))
+    )
+
+
+def _is_safe_combo_spec(raw_type, config):
+    return (
+        len(raw_type) <= _MAX_COMBO_OPTIONS
+        and all(isinstance(option, (str, int)) for option in raw_type)
+        and _has_only_known_keys(config, _SAFE_COMBO_CONFIG_KEYS)
+        and _is_safe_shared_config(config)
+        and (config.get("default") is None or isinstance(config.get("default"), (str, int)))
+    )
+
+
+def _is_safe_int_spec(config):
+    return (
+        _has_only_known_keys(config, _SAFE_INT_CONFIG_KEYS)
+        and _is_safe_shared_config(config)
+        and _is_number_or_none(config.get("default"))
+        and _is_number_or_none(config.get("min"))
+        and _is_number_or_none(config.get("max"))
+        and _is_number_or_none(config.get("step"))
+    )
+
+
+def _is_safe_float_spec(config):
+    return (
+        _has_only_known_keys(config, _SAFE_FLOAT_CONFIG_KEYS)
+        and _is_safe_shared_config(config)
+        and _is_number_or_none(config.get("default"))
+        and _is_number_or_none(config.get("min"))
+        and _is_number_or_none(config.get("max"))
+        and _is_number_or_none(config.get("step"))
+        and _is_number_or_none(config.get("round"))
+    )
+
+
+def _is_safe_string_spec(config):
+    return (
+        _has_only_known_keys(config, _SAFE_STRING_CONFIG_KEYS)
+        and _is_safe_shared_config(config)
+        and _is_string_or_none(config.get("default"))
+        and _is_bool_or_none(config.get("multiline"))
+        and _is_string_or_none(config.get("placeholder"))
+        and _is_bool_or_none(config.get("dynamicPrompts"))
+    )
+
+
+def _is_safe_boolean_spec(config):
+    return (
+        _has_only_known_keys(config, _SAFE_SHARED_CONFIG_KEYS | {"default"})
+        and _is_safe_shared_config(config)
+        and _is_bool_or_none(config.get("default"))
+    )
+
+
+def _is_safe_object_spec(config):
+    return _has_only_known_keys(config, _SAFE_SHARED_CONFIG_KEYS) and _is_safe_shared_config(config)
+
+
+def _is_safe_legacy_spec(legacy_spec):
+    if not isinstance(legacy_spec, (tuple, list)) or len(legacy_spec) == 0:
+        return False
+
+    raw_type = legacy_spec[0]
+    config = legacy_spec[1] if len(legacy_spec) > 1 and isinstance(legacy_spec[1], dict) else {}
+
+    if isinstance(raw_type, (list, tuple)):
+        return _is_safe_combo_spec(raw_type, config)
+    if raw_type == "BOOLEAN":
+        return _is_safe_boolean_spec(config)
+    if raw_type == "INT":
+        return _is_safe_int_spec(config)
+    if raw_type == "FLOAT":
+        return _is_safe_float_spec(config)
+    if raw_type == "STRING":
+        return _is_safe_string_spec(config)
+    if raw_type in _OBJECT_IO_MAP:
+        return _is_safe_object_spec(config)
+    return False
 
 
 def _convert_legacy_input(input_name, legacy_spec, optional=False):
@@ -235,6 +344,8 @@ def _build_wrappable_specs():
         hidden_inputs = input_config.get("hidden", {})
         if hidden_inputs:
             continue
+        if len(required_inputs) + len(optional_inputs) > _MAX_INPUT_COUNT:
+            continue
 
         option_inputs = [
             io.String.Input(
@@ -249,6 +360,9 @@ def _build_wrappable_specs():
 
         for group_name, group_inputs in (("required", required_inputs), ("optional", optional_inputs)):
             for input_name, legacy_spec in group_inputs.items():
+                if not _is_safe_legacy_spec(legacy_spec):
+                    supported = False
+                    break
                 v3_input = _convert_legacy_input(
                     input_name,
                     legacy_spec,
