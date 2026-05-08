@@ -6,6 +6,7 @@ const NO_MATCHING_NODES = "No matching nodes";
 const WRAPPED_PREFIX = "wrapped__";
 const RETURN_TYPES_WITH_INPUT = ["Input", "Tensor", "DiskImage"];
 const RETURN_TYPES_NO_INPUT = ["Tensor", "DiskImage"];
+const wrappedInputCache = new Map();
 
 function getWidget(node, name) {
   return node.widgets?.find((widget) => widget.name === name);
@@ -105,6 +106,35 @@ function setComboOptions(widget, values) {
   widget.options.values = [...values];
 }
 
+async function fetchWrappedInputs(nodeName) {
+  if (!nodeName || nodeName === NO_MATCHING_NODES) {
+    return [];
+  }
+
+  if (wrappedInputCache.has(nodeName)) {
+    return wrappedInputCache.get(nodeName);
+  }
+
+  const response = await fetch(`/object_info/${encodeURIComponent(nodeName)}`);
+  if (!response.ok) {
+    throw new Error(`Failed to load object info for ${nodeName}: ${response.status}`);
+  }
+
+  const payload = await response.json();
+  const nodeInfo = payload?.[nodeName];
+  const inputs = [];
+
+  for (const [groupName, optional] of [["required", false], ["optional", true]]) {
+    const group = nodeInfo?.input?.[groupName] ?? {};
+    for (const [name, legacySpec] of Object.entries(group)) {
+      inputs.push({ name, optional, legacy_spec: legacySpec });
+    }
+  }
+
+  wrappedInputCache.set(nodeName, inputs);
+  return inputs;
+}
+
 function wrapCallback(widget, afterChange) {
   const originalCallback = widget.callback;
   widget.callback = function () {
@@ -150,7 +180,7 @@ app.registerExtension({
         }
       };
 
-      const syncWrappedInputs = () => {
+      const syncWrappedInputs = async () => {
         removeWrappedInputs(this);
         removeWrappedWidgets(this);
 
@@ -162,7 +192,17 @@ app.registerExtension({
           return;
         }
 
-        for (const inputSpec of selectedSpec.legacy_inputs ?? []) {
+        let wrappedInputs = [];
+        try {
+          wrappedInputs = await fetchWrappedInputs(selectedSpec.node_name);
+        } catch (error) {
+          console.error("[VTS Generic Image Wrapper] Failed to load wrapped inputs", error);
+          this.size = this.computeSize();
+          this.setDirtyCanvas(true, true);
+          return;
+        }
+
+        for (const inputSpec of wrappedInputs) {
           addWrappedInput(this, inputSpec);
         }
 
@@ -170,7 +210,7 @@ app.registerExtension({
         this.setDirtyCanvas(true, true);
       };
 
-      const updateWrappedNodeOptions = () => {
+      const updateWrappedNodeOptions = async () => {
         const selectedCategory = categoryWidget.value ?? FILTER_ALL;
         const selectedPackage = packageWidget.value ?? FILTER_ALL;
 
@@ -193,18 +233,18 @@ app.registerExtension({
         }
 
         updateReturnTypeOptions();
-        syncWrappedInputs();
+        await syncWrappedInputs();
       };
 
-      wrapCallback(categoryWidget, () => updateWrappedNodeOptions());
-      wrapCallback(packageWidget, () => updateWrappedNodeOptions());
+      wrapCallback(categoryWidget, () => void updateWrappedNodeOptions());
+      wrapCallback(packageWidget, () => void updateWrappedNodeOptions());
       wrapCallback(wrappedNodeWidget, () => {
         updateReturnTypeOptions();
-        syncWrappedInputs();
+        void syncWrappedInputs();
       });
 
       setTimeout(() => {
-        updateWrappedNodeOptions();
+        void updateWrappedNodeOptions();
       }, 0);
     };
   },

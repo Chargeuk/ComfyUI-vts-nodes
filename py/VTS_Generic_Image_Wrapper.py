@@ -436,22 +436,12 @@ def _serialize_catalog_for_frontend(specs, option_keys):
     catalog = {}
     for option_key, node_name in option_keys.items():
         spec = specs[node_name]
-        serialized_inputs = []
-        for item in spec["legacy_inputs"]:
-            serialized_inputs.append({
-                "name": item["name"],
-                "optional": item["optional"],
-                "legacy_spec": item["legacy_spec"],
-            })
-
         catalog[option_key] = {
             "node_name": spec["node_name"],
             "display_name": spec["display_name"],
             "category": spec["category"],
             "package": spec["package"],
             "has_image_input": spec["first_image_input_name"] is not None,
-            "first_image_input_name": spec["first_image_input_name"],
-            "legacy_inputs": serialized_inputs,
         }
     return catalog
 
