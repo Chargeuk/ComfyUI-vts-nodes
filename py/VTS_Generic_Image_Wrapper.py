@@ -14,7 +14,7 @@ if import_dir not in sys.path:
 from vtsUtils import DiskImage, default_output_dir, save_images, vtsImageTypes
 
 
-VTS_WRAPPER_RETURN_TYPES = ["Tensor", "DiskImage"]
+VTS_WRAPPER_RETURN_TYPES = ["Input", "Tensor", "DiskImage"]
 _NO_SUPPORTED_KEY = "__no_supported_nodes__"
 _DYNAMIC_ANCHOR_INPUT = "__vts_dynamic_anchor"
 
@@ -246,6 +246,7 @@ def _build_wrappable_specs():
             "function_name": function_name,
             "option_inputs": option_inputs,
             "image_input_names": set(image_input_names),
+            "first_image_input_name": image_input_names[0] if image_input_names else None,
             "all_input_names": [v3_input.id for v3_input in option_inputs],
         }
 
@@ -306,8 +307,8 @@ class VTS_Generic_Image_Wrapper(io.ComfyNode):
                 io.Combo.Input(
                     "return_type",
                     options=VTS_WRAPPER_RETURN_TYPES,
-                    default="Tensor",
-                    tooltip="Return the wrapped node image output either as an in-memory tensor or as a DiskImage backed by files on disk.",
+                    default="Input",
+                    tooltip="Choose Tensor or DiskImage explicitly, or use Input to match the first IMAGE input when the wrapped node has one. If there is no IMAGE input, Input falls back to Tensor.",
                 ),
                 io.String.Input("prefix", default="generic_wrapper", tooltip="Filename prefix to use when writing DiskImage output."),
                 io.Int.Input("start_sequence", default=0, min=0),
@@ -321,6 +322,21 @@ class VTS_Generic_Image_Wrapper(io.ComfyNode):
                 io.Image.Output("image"),
             ],
         )
+
+    @staticmethod
+    def _resolve_return_type(spec, wrapped_node, requested_return_type):
+        if requested_return_type != "Input":
+            return requested_return_type
+
+        first_image_input_name = spec.get("first_image_input_name")
+        if not first_image_input_name:
+            return "Tensor"
+
+        input_value = wrapped_node.get(first_image_input_name)
+        if isinstance(input_value, DiskImage):
+            return "DiskImage"
+
+        return "Tensor"
 
     @classmethod
     def execute(
@@ -343,6 +359,7 @@ class VTS_Generic_Image_Wrapper(io.ComfyNode):
 
         node_name = option_keys[selected_key]
         spec = specs[node_name]
+        resolved_return_type = cls._resolve_return_type(spec, wrapped_node, return_type)
         node_kwargs = {}
         materialized_inputs = []
 
@@ -370,7 +387,7 @@ class VTS_Generic_Image_Wrapper(io.ComfyNode):
 
             image = result[0]
 
-            if return_type == "Tensor":
+            if resolved_return_type == "Tensor":
                 return io.NodeOutput(image)
 
             saved_paths = save_images(
