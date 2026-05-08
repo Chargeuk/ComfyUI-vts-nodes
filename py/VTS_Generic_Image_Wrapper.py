@@ -1,6 +1,8 @@
 import os
 import sys
+import inspect
 from collections import Counter
+from pathlib import Path
 
 import torch
 from comfy import model_management
@@ -16,6 +18,7 @@ from vtsUtils import DiskImage, default_output_dir, save_images, vtsImageTypes
 
 VTS_WRAPPER_RETURN_TYPES = ["Input", "Tensor", "DiskImage"]
 _NO_SUPPORTED_KEY = "__no_supported_nodes__"
+_NO_FILTER_VALUE = "All"
 _DYNAMIC_ANCHOR_INPUT = "__vts_dynamic_anchor"
 
 _OBJECT_IO_MAP = {
@@ -38,15 +41,6 @@ _OBJECT_IO_MAP = {
 _SUPPORTED_WIDGET_TYPES = {"BOOLEAN", "INT", "FLOAT", "STRING"}
 
 
-def _is_builtin_node(node_cls):
-    module_name = getattr(node_cls, "__module__", "")
-    if module_name == "nodes":
-        return True
-    if module_name.startswith("comfy_extras."):
-        return True
-    return False
-
-
 def _gather_node_mappings():
     mappings = {}
     display_mappings = {}
@@ -55,13 +49,42 @@ def _gather_node_mappings():
     display_name_mappings = getattr(core_nodes, "NODE_DISPLAY_NAME_MAPPINGS", {})
 
     for node_name, node_cls in node_mappings.items():
-        if not _is_builtin_node(node_cls):
-            continue
         mappings[node_name] = node_cls
         if node_name in display_name_mappings:
             display_mappings[node_name] = display_name_mappings[node_name]
 
     return mappings, display_mappings
+
+
+def _get_node_category(node_cls):
+    category = getattr(node_cls, "CATEGORY", None)
+    if isinstance(category, str) and category.strip():
+        return category.strip()
+    return "uncategorized"
+
+
+def _get_node_package(node_cls):
+    module_name = getattr(node_cls, "__module__", "") or ""
+    if module_name == "nodes":
+        return "Built-in"
+    if module_name.startswith("comfy_extras."):
+        return "Comfy Extras"
+
+    try:
+        source_file = inspect.getfile(node_cls)
+    except (TypeError, OSError):
+        source_file = None
+
+    if source_file:
+        source_parts = Path(source_file).parts
+        if "custom_nodes" in source_parts:
+            custom_index = source_parts.index("custom_nodes")
+            if custom_index + 1 < len(source_parts):
+                return source_parts[custom_index + 1]
+
+    if module_name:
+        return module_name.split(".")[0]
+    return "Other"
 
 
 def _get_legacy_input_config(node_cls):
@@ -244,6 +267,8 @@ def _build_wrappable_specs():
             "display_name": display_name,
             "class": node_cls,
             "function_name": function_name,
+            "category": _get_node_category(node_cls),
+            "package": _get_node_package(node_cls),
             "option_inputs": option_inputs,
             "image_input_names": set(image_input_names),
             "first_image_input_name": image_input_names[0] if image_input_names else None,
@@ -266,25 +291,59 @@ def _build_option_keys(specs):
     return option_keys
 
 
+def _build_filter_options(specs, field_name):
+    values = sorted(
+        {
+            spec[field_name]
+            for spec in specs.values()
+            if isinstance(spec.get(field_name), str) and spec[field_name].strip()
+        },
+        key=str.lower,
+    )
+    return [_NO_FILTER_VALUE] + values
+
+
 class VTS_Generic_Image_Wrapper(io.ComfyNode):
     _cached_specs = None
     _cached_option_keys = None
+    _cached_category_options = None
+    _cached_package_options = None
 
     @classmethod
     def _get_specs(cls):
-        if cls._cached_specs is None or cls._cached_option_keys is None:
+        if (
+            cls._cached_specs is None
+            or cls._cached_option_keys is None
+            or cls._cached_category_options is None
+            or cls._cached_package_options is None
+        ):
             cls._cached_specs = _build_wrappable_specs()
             cls._cached_option_keys = _build_option_keys(cls._cached_specs)
-        return cls._cached_specs, cls._cached_option_keys
+            cls._cached_category_options = _build_filter_options(cls._cached_specs, "category")
+            cls._cached_package_options = _build_filter_options(cls._cached_specs, "package")
+        return (
+            cls._cached_specs,
+            cls._cached_option_keys,
+            cls._cached_category_options,
+            cls._cached_package_options,
+        )
 
     @classmethod
     def define_schema(cls):
-        specs, option_keys = cls._get_specs()
+        specs, option_keys, category_options, package_options = cls._get_specs()
 
         options = []
+        option_meta = {}
         for option_key, node_name in option_keys.items():
             spec = specs[node_name]
             options.append(io.DynamicCombo.Option(option_key, spec["option_inputs"]))
+            option_meta[option_key] = {
+                "node_name": spec["node_name"],
+                "display_name": spec["display_name"],
+                "category": spec["category"],
+                "package": spec["package"],
+                "has_image_input": spec["first_image_input_name"] is not None,
+            }
 
         if not options:
             options = [io.DynamicCombo.Option(_NO_SUPPORTED_KEY, [])]
@@ -298,11 +357,24 @@ class VTS_Generic_Image_Wrapper(io.ComfyNode):
                 "and the single image output can optionally be written back to disk as a DiskImage."
             ),
             inputs=[
+                io.Combo.Input(
+                    "category_filter",
+                    options=category_options,
+                    default=_NO_FILTER_VALUE,
+                    tooltip="Filter wrapped nodes by their ComfyUI category.",
+                ),
+                io.Combo.Input(
+                    "package_filter",
+                    options=package_options,
+                    default=_NO_FILTER_VALUE,
+                    tooltip="Filter wrapped nodes by the package or source they come from.",
+                ),
                 io.DynamicCombo.Input(
                     "wrapped_node",
                     options=options,
                     display_name="Wrapped Node",
                     tooltip="Select a supported image node to wrap.",
+                    extra_dict={"vts_node_meta": option_meta},
                 ),
                 io.Combo.Input(
                     "return_type",
@@ -341,6 +413,8 @@ class VTS_Generic_Image_Wrapper(io.ComfyNode):
     @classmethod
     def execute(
         cls,
+        category_filter,
+        package_filter,
         wrapped_node,
         return_type,
         prefix,
@@ -351,7 +425,7 @@ class VTS_Generic_Image_Wrapper(io.ComfyNode):
         compression_level,
         quality,
     ) -> io.NodeOutput:
-        specs, option_keys = cls._get_specs()
+        specs, option_keys, _, _ = cls._get_specs()
         selected_key = wrapped_node.get("wrapped_node")
 
         if selected_key == _NO_SUPPORTED_KEY or selected_key not in option_keys:
