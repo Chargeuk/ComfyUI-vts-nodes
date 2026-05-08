@@ -37,12 +37,28 @@ _OBJECT_IO_MAP = {
 _SUPPORTED_WIDGET_TYPES = {"BOOLEAN", "INT", "FLOAT", "STRING"}
 
 
+def _is_builtin_node(node_cls):
+    module_name = getattr(node_cls, "__module__", "")
+    if module_name == "nodes":
+        return True
+    if module_name.startswith("comfy_extras."):
+        return True
+    return False
+
+
 def _gather_node_mappings():
     mappings = {}
     display_mappings = {}
 
-    mappings.update(getattr(core_nodes, "NODE_CLASS_MAPPINGS", {}))
-    display_mappings.update(getattr(core_nodes, "NODE_DISPLAY_NAME_MAPPINGS", {}))
+    node_mappings = getattr(core_nodes, "NODE_CLASS_MAPPINGS", {})
+    display_name_mappings = getattr(core_nodes, "NODE_DISPLAY_NAME_MAPPINGS", {})
+
+    for node_name, node_cls in node_mappings.items():
+        if not _is_builtin_node(node_cls):
+            continue
+        mappings[node_name] = node_cls
+        if node_name in display_name_mappings:
+            display_mappings[node_name] = display_name_mappings[node_name]
 
     return mappings, display_mappings
 
