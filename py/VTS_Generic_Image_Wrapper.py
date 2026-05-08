@@ -801,10 +801,8 @@ class VTS_Generic_Image_Wrapper_V2:
 
 NODE_CLASS_MAPPINGS = {
     "VTSGenericImageWrapper": VTS_Generic_Image_Wrapper,
-    "VTSGenericImageWrapperV2": VTS_Generic_Image_Wrapper_V2,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "VTSGenericImageWrapper": "VTS Generic Image Wrapper OLD",
-    "VTSGenericImageWrapperV2": "VTS Generic Image Wrapper",
 }
