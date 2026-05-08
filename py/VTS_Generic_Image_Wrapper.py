@@ -694,7 +694,12 @@ class VTS_Generic_Image_Wrapper_V2:
             or cls._cached_package_options is None
             or cls._cached_catalog is None
         ):
-            cls._cached_specs = _build_wrappable_specs(include_custom=True)
+            # Keep V2 startup-safe for now. In the full ComfyUI process,
+            # core_nodes.NODE_CLASS_MAPPINGS already includes loaded custom nodes,
+            # and scanning that full live set during INPUT_TYPES()/object_info can
+            # stall frontend startup. A future version should fetch broader support
+            # lazily through a dedicated backend route instead.
+            cls._cached_specs = _build_wrappable_specs(include_custom=False)
             cls._cached_option_keys = _build_option_keys(cls._cached_specs)
             cls._cached_category_options = _build_filter_options(cls._cached_specs, "category")
             cls._cached_package_options = _build_filter_options(cls._cached_specs, "package")
