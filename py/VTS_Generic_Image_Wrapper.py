@@ -41,6 +41,11 @@ _OBJECT_IO_MAP = {
 _SUPPORTED_WIDGET_TYPES = {"BOOLEAN", "INT", "FLOAT", "STRING"}
 
 
+def _is_builtin_or_extra_node(node_cls):
+    module_name = getattr(node_cls, "__module__", "") or ""
+    return module_name == "nodes" or module_name.startswith("comfy_extras.")
+
+
 def _gather_node_mappings():
     mappings = {}
     display_mappings = {}
@@ -49,6 +54,8 @@ def _gather_node_mappings():
     display_name_mappings = getattr(core_nodes, "NODE_DISPLAY_NAME_MAPPINGS", {})
 
     for node_name, node_cls in node_mappings.items():
+        if not _is_builtin_or_extra_node(node_cls):
+            continue
         mappings[node_name] = node_cls
         if node_name in display_name_mappings:
             display_mappings[node_name] = display_name_mappings[node_name]
