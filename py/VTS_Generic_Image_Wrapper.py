@@ -47,10 +47,16 @@ def _gather_node_mappings():
     for module in list(sys.modules.values()):
         if module is None:
             continue
-        module_mappings = getattr(module, "NODE_CLASS_MAPPINGS", None)
+        try:
+            module_mappings = getattr(module, "NODE_CLASS_MAPPINGS", None)
+        except Exception:
+            module_mappings = None
         if isinstance(module_mappings, dict):
             mappings.update(module_mappings)
-        module_display_mappings = getattr(module, "NODE_DISPLAY_NAME_MAPPINGS", None)
+        try:
+            module_display_mappings = getattr(module, "NODE_DISPLAY_NAME_MAPPINGS", None)
+        except Exception:
+            module_display_mappings = None
         if isinstance(module_display_mappings, dict):
             display_mappings.update(module_display_mappings)
 
@@ -170,8 +176,13 @@ def _build_wrappable_specs():
     for node_name, node_cls in mappings.items():
         if node_name.startswith("VTS "):
             continue
-        if node_name in {"VTS Generic Image Wrapper", "VTS Prompt Batcher"}:
+        if node_name in {"VTS Generic Image Wrapper", "VTSGenericImageWrapper", "VTS Prompt Batcher"}:
             continue
+
+        input_config = _get_legacy_input_config(node_cls)
+        if not isinstance(input_config, dict):
+            continue
+
         if getattr(node_cls, "INPUT_IS_LIST", False):
             continue
         output_is_list = getattr(node_cls, "OUTPUT_IS_LIST", False)
@@ -186,10 +197,6 @@ def _build_wrappable_specs():
 
         function_name = getattr(node_cls, "FUNCTION", None)
         if not isinstance(function_name, str):
-            continue
-
-        input_config = _get_legacy_input_config(node_cls)
-        if not isinstance(input_config, dict):
             continue
 
         required_inputs = input_config.get("required", {})
@@ -389,9 +396,9 @@ class VTS_Generic_Image_Wrapper(io.ComfyNode):
 
 
 NODE_CLASS_MAPPINGS = {
-    "VTS Generic Image Wrapper": VTS_Generic_Image_Wrapper,
+    "VTSGenericImageWrapper": VTS_Generic_Image_Wrapper,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "VTS Generic Image Wrapper": "VTS Generic Image Wrapper",
+    "VTSGenericImageWrapper": "VTS Generic Image Wrapper",
 }
