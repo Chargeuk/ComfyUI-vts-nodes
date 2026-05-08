@@ -44,22 +44,6 @@ def _gather_node_mappings():
     mappings.update(getattr(core_nodes, "NODE_CLASS_MAPPINGS", {}))
     display_mappings.update(getattr(core_nodes, "NODE_DISPLAY_NAME_MAPPINGS", {}))
 
-    for module in list(sys.modules.values()):
-        if module is None:
-            continue
-        try:
-            module_mappings = getattr(module, "NODE_CLASS_MAPPINGS", None)
-        except Exception:
-            module_mappings = None
-        if isinstance(module_mappings, dict):
-            mappings.update(module_mappings)
-        try:
-            module_display_mappings = getattr(module, "NODE_DISPLAY_NAME_MAPPINGS", None)
-        except Exception:
-            module_display_mappings = None
-        if isinstance(module_display_mappings, dict):
-            display_mappings.update(module_display_mappings)
-
     return mappings, display_mappings
 
 
