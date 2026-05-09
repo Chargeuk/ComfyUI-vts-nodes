@@ -16,7 +16,7 @@ import_dir = os.path.join(os.path.dirname(__file__), "vtsUtils")
 if import_dir not in sys.path:
     sys.path.append(import_dir)
 
-from vtsUtils import DiskImage, default_output_dir, save_images, vtsImageTypes
+from vtsUtils import DiskImage, default_output_dir, resolve_list_mapped_output_identity, save_images, vtsImageTypes
 
 
 _EXCLUDED_CUSTOM_NODE_PACKAGES = {
@@ -278,10 +278,15 @@ def _process_image_outputs(spec, outputs, resolved_return_type, prefix, start_se
         else:
             image_prefix = prefix
 
+        effective_prefix, effective_start_sequence = resolve_list_mapped_output_identity(
+            image_prefix,
+            start_sequence,
+        )
+
         save_images(
             image=image,
-            prefix=image_prefix,
-            start_sequence=start_sequence,
+            prefix=effective_prefix,
+            start_sequence=effective_start_sequence,
             output_dir=output_dir,
             format=format_name,
             num_workers=num_workers,
@@ -291,8 +296,8 @@ def _process_image_outputs(spec, outputs, resolved_return_type, prefix, start_se
 
         processed_outputs[output_index] = _make_disk_image(
             image=image,
-            prefix=image_prefix,
-            start_sequence=start_sequence,
+            prefix=effective_prefix,
+            start_sequence=effective_start_sequence,
             output_dir=output_dir,
             format_name=format_name,
             compression_level=compression_level,

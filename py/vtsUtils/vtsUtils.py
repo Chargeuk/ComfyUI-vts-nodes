@@ -8,9 +8,40 @@ import time
 import glob
 import re
 
+try:
+    from comfy_execution.utils import get_executing_context
+except Exception:
+    get_executing_context = None
+
 vtsImageTypes = ["jpg", "webp", "png"]
 vtsReturnTypes = ["Input", "DiskImage", "Input or DiskImage", "Tensor"]
 default_output_dir = "./tmp/images"
+
+
+def resolve_list_mapped_output_identity(prefix, start_sequence=0):
+    """
+    Make DiskImage output paths unique during ComfyUI list-mapped execution.
+
+    When a node is implicitly mapped over a list input, ComfyUI re-invokes the
+    node once per list item with the same widget values. For disk-backed image
+    outputs that would otherwise cause each invocation to write to the same
+    filename range and overwrite previous results.
+
+    To avoid collisions, suffix the prefix with the current list index whenever
+    the node is executing inside a list-mapped context.
+    """
+    if get_executing_context is None:
+        return prefix, start_sequence
+
+    try:
+        context = get_executing_context()
+    except Exception:
+        return prefix, start_sequence
+
+    if context is None or context.list_index is None:
+        return prefix, start_sequence
+
+    return f"{prefix}_list_{context.list_index:06d}", start_sequence
 
 
 def _conditional_print(message, enable=True):
@@ -831,6 +862,15 @@ def transform_images(
         def load_batch(batch_start, batch_count):
             return images.load_images(start_sequence=images.start_sequence + batch_start, count=batch_count)
     
+    base_output_start_sequence = start_sequence if edit_in_place else 0
+    effective_prefix = prefix
+    effective_start_sequence = base_output_start_sequence
+    if return_type == "DiskImage" and not edit_in_place:
+        effective_prefix, effective_start_sequence = resolve_list_mapped_output_identity(
+            prefix,
+            base_output_start_sequence,
+        )
+
     # Calculate number of batches
     num_batches = (number_of_images + batch_size - 1) // batch_size
     
@@ -988,7 +1028,7 @@ def transform_and_save_images(
     
     # Track total output images and current output sequence
     total_output_images = 0
-    current_output_sequence = start_sequence if edit_in_place else 0
+    current_output_sequence = effective_start_sequence
     output_shape = None
     output_dtype = None
     
@@ -1074,7 +1114,7 @@ def transform_and_save_images(
                 save_future = executor.submit(
                     save_images,
                     transformed.cpu() if hasattr(transformed, 'cpu') else transformed,
-                    prefix=prefix,
+                    prefix=effective_prefix,
                     start_sequence=current_output_sequence,
                     output_dir=output_dir,
                     format=input_format,
@@ -1137,8 +1177,8 @@ def transform_and_save_images(
         
         # Create and return new DiskImage
         result = DiskImage(
-            prefix=prefix,
-            start_sequence=start_sequence if edit_in_place else 0,
+            prefix=effective_prefix,
+            start_sequence=effective_start_sequence,
             number_of_images=total_output_images,
             output_dir=output_dir,
             format=input_format,

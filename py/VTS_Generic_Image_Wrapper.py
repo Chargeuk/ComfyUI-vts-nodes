@@ -13,7 +13,7 @@ import_dir = os.path.join(os.path.dirname(__file__), "vtsUtils")
 if import_dir not in sys.path:
     sys.path.append(import_dir)
 
-from vtsUtils import DiskImage, default_output_dir, save_images, vtsImageTypes
+from vtsUtils import DiskImage, default_output_dir, resolve_list_mapped_output_identity, save_images, vtsImageTypes
 
 
 VTS_WRAPPER_RETURN_TYPES = ["Input", "Tensor", "DiskImage"]
@@ -529,10 +529,15 @@ def _execute_wrapped_node(spec, requested_return_type, prefix, start_sequence, o
         if resolved_return_type == "Tensor":
             return (image,)
 
+        effective_prefix, effective_start_sequence = resolve_list_mapped_output_identity(
+            prefix,
+            start_sequence,
+        )
+
         saved_paths = save_images(
             image=image,
-            prefix=prefix,
-            start_sequence=start_sequence,
+            prefix=effective_prefix,
+            start_sequence=effective_start_sequence,
             output_dir=output_dir,
             format=format,
             num_workers=num_workers,
@@ -541,8 +546,8 @@ def _execute_wrapped_node(spec, requested_return_type, prefix, start_sequence, o
         )
 
         disk_image = DiskImage(
-            prefix=prefix,
-            start_sequence=start_sequence,
+            prefix=effective_prefix,
+            start_sequence=effective_start_sequence,
             number_of_images=len(saved_paths),
             output_dir=output_dir,
             format=format,

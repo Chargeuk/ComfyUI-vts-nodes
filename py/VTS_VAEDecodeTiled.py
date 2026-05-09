@@ -7,7 +7,7 @@ import_dir = os.path.join(os.path.dirname(__file__), "vtsUtils")
 if import_dir not in sys.path:
     sys.path.append(import_dir)
 
-from vtsUtils import DiskImage, ensure_image_output_defaults, get_default_image_output_types, save_images, deep_merge
+from vtsUtils import DiskImage, ensure_image_output_defaults, get_default_image_output_types, resolve_list_mapped_output_identity, save_images, deep_merge
 
 
 class VTS_VAEDecodeTiled:
@@ -64,10 +64,15 @@ class VTS_VAEDecodeTiled:
         if kwargs["return_type"] == "Tensor":
             return (images,)
 
+        effective_prefix, effective_start_sequence = resolve_list_mapped_output_identity(
+            kwargs["prefix"],
+            kwargs["start_sequence"],
+        )
+
         saved_paths = save_images(
             image=images,
-            prefix=kwargs["prefix"],
-            start_sequence=kwargs["start_sequence"],
+            prefix=effective_prefix,
+            start_sequence=effective_start_sequence,
             output_dir=kwargs["output_dir"],
             format=kwargs["format"],
             num_workers=kwargs["num_workers"],
@@ -76,8 +81,8 @@ class VTS_VAEDecodeTiled:
         )
 
         disk_image = DiskImage(
-            prefix=kwargs["prefix"],
-            start_sequence=kwargs["start_sequence"],
+            prefix=effective_prefix,
+            start_sequence=effective_start_sequence,
             number_of_images=len(saved_paths),
             output_dir=kwargs["output_dir"],
             format=kwargs["format"],
