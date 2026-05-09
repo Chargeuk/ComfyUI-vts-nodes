@@ -33,7 +33,7 @@ class VTS_Random_Prompt_Builder:
                         "max": 10000,
                     },
                 ),
-                "seed": (
+                "random_seed": (
                     "INT",
                     {
                         "default": 0,
@@ -102,7 +102,7 @@ class VTS_Random_Prompt_Builder:
             prompt_node = prompt.get(unique_id)
             if isinstance(prompt_node, dict):
                 prompt_inputs = prompt_node.setdefault("inputs", {})
-                prompt_inputs["seed"] = resolved_seed
+                prompt_inputs["random_seed"] = resolved_seed
 
         if isinstance(extra_pnginfo, dict):
             workflow = extra_pnginfo.get("workflow")
@@ -121,16 +121,16 @@ class VTS_Random_Prompt_Builder:
         cls,
         template_text="",
         number_of_prompts=1,
-        seed=0,
+        random_seed=0,
         seed_mode="fixed",
         unique_id=None,
         prompt=None,
         extra_pnginfo=None,
     ):
         if seed_mode == "fixed":
-            return ("fixed", seed)
+            return ("fixed", random_seed)
 
-        resolved_seed = cls._resolve_seed_for_mode(seed, seed_mode, unique_id)
+        resolved_seed = cls._resolve_seed_for_mode(random_seed, seed_mode, unique_id)
         cls._pending_seed_by_node[cls._node_key(unique_id)] = resolved_seed
         return (seed_mode, resolved_seed)
 
@@ -182,7 +182,7 @@ class VTS_Random_Prompt_Builder:
         self,
         template_text="",
         number_of_prompts=1,
-        seed=0,
+        random_seed=0,
         seed_mode="fixed",
         unique_id=None,
         prompt=None,
@@ -192,7 +192,7 @@ class VTS_Random_Prompt_Builder:
             print("[VTS Random Prompt Builder] Empty template provided, returning empty output")
             return ("",)
 
-        resolved_seed = self._consume_execution_seed(seed, seed_mode, unique_id)
+        resolved_seed = self._consume_execution_seed(random_seed, seed_mode, unique_id)
         rng = random.Random(resolved_seed)
 
         parsed_parts = self._parse_template(template_text)
