@@ -861,15 +861,6 @@ def transform_images(
         # Create loader function for DiskImage
         def load_batch(batch_start, batch_count):
             return images.load_images(start_sequence=images.start_sequence + batch_start, count=batch_count)
-    
-    base_output_start_sequence = start_sequence if edit_in_place else 0
-    effective_prefix = prefix
-    effective_start_sequence = base_output_start_sequence
-    if return_type == "DiskImage" and not edit_in_place:
-        effective_prefix, effective_start_sequence = resolve_list_mapped_output_identity(
-            prefix,
-            base_output_start_sequence,
-        )
 
     # Calculate number of batches
     num_batches = (number_of_images + batch_size - 1) // batch_size
@@ -1022,6 +1013,15 @@ def transform_and_save_images(
         # Create loader function for DiskImage
         def load_batch(batch_start, batch_count):
             return image.load_images(start_sequence=image.start_sequence + batch_start, count=batch_count)
+
+    base_output_start_sequence = start_sequence if edit_in_place else 0
+    effective_prefix = prefix
+    effective_start_sequence = base_output_start_sequence
+    if return_type == "DiskImage" and not edit_in_place:
+        effective_prefix, effective_start_sequence = resolve_list_mapped_output_identity(
+            prefix,
+            base_output_start_sequence,
+        )
 
     # Calculate number of batches
     num_batches = (number_of_images + batch_size - 1) // batch_size
