@@ -71,12 +71,12 @@ app.registerExtension({
 
       const updateReturnTypeOptions = () => {
         const selectedWrappedNode = wrappedNodeWidget.value;
-        const hasImageInput = !!wrappedNodeMeta[selectedWrappedNode]?.has_image_input;
-        const allowedReturnTypes = hasImageInput ? RETURN_TYPES_WITH_INPUT : RETURN_TYPES_NO_INPUT;
+        const imageInputCount = wrappedNodeMeta[selectedWrappedNode]?.image_input_count ?? 0;
+        const allowedReturnTypes = imageInputCount === 1 ? RETURN_TYPES_WITH_INPUT : RETURN_TYPES_NO_INPUT;
 
         setComboOptions(returnTypeWidget, allowedReturnTypes);
         if (!allowedReturnTypes.includes(returnTypeWidget.value)) {
-          returnTypeWidget.value = hasImageInput ? "Input" : "Tensor";
+          returnTypeWidget.value = imageInputCount === 1 ? "Input" : "Tensor";
         }
       };
 

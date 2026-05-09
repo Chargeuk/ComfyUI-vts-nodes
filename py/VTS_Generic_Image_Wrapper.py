@@ -400,6 +400,7 @@ def _build_wrappable_specs(include_custom=False):
             "option_inputs": option_inputs,
             "legacy_inputs": legacy_inputs,
             "image_input_names": set(image_input_names),
+            "image_input_count": len(image_input_names),
             "first_image_input_name": image_input_names[0] if image_input_names else None,
             "all_input_names": [v3_input.id for v3_input in option_inputs],
         }
@@ -449,6 +450,9 @@ def _serialize_catalog_for_frontend(specs, option_keys):
 def _resolve_requested_return_type(spec, kwargs, requested_return_type):
     if requested_return_type != "Input":
         return requested_return_type
+
+    if spec.get("image_input_count") != 1:
+        return "Tensor"
 
     first_image_input_name = spec.get("first_image_input_name")
     if not first_image_input_name:
@@ -569,6 +573,7 @@ class VTS_Generic_Image_Wrapper(io.ComfyNode):
                 "category": spec["category"],
                 "package": spec["package"],
                 "has_image_input": spec["first_image_input_name"] is not None,
+                "image_input_count": spec["image_input_count"],
             }
 
         if not options:
@@ -606,7 +611,7 @@ class VTS_Generic_Image_Wrapper(io.ComfyNode):
                     "return_type",
                     options=VTS_WRAPPER_RETURN_TYPES,
                     default="Input",
-                    tooltip="Choose Tensor or DiskImage explicitly, or use Input to match the first IMAGE input when the wrapped node has one. If there is no IMAGE input, Input falls back to Tensor.",
+                    tooltip="Choose Tensor or DiskImage explicitly. Input is only available for wrapped nodes with exactly one IMAGE input; otherwise it falls back to Tensor.",
                 ),
                 io.String.Input("prefix", default="generic_wrapper", tooltip="Filename prefix to use when writing DiskImage output."),
                 io.Int.Input("start_sequence", default=0, min=0),
