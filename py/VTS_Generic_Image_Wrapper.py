@@ -28,6 +28,15 @@ _SAFE_COMBO_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default"}
 _SAFE_INT_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default", "min", "max", "step"}
 _SAFE_FLOAT_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default", "min", "max", "step", "round"}
 _SAFE_STRING_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default", "multiline", "placeholder", "dynamicPrompts"}
+_CURATED_CUSTOM_NODE_ALLOWLIST = {
+    "donutnodes": {
+        "DonutGammaCorrection",
+        "DonutAutoWhiteBalance",
+        "DonutHistogramStretch",
+        "DonutHiRaLoAm",
+        "DonutCAS",
+    }
+}
 
 _OBJECT_IO_MAP = {
     "IMAGE": io.Image,
@@ -54,6 +63,28 @@ def _is_builtin_or_extra_node(node_cls):
     return module_name == "nodes" or module_name.startswith("comfy_extras.")
 
 
+def _get_custom_node_folder_name(node_cls):
+    try:
+        source_file = inspect.getfile(node_cls)
+    except (TypeError, OSError):
+        return None
+
+    source_parts = Path(source_file).parts
+    if "custom_nodes" in source_parts:
+        custom_index = source_parts.index("custom_nodes")
+        if custom_index + 1 < len(source_parts):
+            return source_parts[custom_index + 1]
+    return None
+
+
+def _is_curated_custom_node(node_name, node_cls):
+    custom_folder = _get_custom_node_folder_name(node_cls)
+    if not custom_folder:
+        return False
+    allowed_nodes = _CURATED_CUSTOM_NODE_ALLOWLIST.get(custom_folder)
+    return node_name in allowed_nodes if allowed_nodes else False
+
+
 def _gather_node_mappings(include_custom=False):
     mappings = {}
     display_mappings = {}
@@ -62,8 +93,9 @@ def _gather_node_mappings(include_custom=False):
     display_name_mappings = getattr(core_nodes, "NODE_DISPLAY_NAME_MAPPINGS", {})
 
     for node_name, node_cls in node_mappings.items():
-        if not include_custom and not _is_builtin_or_extra_node(node_cls):
-            continue
+        if not include_custom:
+            if not _is_builtin_or_extra_node(node_cls) and not _is_curated_custom_node(node_name, node_cls):
+                continue
         mappings[node_name] = node_cls
         if node_name in display_name_mappings:
             display_mappings[node_name] = display_name_mappings[node_name]
@@ -85,17 +117,9 @@ def _get_node_package(node_cls):
     if module_name.startswith("comfy_extras."):
         return "Comfy Extras"
 
-    try:
-        source_file = inspect.getfile(node_cls)
-    except (TypeError, OSError):
-        source_file = None
-
-    if source_file:
-        source_parts = Path(source_file).parts
-        if "custom_nodes" in source_parts:
-            custom_index = source_parts.index("custom_nodes")
-            if custom_index + 1 < len(source_parts):
-                return source_parts[custom_index + 1]
+    custom_folder = _get_custom_node_folder_name(node_cls)
+    if custom_folder:
+        return custom_folder
 
     if module_name:
         return module_name.split(".")[0]
