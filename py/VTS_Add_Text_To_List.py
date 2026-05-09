@@ -30,7 +30,7 @@ class VTS_Add_Text_To_list:
         """
         return {
             "required": {
-                "position": ("STRING", {"default": "start", "values": ["start", "end"]}),
+                "position": (["start", "end"], {"default": "start"}),
                 "string_to_add": ("STRING", {"default": ""}),
                 "string_list": ("STRING", {"default": ""}),
                 "start_index": ("INT", {"default": 0, "min": 0, "step": 1}),
