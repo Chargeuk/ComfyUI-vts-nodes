@@ -59,6 +59,11 @@ _OUTPUT_CONTROL_SPECS_MULTI_OR_NONE = {
 }
 
 
+def _is_builtin_or_extra_node(node_cls):
+    module_name = getattr(node_cls, "__module__", "") or ""
+    return module_name == "nodes" or module_name.startswith("comfy_extras.")
+
+
 def _get_custom_node_folder_name(node_cls):
     try:
         source_file = inspect.getfile(node_cls)
@@ -73,7 +78,10 @@ def _get_custom_node_folder_name(node_cls):
     return None
 
 
-def _is_allowed_external_node(node_name, node_cls):
+def _is_allowed_wrapper_source(node_name, node_cls):
+    if _is_builtin_or_extra_node(node_cls):
+        return True
+
     custom_folder = _get_custom_node_folder_name(node_cls)
     if not custom_folder:
         return False
@@ -346,7 +354,7 @@ def _build_wrapper_specs():
     specs = []
 
     for node_name, node_cls in node_mappings.items():
-        if not _is_allowed_external_node(node_name, node_cls):
+        if not _is_allowed_wrapper_source(node_name, node_cls):
             continue
 
         input_config = _get_legacy_input_config(node_cls)
@@ -401,7 +409,9 @@ def _build_wrapper_specs():
             continue
 
         display_name = display_name_mappings.get(node_name, node_name)
-        package_name = _get_custom_node_folder_name(node_cls) or "custom"
+        package_name = _get_custom_node_folder_name(node_cls) or (
+            "builtins" if getattr(node_cls, "__module__", "") == "nodes" else "comfy_extras"
+        )
         return_names = _resolve_return_names(node_cls, tuple(return_types))
 
         specs.append({
