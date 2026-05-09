@@ -19,16 +19,8 @@ if import_dir not in sys.path:
 from vtsUtils import DiskImage, default_output_dir, save_images, vtsImageTypes
 
 
-_ALLOW_ALL_CUSTOM_NODES = "*"
-_SUPPORTED_EXTERNAL_PACKAGES = {
-    "donutnodes": {
-        "DonutGammaCorrection",
-        "DonutAutoWhiteBalance",
-        "DonutHistogramStretch",
-        "DonutHiRaLoAm",
-        "DonutCAS",
-    },
-    "comfyui-kjnodes": _ALLOW_ALL_CUSTOM_NODES,
+_EXCLUDED_CUSTOM_NODE_PACKAGES = {
+    "ComfyUI-vts-nodes",
 }
 
 _MAX_INPUT_COUNT = 12
@@ -78,17 +70,26 @@ def _get_custom_node_folder_name(node_cls):
     return None
 
 
+def _is_generated_wrapper_node(node_name, node_cls):
+    if str(node_name).startswith("VTSWrapper_"):
+        return True
+    module_name = getattr(node_cls, "__module__", "") or ""
+    return module_name == __name__
+
+
 def _is_allowed_wrapper_source(node_name, node_cls):
+    if _is_generated_wrapper_node(node_name, node_cls):
+        return False
+
     if _is_builtin_or_extra_node(node_cls):
         return True
 
     custom_folder = _get_custom_node_folder_name(node_cls)
     if not custom_folder:
         return False
-    allowed_nodes = _SUPPORTED_EXTERNAL_PACKAGES.get(custom_folder)
-    if allowed_nodes == _ALLOW_ALL_CUSTOM_NODES:
-        return True
-    return node_name in allowed_nodes if allowed_nodes else False
+    if custom_folder in _EXCLUDED_CUSTOM_NODE_PACKAGES:
+        return False
+    return True
 
 
 def _get_legacy_input_config(node_cls):
