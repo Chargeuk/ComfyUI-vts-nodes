@@ -605,7 +605,7 @@ class VTS_Generic_Image_Wrapper(io.ComfyNode):
 
         return io.Schema(
             node_id="VTSGenericImageWrapper",
-            display_name="VTS Generic Image Wrapper OLD",
+            display_name="VTS Generic Image Wrapper",
             category="VTS/image",
             description=(
                 "Wrap a safe subset of old-style image nodes so DiskImage inputs can be materialized automatically "
@@ -833,5 +833,5 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "VTSGenericImageWrapper": "VTS Generic Image Wrapper OLD",
+    "VTSGenericImageWrapper": "VTS Generic Image Wrapper",
 }
