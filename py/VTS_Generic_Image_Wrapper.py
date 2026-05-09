@@ -28,6 +28,7 @@ _SAFE_COMBO_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default"}
 _SAFE_INT_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default", "min", "max", "step"}
 _SAFE_FLOAT_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default", "min", "max", "step", "round"}
 _SAFE_STRING_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default", "multiline", "placeholder", "dynamicPrompts"}
+_ALLOW_ALL_CUSTOM_NODES = "*"
 _CURATED_CUSTOM_NODE_ALLOWLIST = {
     "donutnodes": {
         "DonutGammaCorrection",
@@ -35,7 +36,8 @@ _CURATED_CUSTOM_NODE_ALLOWLIST = {
         "DonutHistogramStretch",
         "DonutHiRaLoAm",
         "DonutCAS",
-    }
+    },
+    "comfyui-kjnodes": _ALLOW_ALL_CUSTOM_NODES,
 }
 
 _OBJECT_IO_MAP = {
@@ -82,6 +84,8 @@ def _is_curated_custom_node(node_name, node_cls):
     if not custom_folder:
         return False
     allowed_nodes = _CURATED_CUSTOM_NODE_ALLOWLIST.get(custom_folder)
+    if allowed_nodes == _ALLOW_ALL_CUSTOM_NODES:
+        return True
     return node_name in allowed_nodes if allowed_nodes else False
 
 
