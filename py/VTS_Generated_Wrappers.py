@@ -3,6 +3,8 @@ import inspect
 import os
 import re
 import sys
+import threading
+import time
 from pathlib import Path
 
 import torch
@@ -31,6 +33,8 @@ _SUPPORTED_EXTERNAL_PACKAGES = {
 _MAX_INPUT_COUNT = 12
 _MAX_COMBO_OPTIONS = 128
 _MAX_OUTPUT_COUNT = 8
+_REGISTRATION_ATTEMPTS = 120
+_REGISTRATION_DELAY_SECONDS = 0.5
 _SAFE_SHARED_CONFIG_KEYS = {"tooltip", "lazy", "advanced"}
 _SAFE_COMBO_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default"}
 _SAFE_INT_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default", "min", "max", "step"}
@@ -481,4 +485,35 @@ def _build_generated_mappings():
     return node_class_mappings, display_name_mappings
 
 
-NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS = _build_generated_mappings()
+def _register_generated_wrappers_late():
+    registered_ids = set()
+
+    for _ in range(_REGISTRATION_ATTEMPTS):
+        node_class_mappings, display_name_mappings = _build_generated_mappings()
+        pending_ids = [node_id for node_id in node_class_mappings if node_id not in registered_ids]
+
+        if pending_ids:
+            core_nodes.NODE_CLASS_MAPPINGS.update(node_class_mappings)
+            core_nodes.NODE_DISPLAY_NAME_MAPPINGS.update(display_name_mappings)
+            registered_ids.update(pending_ids)
+
+            # If we have already found at least one wrapper, give the remaining
+            # custom nodes a few more chances to appear and then stop.
+            if registered_ids:
+                for _ in range(6):
+                    time.sleep(_REGISTRATION_DELAY_SECONDS)
+                    node_class_mappings, display_name_mappings = _build_generated_mappings()
+                    late_ids = [node_id for node_id in node_class_mappings if node_id not in registered_ids]
+                    if not late_ids:
+                        continue
+                    core_nodes.NODE_CLASS_MAPPINGS.update(node_class_mappings)
+                    core_nodes.NODE_DISPLAY_NAME_MAPPINGS.update(display_name_mappings)
+                    registered_ids.update(late_ids)
+                return
+
+        time.sleep(_REGISTRATION_DELAY_SECONDS)
+
+
+NODE_CLASS_MAPPINGS = {}
+NODE_DISPLAY_NAME_MAPPINGS = {}
+threading.Thread(target=_register_generated_wrappers_late, daemon=True).start()
