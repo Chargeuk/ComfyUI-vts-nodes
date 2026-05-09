@@ -33,6 +33,44 @@ _SAFE_COMBO_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default"}
 _SAFE_INT_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default", "min", "max", "step"}
 _SAFE_FLOAT_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default", "min", "max", "step", "round"}
 _SAFE_STRING_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default", "multiline", "placeholder", "dynamicPrompts"}
+_SAFE_V3_IO_TYPES = {
+    "IMAGE",
+    "MASK",
+    "LATENT",
+    "BOOLEAN",
+    "INT",
+    "FLOAT",
+    "STRING",
+    "COMBO",
+    "CONDITIONING",
+    "SAMPLER",
+    "SIGMAS",
+    "GUIDER",
+    "NOISE",
+    "CLIP",
+    "CONTROL_NET",
+    "VAE",
+    "MODEL",
+    "LORA_MODEL",
+    "LOSS_MAP",
+    "CLIP_VISION",
+    "CLIP_VISION_OUTPUT",
+    "STYLE_MODEL",
+    "GLIGEN",
+    "UPSCALE_MODEL",
+    "AUDIO",
+    "WEBCAM",
+    "POINT",
+    "FACE_ANALYSIS",
+    "BBOX",
+    "SEGS",
+    "VIDEO",
+}
+_UNSAFE_V3_IO_TYPES = {
+    "COMFY_DYNAMICCOMBO_V3",
+    "COMFY_AUTOGROW_V3",
+    "COMFY_MATCHTYPE_V3",
+}
 
 _OUTPUT_CONTROL_PREFIX = "vts_"
 _OUTPUT_CONTROL_SPECS_SINGLE_INPUT = {
@@ -98,6 +136,18 @@ def _get_legacy_input_config(node_cls):
         return None
     try:
         return input_types()
+    except TypeError:
+        return None
+    except Exception:
+        return None
+
+
+def _get_v3_schema(node_cls):
+    define_schema = getattr(node_cls, "define_schema", None)
+    if define_schema is None or not callable(define_schema):
+        return None
+    try:
+        return define_schema()
     except TypeError:
         return None
     except Exception:
@@ -218,6 +268,19 @@ def _sanitize_prefix_part(value):
     return re.sub(r"[^A-Za-z0-9_-]+", "_", value).strip("_") or "image"
 
 
+def _resolve_io_type(io_obj):
+    get_io_type = getattr(io_obj, "get_io_type", None)
+    if callable(get_io_type):
+        try:
+            io_type = get_io_type()
+            if isinstance(io_type, str):
+                return io_type
+        except Exception:
+            return None
+    io_type = getattr(io_obj, "io_type", None)
+    return io_type if isinstance(io_type, str) else None
+
+
 def _resolve_return_names(node_cls, return_types):
     return_names = getattr(node_cls, "RETURN_NAMES", None)
     if isinstance(return_names, (tuple, list)) and len(return_names) == len(return_types):
@@ -230,6 +293,335 @@ def _get_node_category(node_cls):
     if isinstance(category, str) and category.strip():
         return category.strip()
     return "uncategorized"
+
+
+def _is_safe_v3_scalar_attr(value):
+    return value is None or isinstance(value, (bool, int, float, str))
+
+
+def _is_safe_v3_input(input_obj):
+    io_type = _resolve_io_type(input_obj)
+    if io_type in _UNSAFE_V3_IO_TYPES:
+        return False
+    if io_type not in _SAFE_V3_IO_TYPES:
+        return False
+
+    if not isinstance(getattr(input_obj, "id", None), str) or not input_obj.id.strip():
+        return False
+    if getattr(input_obj, "lazy", None) not in (False, None):
+        return False
+    if getattr(input_obj, "rawLink", None) not in (False, None):
+        return False
+    if getattr(input_obj, "socketless", None) not in (False, None):
+        return False
+    if getattr(input_obj, "widget_type", None) is not None:
+        return False
+    if getattr(input_obj, "force_input", None) not in (False, None):
+        return False
+    if getattr(input_obj, "control_after_generate", None) not in (False, None):
+        return False
+    if getattr(input_obj, "display_mode", None) is not None:
+        return False
+    if getattr(input_obj, "remote", None) is not None:
+        return False
+    if getattr(input_obj, "multiselect", None) not in (False, None):
+        return False
+    if getattr(input_obj, "upload", None) not in (False, None):
+        return False
+    if getattr(input_obj, "image_folder", None) is not None:
+        return False
+
+    if not _is_safe_v3_scalar_attr(getattr(input_obj, "tooltip", None)):
+        return False
+    if getattr(input_obj, "advanced", None) not in (False, None, True):
+        return False
+
+    if io_type == "COMBO":
+        options = getattr(input_obj, "options", None)
+        if not isinstance(options, list) or len(options) == 0 or len(options) > _MAX_COMBO_OPTIONS:
+            return False
+        if not all(isinstance(option, (str, int)) for option in options):
+            return False
+        if getattr(input_obj, "default", None) not in (None, *options):
+            return False
+        return True
+
+    if io_type == "INT":
+        return (
+            _is_number_or_none(getattr(input_obj, "default", None))
+            and _is_number_or_none(getattr(input_obj, "min", None))
+            and _is_number_or_none(getattr(input_obj, "max", None))
+            and _is_number_or_none(getattr(input_obj, "step", None))
+        )
+
+    if io_type == "FLOAT":
+        return (
+            _is_number_or_none(getattr(input_obj, "default", None))
+            and _is_number_or_none(getattr(input_obj, "min", None))
+            and _is_number_or_none(getattr(input_obj, "max", None))
+            and _is_number_or_none(getattr(input_obj, "step", None))
+            and _is_number_or_none(getattr(input_obj, "round", None))
+        )
+
+    if io_type == "STRING":
+        return (
+            _is_string_or_none(getattr(input_obj, "default", None))
+            and _is_bool_or_none(getattr(input_obj, "multiline", None))
+            and _is_string_or_none(getattr(input_obj, "placeholder", None))
+            and _is_bool_or_none(getattr(input_obj, "dynamic_prompts", None))
+        )
+
+    if io_type == "BOOLEAN":
+        return _is_bool_or_none(getattr(input_obj, "default", None))
+
+    return True
+
+
+def _convert_v3_input_to_legacy_spec(input_obj):
+    io_type = _resolve_io_type(input_obj)
+    config = {}
+
+    tooltip = getattr(input_obj, "tooltip", None)
+    if isinstance(tooltip, str):
+        config["tooltip"] = tooltip
+    if isinstance(getattr(input_obj, "advanced", None), bool):
+        config["advanced"] = input_obj.advanced
+
+    if io_type == "COMBO":
+        default = getattr(input_obj, "default", None)
+        if default is not None:
+            config["default"] = default
+        return (list(getattr(input_obj, "options", [])), config)
+
+    if io_type == "INT":
+        for key in ("default", "min", "max", "step"):
+            value = getattr(input_obj, key, None)
+            if value is not None:
+                config[key] = value
+        return ("INT", config)
+
+    if io_type == "FLOAT":
+        for key in ("default", "min", "max", "step", "round"):
+            value = getattr(input_obj, key, None)
+            if value is not None:
+                config[key] = value
+        return ("FLOAT", config)
+
+    if io_type == "STRING":
+        default = getattr(input_obj, "default", None)
+        if default is not None:
+            config["default"] = default
+        multiline = getattr(input_obj, "multiline", None)
+        if multiline is not None:
+            config["multiline"] = multiline
+        placeholder = getattr(input_obj, "placeholder", None)
+        if placeholder is not None:
+            config["placeholder"] = placeholder
+        dynamic_prompts = getattr(input_obj, "dynamic_prompts", None)
+        if dynamic_prompts is not None:
+            config["dynamicPrompts"] = dynamic_prompts
+        return ("STRING", config)
+
+    if io_type == "BOOLEAN":
+        default = getattr(input_obj, "default", None)
+        if default is not None:
+            config["default"] = default
+        return ("BOOLEAN", config)
+
+    return (io_type, config)
+
+
+def _is_safe_v3_output(output_obj):
+    io_type = _resolve_io_type(output_obj)
+    if io_type in _UNSAFE_V3_IO_TYPES:
+        return False
+    if io_type not in _SAFE_V3_IO_TYPES:
+        return False
+    if getattr(output_obj, "is_output_list", None) not in (False, None):
+        return False
+    return True
+
+
+def _resolve_v3_return_names(outputs):
+    names = []
+    for index, output_obj in enumerate(outputs):
+        display_name = getattr(output_obj, "display_name", None)
+        output_id = getattr(output_obj, "id", None)
+        names.append(str(display_name or output_id or f"output_{index + 1}"))
+    return tuple(names)
+
+
+def _build_common_spec(
+    *,
+    node_name,
+    node_cls,
+    display_name,
+    package_name,
+    category,
+    input_config,
+    all_input_names,
+    image_input_names,
+    return_types,
+    return_names,
+    function_name,
+    schema_style,
+):
+    image_output_indexes = [index for index, output_type in enumerate(return_types) if output_type == "IMAGE"]
+    if not image_input_names and not image_output_indexes:
+        return None
+
+    return {
+        "node_name": node_name,
+        "display_name": display_name,
+        "package": package_name,
+        "category": category,
+        "class": node_cls,
+        "function_name": function_name,
+        "schema_style": schema_style,
+        "input_config": copy.deepcopy(input_config),
+        "all_input_names": list(all_input_names),
+        "image_input_names": set(image_input_names),
+        "image_input_count": len(image_input_names),
+        "first_image_input_name": image_input_names[0] if image_input_names else None,
+        "return_types": tuple(return_types),
+        "return_names": return_names,
+        "image_output_indexes": image_output_indexes,
+        "has_image_output": bool(image_output_indexes),
+    }
+
+
+def _build_legacy_wrapper_spec(node_name, node_cls, display_name_mappings):
+    input_config = _get_legacy_input_config(node_cls)
+    if not isinstance(input_config, dict):
+        return None
+
+    if getattr(node_cls, "INPUT_IS_LIST", False):
+        return None
+    output_is_list = getattr(node_cls, "OUTPUT_IS_LIST", False)
+    if output_is_list not in (False, None):
+        return None
+    function_name = getattr(node_cls, "FUNCTION", None)
+    if not isinstance(function_name, str):
+        return None
+
+    return_types = getattr(node_cls, "RETURN_TYPES", None)
+    if not isinstance(return_types, (tuple, list)) or len(return_types) == 0 or len(return_types) > _MAX_OUTPUT_COUNT:
+        return None
+    if not all(isinstance(output_type, str) and output_type.strip() for output_type in return_types):
+        return None
+
+    required_inputs = input_config.get("required", {})
+    optional_inputs = input_config.get("optional", {})
+    hidden_inputs = input_config.get("hidden", {})
+    if hidden_inputs:
+        return None
+    if len(required_inputs) + len(optional_inputs) > _MAX_INPUT_COUNT:
+        return None
+
+    image_input_names = []
+    all_input_names = []
+    safe = True
+    for group_inputs in (required_inputs, optional_inputs):
+        for input_name, legacy_spec in group_inputs.items():
+            if not _is_safe_legacy_spec(legacy_spec):
+                safe = False
+                break
+            raw_type = legacy_spec[0] if isinstance(legacy_spec, (tuple, list)) and legacy_spec else None
+            if raw_type == "IMAGE":
+                image_input_names.append(input_name)
+            all_input_names.append(input_name)
+        if not safe:
+            break
+    if not safe:
+        return None
+
+    display_name = display_name_mappings.get(node_name, node_name)
+    package_name = _get_custom_node_folder_name(node_cls) or (
+        "builtins" if getattr(node_cls, "__module__", "") == "nodes" else "comfy_extras"
+    )
+    return_names = _resolve_return_names(node_cls, tuple(return_types))
+
+    return _build_common_spec(
+        node_name=node_name,
+        node_cls=node_cls,
+        display_name=display_name,
+        package_name=package_name,
+        category=_get_node_category(node_cls),
+        input_config=input_config,
+        all_input_names=all_input_names,
+        image_input_names=image_input_names,
+        return_types=tuple(return_types),
+        return_names=return_names,
+        function_name=function_name,
+        schema_style="legacy",
+    )
+
+
+def _build_v3_wrapper_spec(node_name, node_cls, display_name_mappings):
+    schema = _get_v3_schema(node_cls)
+    if schema is None:
+        return None
+
+    inputs = getattr(schema, "inputs", None)
+    outputs = getattr(schema, "outputs", None)
+    hidden_inputs = getattr(schema, "hidden", None)
+    if not isinstance(inputs, list) or not isinstance(outputs, list):
+        return None
+    if hidden_inputs not in (None, []):
+        return None
+    if getattr(schema, "is_input_list", None) not in (False, None):
+        return None
+    if len(inputs) > _MAX_INPUT_COUNT or len(outputs) == 0 or len(outputs) > _MAX_OUTPUT_COUNT:
+        return None
+    if not callable(getattr(node_cls, "execute", None)):
+        return None
+
+    input_config = {"required": {}, "optional": {}}
+    image_input_names = []
+    all_input_names = []
+    for input_obj in inputs:
+        if not _is_safe_v3_input(input_obj):
+            return None
+        input_name = input_obj.id
+        legacy_spec = _convert_v3_input_to_legacy_spec(input_obj)
+        group_name = "optional" if getattr(input_obj, "optional", False) else "required"
+        input_config[group_name][input_name] = legacy_spec
+        if _resolve_io_type(input_obj) == "IMAGE":
+            image_input_names.append(input_name)
+        all_input_names.append(input_name)
+
+    return_types = []
+    for output_obj in outputs:
+        if not _is_safe_v3_output(output_obj):
+            return None
+        return_types.append(_resolve_io_type(output_obj))
+
+    display_name = display_name_mappings.get(node_name, node_name)
+    schema_display_name = getattr(schema, "display_name", None)
+    if isinstance(schema_display_name, str) and schema_display_name.strip():
+        display_name = schema_display_name.strip()
+
+    package_name = _get_custom_node_folder_name(node_cls) or (
+        "builtins" if getattr(node_cls, "__module__", "") == "nodes" else "comfy_extras"
+    )
+    category = getattr(schema, "category", None)
+    if not isinstance(category, str) or not category.strip():
+        category = _get_node_category(node_cls)
+
+    return _build_common_spec(
+        node_name=node_name,
+        node_cls=node_cls,
+        display_name=display_name,
+        package_name=package_name,
+        category=category,
+        input_config=input_config,
+        all_input_names=all_input_names,
+        image_input_names=image_input_names,
+        return_types=tuple(return_types),
+        return_names=_resolve_v3_return_names(outputs),
+        function_name="execute",
+        schema_style="v3",
+    )
 
 
 def _resolve_return_type(spec, requested_return_type, node_kwargs):
@@ -308,6 +700,14 @@ def _process_image_outputs(spec, outputs, resolved_return_type, prefix, start_se
     return tuple(processed_outputs)
 
 
+def _normalize_node_result(result):
+    if hasattr(result, "args") and isinstance(getattr(result, "args", None), tuple):
+        return tuple(result.args)
+    if isinstance(result, tuple):
+        return result
+    return (result,)
+
+
 def _execute_wrapped_node(spec, kwargs):
     image_controls = {}
     if spec["has_image_output"]:
@@ -332,8 +732,7 @@ def _execute_wrapped_node(spec, kwargs):
 
     try:
         result = node_function(**node_kwargs)
-        if not isinstance(result, tuple):
-            result = (result,)
+        result = _normalize_node_result(result)
 
         if not spec["has_image_output"]:
             return result
@@ -370,77 +769,11 @@ def _build_wrapper_specs():
         if not _is_allowed_wrapper_source(node_name, node_cls):
             continue
 
-        input_config = _get_legacy_input_config(node_cls)
-        if not isinstance(input_config, dict):
-            continue
-
-        if getattr(node_cls, "INPUT_IS_LIST", False):
-            continue
-        output_is_list = getattr(node_cls, "OUTPUT_IS_LIST", False)
-        if output_is_list not in (False, None):
-            continue
-        function_name = getattr(node_cls, "FUNCTION", None)
-        if not isinstance(function_name, str):
-            continue
-
-        return_types = getattr(node_cls, "RETURN_TYPES", None)
-        if not isinstance(return_types, (tuple, list)) or len(return_types) == 0 or len(return_types) > _MAX_OUTPUT_COUNT:
-            continue
-        if not all(isinstance(output_type, str) and output_type.strip() for output_type in return_types):
-            continue
-
-        required_inputs = input_config.get("required", {})
-        optional_inputs = input_config.get("optional", {})
-        hidden_inputs = input_config.get("hidden", {})
-        if hidden_inputs:
-            continue
-        if len(required_inputs) + len(optional_inputs) > _MAX_INPUT_COUNT:
-            continue
-
-        image_input_names = []
-        all_input_names = []
-        safe = True
-        for group_inputs in (required_inputs, optional_inputs):
-            for input_name, legacy_spec in group_inputs.items():
-                if not _is_safe_legacy_spec(legacy_spec):
-                    safe = False
-                    break
-                raw_type = legacy_spec[0] if isinstance(legacy_spec, (tuple, list)) and legacy_spec else None
-                if raw_type == "IMAGE":
-                    image_input_names.append(input_name)
-                all_input_names.append(input_name)
-            if not safe:
-                break
-        if not safe:
-            continue
-
-        image_output_indexes = [index for index, output_type in enumerate(return_types) if output_type == "IMAGE"]
-        if not image_input_names and not image_output_indexes:
-            continue
-
-        display_name = display_name_mappings.get(node_name, node_name)
-        package_name = _get_custom_node_folder_name(node_cls) or (
-            "builtins" if getattr(node_cls, "__module__", "") == "nodes" else "comfy_extras"
-        )
-        return_names = _resolve_return_names(node_cls, tuple(return_types))
-
-        specs.append({
-            "node_name": node_name,
-            "display_name": display_name,
-            "package": package_name,
-            "category": _get_node_category(node_cls),
-            "class": node_cls,
-            "function_name": function_name,
-            "input_config": copy.deepcopy(input_config),
-            "all_input_names": list(all_input_names),
-            "image_input_names": set(image_input_names),
-            "image_input_count": len(image_input_names),
-            "first_image_input_name": image_input_names[0] if image_input_names else None,
-            "return_types": tuple(return_types),
-            "return_names": return_names,
-            "image_output_indexes": image_output_indexes,
-            "has_image_output": bool(image_output_indexes),
-        })
+        spec = _build_legacy_wrapper_spec(node_name, node_cls, display_name_mappings)
+        if spec is None:
+            spec = _build_v3_wrapper_spec(node_name, node_cls, display_name_mappings)
+        if spec is not None:
+            specs.append(spec)
 
     return specs
 
