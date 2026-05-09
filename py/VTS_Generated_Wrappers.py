@@ -224,6 +224,13 @@ def _resolve_return_names(node_cls, return_types):
     return tuple(f"output_{index + 1}" for index in range(len(return_types)))
 
 
+def _get_node_category(node_cls):
+    category = getattr(node_cls, "CATEGORY", None)
+    if isinstance(category, str) and category.strip():
+        return category.strip()
+    return "uncategorized"
+
+
 def _resolve_return_type(spec, requested_return_type, node_kwargs):
     if requested_return_type != "Input":
         return requested_return_type
@@ -418,6 +425,7 @@ def _build_wrapper_specs():
             "node_name": node_name,
             "display_name": display_name,
             "package": package_name,
+            "category": _get_node_category(node_cls),
             "class": node_cls,
             "function_name": function_name,
             "input_config": copy.deepcopy(input_config),
@@ -461,7 +469,7 @@ def _build_input_types(spec, wrapper_display_name):
 def _create_wrapper_class(spec):
     wrapper_display_name = f"VTS {spec['display_name']} Wrapper"
     input_types = _build_input_types(spec, wrapper_display_name)
-    category = f"VTS/wrappers/{spec['package']}"
+    category = f"VTS/wrappers/{spec['category']}"
     description = (
         f"VTS-generated wrapper around {spec['display_name']} from {spec['package']}. "
         "IMAGE inputs accept tensors or DiskImages."
