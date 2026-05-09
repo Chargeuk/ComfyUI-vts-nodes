@@ -424,7 +424,7 @@ def _build_wrapper_specs():
     return specs
 
 
-def _build_input_types(spec):
+def _build_input_types(spec, wrapper_display_name):
     input_types = copy.deepcopy(spec["input_config"])
     input_types.setdefault("required", {})
     input_types.setdefault("optional", {})
@@ -437,13 +437,20 @@ def _build_input_types(spec):
         )
         for key, value in controls.items():
             input_types["required"][key] = copy.deepcopy(value)
+        input_types["required"]["vts_prefix"] = (
+            "STRING",
+            {
+                **input_types["required"]["vts_prefix"][1],
+                "default": re.sub(r"\s+", "_", wrapper_display_name.strip()),
+            },
+        )
 
     return input_types
 
 
 def _create_wrapper_class(spec):
-    input_types = _build_input_types(spec)
     wrapper_display_name = f"VTS {spec['display_name']} Wrapper"
+    input_types = _build_input_types(spec, wrapper_display_name)
     category = f"VTS/wrappers/{spec['package']}"
     description = (
         f"VTS-generated wrapper around {spec['display_name']} from {spec['package']}. "
