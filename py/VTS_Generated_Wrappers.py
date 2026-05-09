@@ -1,5 +1,6 @@
 import copy
 import inspect
+import logging
 import os
 import re
 import sys
@@ -340,8 +341,8 @@ def _execute_wrapped_node(spec, kwargs):
 
 
 def _build_wrapper_specs():
-    node_mappings = getattr(core_nodes, "NODE_CLASS_MAPPINGS", {})
-    display_name_mappings = getattr(core_nodes, "NODE_DISPLAY_NAME_MAPPINGS", {})
+    node_mappings = dict(getattr(core_nodes, "NODE_CLASS_MAPPINGS", {}))
+    display_name_mappings = dict(getattr(core_nodes, "NODE_DISPLAY_NAME_MAPPINGS", {}))
     specs = []
 
     for node_name, node_cls in node_mappings.items():
@@ -489,7 +490,12 @@ def _register_generated_wrappers_late():
     registered_ids = set()
 
     for _ in range(_REGISTRATION_ATTEMPTS):
-        node_class_mappings, display_name_mappings = _build_generated_mappings()
+        try:
+            node_class_mappings, display_name_mappings = _build_generated_mappings()
+        except Exception:
+            logging.exception("VTS generated wrapper registration pass failed; retrying.")
+            time.sleep(_REGISTRATION_DELAY_SECONDS)
+            continue
         pending_ids = [node_id for node_id in node_class_mappings if node_id not in registered_ids]
 
         if pending_ids:
@@ -502,7 +508,11 @@ def _register_generated_wrappers_late():
             if registered_ids:
                 for _ in range(6):
                     time.sleep(_REGISTRATION_DELAY_SECONDS)
-                    node_class_mappings, display_name_mappings = _build_generated_mappings()
+                    try:
+                        node_class_mappings, display_name_mappings = _build_generated_mappings()
+                    except Exception:
+                        logging.exception("VTS generated wrapper late-registration pass failed; retrying.")
+                        continue
                     late_ids = [node_id for node_id in node_class_mappings if node_id not in registered_ids]
                     if not late_ids:
                         continue
