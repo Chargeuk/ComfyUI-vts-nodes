@@ -374,9 +374,6 @@ def _build_wrapper_specs():
         output_is_list = getattr(node_cls, "OUTPUT_IS_LIST", False)
         if output_is_list not in (False, None):
             continue
-        if getattr(node_cls, "OUTPUT_NODE", False):
-            continue
-
         function_name = getattr(node_cls, "FUNCTION", None)
         if not isinstance(function_name, str):
             continue
