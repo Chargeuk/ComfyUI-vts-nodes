@@ -32,12 +32,24 @@ def _normalize_seed_list(seed):
     return [int(seed)]
 
 
+def _is_multiple_conditionings(conditioning):
+    return (
+        isinstance(conditioning, list)
+        and len(conditioning) > 0
+        and isinstance(conditioning[0], list)
+        and len(conditioning[0]) > 0
+        and isinstance(conditioning[0][0], list)
+    )
+
+
 def _normalize_conditioning_list(conditioning, name):
     if not isinstance(conditioning, list):
         return [conditioning]
     if len(conditioning) == 0:
         raise ValueError(f"VTS KSampler received an empty '{name}' list.")
-    return conditioning
+    if _is_multiple_conditionings(conditioning):
+        return conditioning
+    return [conditioning]
 
 
 def _split_latent_batches(latent_image):
@@ -108,13 +120,12 @@ class VTS_KSampler:
         return {
             "required": {
                 "model": ("MODEL", {"tooltip": "The model used for denoising the input latent."}),
-                "seed": (
+                "random_seed": (
                     "INT",
                     {
                         "default": 0,
                         "min": 0,
                         "max": 0xFFFFFFFFFFFFFFFF,
-                        "control_after_generate": True,
                         "tooltip": "A single seed or a list of seeds. When a list is provided, seeds are reused cyclically without changing how many images are generated.",
                     },
                 ),
@@ -165,7 +176,7 @@ class VTS_KSampler:
         "while seeds cycle independently."
     )
 
-    def sample(self, model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise):
+    def sample(self, model, random_seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise):
         model = _first_value(model, "model")
         steps = int(_first_value(steps, "steps"))
         cfg = float(_first_value(cfg, "cfg"))
@@ -173,7 +184,7 @@ class VTS_KSampler:
         scheduler = _first_value(scheduler, "scheduler")
         denoise = float(_first_value(denoise, "denoise"))
 
-        seed_values = _normalize_seed_list(seed)
+        seed_values = _normalize_seed_list(random_seed)
         positive_values = _normalize_conditioning_list(positive, "positive")
         negative_values = _normalize_conditioning_list(negative, "negative")
         latent_values = _split_latent_batches(latent_image)
