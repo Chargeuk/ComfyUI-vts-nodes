@@ -24,12 +24,12 @@ def _first_value(value, name):
     return value
 
 
-def _normalize_seed_list(seed):
+def _resolve_base_seed(seed):
     if isinstance(seed, list):
         if len(seed) == 0:
-            raise ValueError("VTS KSampler received an empty seed list.")
-        return [int(value) for value in seed]
-    return [int(seed)]
+            raise ValueError("VTS KSampler received no seed value.")
+        seed = seed[0]
+    return int(seed)
 
 
 def _is_multiple_conditionings(conditioning):
@@ -122,13 +122,21 @@ class VTS_KSampler:
         return {
             "required": {
                 "model": ("MODEL", {"tooltip": "The model used for denoising the input latent."}),
-                "random_seed": (
+                "seed": (
                     "INT",
                     {
                         "default": 0,
                         "min": 0,
                         "max": 0xFFFFFFFFFFFFFFFF,
-                        "tooltip": "A single seed or a list of seeds. When a list is provided, seeds are reused cyclically without changing how many images are generated.",
+                        "control_after_generate": True,
+                        "tooltip": "The base seed used for sampling. When generation frequency is set to On Generate, each generated item derives its own seed from this base value.",
+                    },
+                ),
+                "generation_frequency": (
+                    ["On Run", "On Generate"],
+                    {
+                        "default": "On Run",
+                        "tooltip": "On Run uses the same seed for the whole sampler execution. On Generate derives a new seed for each generated item.",
                     },
                 ),
                 "steps": ("INT", {"default": 20, "min": 1, "max": 10000, "tooltip": "The number of denoising steps."}),
@@ -173,20 +181,20 @@ class VTS_KSampler:
     FUNCTION = "sample"
     CATEGORY = "VTS/sampling"
     DESCRIPTION = (
-        "A KSampler-compatible VTS sampler that can consume a seed list. "
-        "The number of outputs is driven by conditioning lists and latent batch size, "
-        "while seeds cycle independently."
+        "A KSampler-compatible VTS sampler with optional per-generated-item seed variation. "
+        "The number of outputs is driven by conditioning lists and latent batch size."
     )
 
-    def sample(self, model, random_seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise):
+    def sample(self, model, seed, generation_frequency, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise):
         model = _first_value(model, "model")
+        base_seed = _resolve_base_seed(seed)
+        generation_frequency = _first_value(generation_frequency, "generation_frequency")
         steps = int(_first_value(steps, "steps"))
         cfg = float(_first_value(cfg, "cfg"))
         sampler_name = _first_value(sampler_name, "sampler_name")
         scheduler = _first_value(scheduler, "scheduler")
         denoise = float(_first_value(denoise, "denoise"))
 
-        seed_values = _normalize_seed_list(random_seed)
         positive_values = _normalize_conditioning_list(positive, "positive")
         negative_values = _normalize_conditioning_list(negative, "negative")
         latent_values = _split_latent_batches(latent_image)
@@ -195,7 +203,7 @@ class VTS_KSampler:
 
         sampled_latents = []
         for index in range(output_count):
-            current_seed = seed_values[index % len(seed_values)]
+            current_seed = base_seed if generation_frequency == "On Run" else base_seed + index
             current_positive = _pick_with_repeat(positive_values, index)
             current_negative = _pick_with_repeat(negative_values, index)
             current_latent = _pick_with_repeat(latent_values, index)
