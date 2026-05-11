@@ -16,7 +16,6 @@ class VTS_BBox_To_Normalized_Text_List(io.ComfyNode):
                 ),
                 io.Image.Input(
                     "image",
-                    force_input=True,
                     tooltip="Reference image used to determine width and height for normalization.",
                 ),
                 io.Int.Input(
