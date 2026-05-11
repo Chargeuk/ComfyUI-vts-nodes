@@ -47,6 +47,8 @@ def _normalize_conditioning_list(conditioning, name):
         return [conditioning]
     if len(conditioning) == 0:
         raise ValueError(f"VTS KSampler received an empty '{name}' list.")
+    if len(conditioning) == 1 and _is_multiple_conditionings(conditioning[0]):
+        return conditioning[0]
     if _is_multiple_conditionings(conditioning):
         return conditioning
     return [conditioning]
