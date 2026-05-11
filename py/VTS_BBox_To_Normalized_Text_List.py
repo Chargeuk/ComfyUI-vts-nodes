@@ -127,5 +127,10 @@ class VTS_BBox_To_Normalized_Text_List(io.ComfyNode):
         return io.NodeOutput(output, len(output))
 
 
-NODE_CLASS_MAPPINGS = {}
-NODE_DISPLAY_NAME_MAPPINGS = {}
+NODE_CLASS_MAPPINGS = {
+    "VTS_BBox_To_Normalized_Text_List": VTS_BBox_To_Normalized_Text_List,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "VTS_BBox_To_Normalized_Text_List": "VTS BBox To Normalized Text List",
+}
