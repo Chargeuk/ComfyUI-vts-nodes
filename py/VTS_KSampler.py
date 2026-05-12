@@ -1,4 +1,5 @@
 import torch
+import random
 
 import comfy.samplers
 from nodes import common_ksampler
@@ -129,14 +130,14 @@ class VTS_KSampler:
                         "min": 0,
                         "max": 0xFFFFFFFFFFFFFFFF,
                         "control_after_generate": True,
-                        "tooltip": "The base seed used for sampling. When generation frequency is set to On Generate, each generated item derives its own seed from this base value.",
+                        "tooltip": "The base seed used for sampling. The seed_per_image setting determines how this base seed is reused or varied across generated images.",
                     },
                 ),
-                "generation_frequency": (
-                    ["On Run", "On Generate"],
+                "seed_per_image": (
+                    ["fixed", "increment", "decrement", "randomize"],
                     {
-                        "default": "On Run",
-                        "tooltip": "On Run uses the same seed for the whole sampler execution. On Generate derives a new seed for each generated item.",
+                        "default": "fixed",
+                        "tooltip": "Controls how the base seed is used for each generated image: fixed reuses it, increment/decrement step it per image, and randomize derives deterministic random seeds from it.",
                     },
                 ),
                 "steps": ("INT", {"default": 20, "min": 1, "max": 10000, "tooltip": "The number of denoising steps."}),
@@ -181,14 +182,14 @@ class VTS_KSampler:
     FUNCTION = "sample"
     CATEGORY = "VTS/sampling"
     DESCRIPTION = (
-        "A KSampler-compatible VTS sampler with optional per-generated-item seed variation. "
+        "A KSampler-compatible VTS sampler with configurable per-image seed behavior. "
         "The number of outputs is driven by conditioning lists and latent batch size."
     )
 
-    def sample(self, model, seed, generation_frequency, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise):
+    def sample(self, model, seed, seed_per_image, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise):
         model = _first_value(model, "model")
         base_seed = _resolve_base_seed(seed)
-        generation_frequency = _first_value(generation_frequency, "generation_frequency")
+        seed_per_image = _first_value(seed_per_image, "seed_per_image")
         steps = int(_first_value(steps, "steps"))
         cfg = float(_first_value(cfg, "cfg"))
         sampler_name = _first_value(sampler_name, "sampler_name")
@@ -200,10 +201,18 @@ class VTS_KSampler:
         latent_values = _split_latent_batches(latent_image)
 
         output_count = max(len(positive_values), len(negative_values), len(latent_values), 1)
+        rng = random.Random(base_seed) if seed_per_image == "randomize" else None
 
         sampled_latents = []
         for index in range(output_count):
-            current_seed = base_seed if generation_frequency == "On Run" else base_seed + index
+            if seed_per_image == "fixed":
+                current_seed = base_seed
+            elif seed_per_image == "increment":
+                current_seed = base_seed + index
+            elif seed_per_image == "decrement":
+                current_seed = base_seed - index
+            else:
+                current_seed = rng.randint(0, 0xFFFFFFFFFFFFFFFF)
             current_positive = _pick_with_repeat(positive_values, index)
             current_negative = _pick_with_repeat(negative_values, index)
             current_latent = _pick_with_repeat(latent_values, index)
