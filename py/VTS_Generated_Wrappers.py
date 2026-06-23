@@ -849,8 +849,9 @@ def _build_generated_mappings():
 
 def _register_generated_wrappers_late():
     registered_ids = set()
+    last_change_time = time.monotonic()
 
-    for _ in range(_REGISTRATION_ATTEMPTS):
+    for attempt in range(_REGISTRATION_ATTEMPTS):
         try:
             node_class_mappings, display_name_mappings = _build_generated_mappings()
         except Exception:
@@ -863,26 +864,22 @@ def _register_generated_wrappers_late():
             core_nodes.NODE_CLASS_MAPPINGS.update(node_class_mappings)
             core_nodes.NODE_DISPLAY_NAME_MAPPINGS.update(display_name_mappings)
             registered_ids.update(pending_ids)
+            last_change_time = time.monotonic()
+            print(
+                f"[VTS Generated Wrappers] registered {len(pending_ids)} new wrappers "
+                f"({len(registered_ids)} total) on pass {attempt + 1}/{_REGISTRATION_ATTEMPTS}"
+            )
 
-            # If we have already found at least one wrapper, give the remaining
-            # custom nodes a few more chances to appear and then stop.
-            if registered_ids:
-                for _ in range(6):
-                    time.sleep(_REGISTRATION_DELAY_SECONDS)
-                    try:
-                        node_class_mappings, display_name_mappings = _build_generated_mappings()
-                    except Exception:
-                        logging.exception("VTS generated wrapper late-registration pass failed; retrying.")
-                        continue
-                    late_ids = [node_id for node_id in node_class_mappings if node_id not in registered_ids]
-                    if not late_ids:
-                        continue
-                    core_nodes.NODE_CLASS_MAPPINGS.update(node_class_mappings)
-                    core_nodes.NODE_DISPLAY_NAME_MAPPINGS.update(display_name_mappings)
-                    registered_ids.update(late_ids)
-                return
+        elif registered_ids and time.monotonic() - last_change_time > 15:
+            print(f"[VTS Generated Wrappers] registration settled with {len(registered_ids)} wrappers.")
+            return
 
         time.sleep(_REGISTRATION_DELAY_SECONDS)
+
+    if registered_ids:
+        print(f"[VTS Generated Wrappers] registration window ended with {len(registered_ids)} wrappers.")
+    else:
+        print("[VTS Generated Wrappers] registration window ended with no generated wrappers.")
 
 
 NODE_CLASS_MAPPINGS = {}
