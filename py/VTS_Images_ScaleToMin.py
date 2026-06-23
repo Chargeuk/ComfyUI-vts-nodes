@@ -13,7 +13,10 @@ from vtsUtils import DiskImage, transform_and_save_images, get_default_image_inp
 MAX_RESOLUTION = 16384
 
 class VTS_Images_ScaleToMin:
-    upscale_methods = ["nearest-exact", "bilinear", "area", "bicubic", "lanczos"]
+    upscale_methods = [
+        "nearest-exact", "bilinear", "area", "bicubic", "lanczos",
+        "rtx-vsr-low", "rtx-vsr-medium", "rtx-vsr-high", "rtx-vsr-ultra",
+    ]
     crop_methods = ["disabled", "center"]
     scale_types = ["small", "large", "max"]
 
@@ -120,6 +123,36 @@ class VTS_Images_ScaleToMin:
             upscale_method == "bilinear"):
             print(f"VTS_Images_ScaleToMin - large downscale detected, using area instead of bilinear")
             upscale_method = "area"  # Much safer for downscaling
+
+        original_upscale_method = upscale_method
+        if self._is_rtx_vsr_method(upscale_method):
+            rtx_input = image
+            if crop == "center":
+                rtx_input = self._center_crop_for_aspect(image, width, height)
+
+            cropped_height, cropped_width = rtx_input.shape[1], rtx_input.shape[2]
+            if width < cropped_width and height < cropped_height:
+                print(
+                    "VTS_Images_ScaleToMin - RTX VSR target would shrink both dimensions "
+                    f"after crop ({cropped_width}x{cropped_height} -> {width}x{height}); "
+                    "falling back to bicubic with original image/settings"
+                )
+                upscale_method = "bicubic"
+            else:
+                try:
+                    quality = self._rtx_vsr_quality(original_upscale_method)
+                    print(
+                        f"VTS_Images_ScaleToMin - using RTX VSR {quality} "
+                        f"from {cropped_width}x{cropped_height} to {width}x{height}"
+                    )
+                    return (self._scale_tensor_rtx_vsr(rtx_input, width, height, quality),)
+                except Exception as e:
+                    print(
+                        "VTS_Images_ScaleToMin - RTX VSR failed; "
+                        f"falling back to bicubic with original image/settings: {e}"
+                    )
+                    upscale_method = "bicubic"
+
         try:
             # Move dimensions for processing
             samples = image.movedim(-1, 1)
@@ -134,6 +167,71 @@ class VTS_Images_ScaleToMin:
         except Exception as e:
             print(f"VTS_Images_ScaleToMin - error during scaling: {e}. returning original image")
             return (image,)
+
+    def _is_rtx_vsr_method(self, upscale_method):
+        return isinstance(upscale_method, str) and upscale_method.startswith("rtx-vsr-")
+
+    def _rtx_vsr_quality(self, upscale_method):
+        return upscale_method.removeprefix("rtx-vsr-").upper()
+
+    def _center_crop_for_aspect(self, image, width, height):
+        old_height, old_width = image.shape[1], image.shape[2]
+        old_aspect = old_width / old_height
+        new_aspect = width / height
+
+        x = 0
+        y = 0
+        if old_aspect > new_aspect:
+            x = round((old_width - old_width * (new_aspect / old_aspect)) / 2)
+        elif old_aspect < new_aspect:
+            y = round((old_height - old_height * (old_aspect / new_aspect)) / 2)
+
+        if x == 0 and y == 0:
+            return image
+
+        cropped = image[:, y:old_height - y, x:old_width - x, :]
+        print(f"VTS_Images_ScaleToMin - RTX VSR center-cropped from {old_width}x{old_height} to {cropped.shape[2]}x{cropped.shape[1]}")
+        return cropped
+
+    def _scale_tensor_rtx_vsr(self, image, width, height, quality):
+        import torch
+        import nvvfx
+
+        quality_mapping = {
+            "LOW": nvvfx.effects.QualityLevel.LOW,
+            "MEDIUM": nvvfx.effects.QualityLevel.MEDIUM,
+            "HIGH": nvvfx.effects.QualityLevel.HIGH,
+            "ULTRA": nvvfx.effects.QualityLevel.ULTRA,
+        }
+        selected_quality = quality_mapping.get(quality, nvvfx.effects.QualityLevel.HIGH)
+        output_width = max(8, round(width / 8) * 8)
+        output_height = max(8, round(height / 8) * 8)
+
+        if output_width != width or output_height != height:
+            print(f"VTS_Images_ScaleToMin - RTX VSR rounded target from {width}x{height} to {output_width}x{output_height}")
+
+        out_tensor = torch.empty(
+            (image.shape[0], output_height, output_width, image.shape[-1]),
+            device=image.device,
+            dtype=image.dtype,
+        )
+
+        with nvvfx.VideoSuperRes(selected_quality) as sr:
+            sr.output_width = output_width
+            sr.output_height = output_height
+            sr.load()
+
+            for i in range(image.shape[0]):
+                input_frame = image[i].cuda().permute(2, 0, 1).float().contiguous()
+                dlpack_out = sr.run(input_frame).image
+                output_frame = torch.from_dlpack(dlpack_out).movedim(0, -1).unsqueeze(0)
+                out_tensor[i:i + 1] = output_frame.to(device=image.device, dtype=image.dtype)
+
+        if output_width != width or output_height != height:
+            samples = out_tensor.movedim(-1, 1)
+            out_tensor = comfy.utils.common_upscale(samples, width, height, "bicubic", "disabled").movedim(1, -1)
+
+        return out_tensor.clamp(0, 1)
 
     def getSmallDimensions(self, original_width, original_height, smallMaxSize, largeMaxSize, new_largest_side, new_smallest_side):
         if new_largest_side <= largeMaxSize:
