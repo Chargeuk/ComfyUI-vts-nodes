@@ -22,6 +22,9 @@ from vtsUtils import DiskImage, default_output_dir, resolve_list_mapped_output_i
 _EXCLUDED_CUSTOM_NODE_PACKAGES = {
     "ComfyUI-vts-nodes",
 }
+_HANDWRITTEN_WRAPPER_IDS = {
+    "VTSWrapper_ComfyUI_H3_Motion_Context_MiniMaxH3MotionContext",
+}
 
 _MAX_INPUT_COUNT = 12
 _MAX_COMBO_OPTIONS = 128
@@ -841,6 +844,8 @@ def _build_generated_mappings():
     for spec in _build_wrapper_specs():
         wrapper_cls, wrapper_display_name = _create_wrapper_class(spec)
         wrapper_node_id = _sanitize_identifier(f"VTSWrapper_{spec['package']}_{spec['node_name']}")
+        if wrapper_node_id in _HANDWRITTEN_WRAPPER_IDS:
+            continue
         node_class_mappings[wrapper_node_id] = wrapper_cls
         display_name_mappings[wrapper_node_id] = wrapper_display_name
 
