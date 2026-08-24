@@ -80,28 +80,14 @@ class VTS_Images_ScaleToMin:
         height, width = image.shape[1], image.shape[2]
         original_height, original_width = height, width
         
-        # Identify the largest and smallest sides
-        largest_side = max(height, width)
-        smallest_side = min(height, width)
-
-        # Calculate the aspect ratio
-        aspect_ratio = largest_side / smallest_side
-
-        # Calculate new dimensions based on aspect ratio and max sizes
-        new_largest_side = round(smallMaxSize * aspect_ratio)
-        new_smallest_side = round(largeMaxSize / aspect_ratio)
-
-        # Determine final dimensions
-        if scale_type == "small":
-            width, height = self.getSmallDimensions(original_width, original_height, smallMaxSize, largeMaxSize, new_largest_side, new_smallest_side)
-        elif scale_type == "large":
-            width, height = self.getLargeDimensions(original_width, original_height, smallMaxSize, largeMaxSize)
-        else:
-            width, height = self.getMaxDimensions(original_width, original_height, smallMaxSize, largeMaxSize)
-
-        if divisible_by > 1:
-            width = width - (width % divisible_by)
-            height = height - (height % divisible_by)
+        width, height = self._calculate_target_dimensions(
+            original_width,
+            original_height,
+            smallMaxSize,
+            largeMaxSize,
+            divisible_by,
+            scale_type,
+        )
 
         # if we are not actually scaling, just return the original image
         if width == original_width and height == original_height:
@@ -232,6 +218,65 @@ class VTS_Images_ScaleToMin:
             out_tensor = comfy.utils.common_upscale(samples, width, height, "bicubic", "disabled").movedim(1, -1)
 
         return out_tensor.clamp(0, 1)
+
+    def _calculate_target_dimensions(self, original_width, original_height,
+                                     smallMaxSize, largeMaxSize, divisible_by,
+                                     scale_type):
+        # Treat the values as side limits even if they were entered backwards.
+        smallMaxSize, largeMaxSize = sorted((smallMaxSize, largeMaxSize))
+
+        largest_side = max(original_height, original_width)
+        smallest_side = min(original_height, original_width)
+        aspect_ratio = largest_side / smallest_side
+
+        new_largest_side = round(smallMaxSize * aspect_ratio)
+        new_smallest_side = round(largeMaxSize / aspect_ratio)
+
+        if scale_type == "small":
+            width, height = self.getSmallDimensions(
+                original_width,
+                original_height,
+                smallMaxSize,
+                largeMaxSize,
+                new_largest_side,
+                new_smallest_side,
+            )
+            width, height = self._snap_near_aspect_dimensions(
+                original_width,
+                original_height,
+                width,
+                height,
+                smallMaxSize,
+                largeMaxSize,
+                divisible_by,
+            )
+        elif scale_type == "large":
+            width, height = self.getLargeDimensions(
+                original_width, original_height, smallMaxSize, largeMaxSize)
+        else:
+            width, height = self.getMaxDimensions(
+                original_width, original_height, smallMaxSize, largeMaxSize)
+
+        if divisible_by > 1:
+            width -= width % divisible_by
+            height -= height % divisible_by
+
+        return width, height
+
+    def _snap_near_aspect_dimensions(self, original_width, original_height,
+                                     width, height, smallMaxSize,
+                                     largeMaxSize, divisible_by):
+        if original_width < original_height:
+            target_width, target_height = smallMaxSize, largeMaxSize
+        else:
+            target_width, target_height = largeMaxSize, smallMaxSize
+
+        tolerance = max(1, divisible_by)
+        if (abs(width - target_width) <= tolerance and
+                abs(height - target_height) <= tolerance):
+            return target_width, target_height
+
+        return width, height
 
     def getSmallDimensions(self, original_width, original_height, smallMaxSize, largeMaxSize, new_largest_side, new_smallest_side):
         if new_largest_side <= largeMaxSize:
