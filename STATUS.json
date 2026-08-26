@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "status": "success",
+  "host": "DanDesktop",
+  "account": "d_a_s",
+  "authoritative_repository": "/home/d_a_s/code/comfyui/custom_nodes/ComfyUI-vts-nodes",
+  "worktree": "/home/d_a_s/code/minimax-h3-vr180-lora-vts-nodes",
+  "branch": "codex/vts-ref2va-dandesktop-v1",
+  "base_commit": "64f4f3d2dbf86a3adc92bdd813da3b5efa0f57e6",
+  "implementation_commit": "c3795aef0e3fdbfcc9f7c679d4c60626bf18582f",
+  "new_nodes_justified": true,
+  "new_node_ids": [
+    "VTSRef2VAStereoReferences",
+    "VTSRef2VAProjectionReferences"
+  ],
+  "h3_effective_mask_diagnostic_added": false,
+  "h3_effective_mask_diagnostic_reason": "Native H3 reference inputs have no MASK socket; existing block reduction belongs to the target denoise mask.",
+  "tests": {
+    "focused_ref2va": {"passed": 8, "failed": 0, "skipped": 0},
+    "focused_projection": {"passed": 9, "failed": 0, "skipped": 0},
+    "repository_total": {"passed": 26, "failed": 0, "skipped": 0},
+    "cpu": "passed",
+    "cuda": "passed",
+    "scale_1024": "passed",
+    "scale_2048": "passed"
+  },
+  "production": {
+    "vts_checkout_modified": false,
+    "comfyui_restarted": false,
+    "result_installed": false
+  },
+  "source_collection": {
+    "vrvids_read": false,
+    "vrvids_copied": false
+  },
+  "delivery": {
+    "path": "/mnt/external-lan2/tmp/minimax-h3-vr180-lora/vts-nodes/dandesktop-v1",
+    "checksum_manifest": "SHA256SUMS",
+    "published_atomically": true
+  }
+}

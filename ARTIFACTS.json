@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "implementation_commit": "c3795aef0e3fdbfcc9f7c679d4c60626bf18582f",
+  "repository_artifacts": [
+    {"path": "py/VTS_Ref2VA.py", "role": "ComfyUI node wrappers", "sha256": "895b683dfde470961acfe58af7be80c54fbc8a99b3fdf5dee1f6e1baea677959"},
+    {"path": "py/vtsUtils/ref2va.py", "role": "Pure marker-safety tensor core", "sha256": "8182850142c2c1949e9c8b3e21109bfe4222e9a9c14c686134adc5923476c115"},
+    {"path": "py/vtsUtils/vr180_projection.py", "role": "Reviewed shared projection core", "sha256": "41e904969cc71823d746e5969b0fb826899012cf8676494d78d57b884f70b57e"},
+    {"path": "tests/test_ref2va.py", "role": "Ref2VA node and scale tests", "sha256": "89cd1382ed4c0bb377f862f8e907daba262672b98b108118bd1aa5f3723964a5"},
+    {"path": "tests/test_vr180_projection.py", "role": "Shared-core projection tests", "sha256": "dbd37472174bbff1d1aebac2456d2da0ad50fda060e5706fa6587251ec9428d0"},
+    {"path": "VTS_REF2VA_NODE_AUDIT.md", "role": "Audit and decision table"},
+    {"path": "VTS_REF2VA_NODE_REPORT.md", "role": "Implementation and test report"},
+    {"path": "STATUS.json", "role": "Machine-readable completion state"},
+    {"path": "ARTIFACTS.json", "role": "Machine-readable artifact inventory"},
+    {"path": "TIMINGS.json", "role": "Machine-readable timings and memory"}
+  ],
+  "delivery_artifacts": [
+    {"path": "ComfyUI-vts-nodes-dandesktop-v1.bundle", "role": "Git bundle containing the isolated branch"},
+    {"path": "ComfyUI-vts-nodes-dandesktop-v1.patch", "role": "Reviewable base-to-branch patch"},
+    {"path": "tree/", "role": "Standalone copies of changed deliverables"},
+    {"path": "SHA256SUMS", "role": "Checksums for every published file except the manifest itself"}
+  ]
+}

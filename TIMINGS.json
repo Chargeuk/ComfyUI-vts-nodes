@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "timezone": "Europe/London",
+  "audit_started_at": "2026-08-26T01:22:09+01:00",
+  "implementation_committed_at": "2026-08-26T01:33:16+01:00",
+  "focused_ref2va_tests": {
+    "reported_test_seconds": 1.555,
+    "wall_seconds": 3.31,
+    "maximum_resident_kib": 1612312,
+    "includes_scale_sizes": [1024, 2048],
+    "scale_batch_size": 2
+  },
+  "focused_projection_tests": {
+    "reported_test_seconds": 0.732
+  },
+  "repository_tests": {
+    "reported_test_seconds": 1.667
+  },
+  "projection_chunk_rows": 256,
+  "projection_cache_max_item_bytes": 67108864
+}
