@@ -41,6 +41,14 @@ class FakeVAE:
         )
 
 
+class FakeClip:
+    def tokenize(self, prompt, minimax_ref_items=None):
+        return {"prompt": prompt, "refs": minimax_ref_items}
+
+    def encode_from_tokens_scheduled(self, tokens):
+        return [[torch.zeros(1, 1, 1), {"tokens": tokens}]]
+
+
 def empty_av(video_steps=2, audio_steps=8):
     video = torch.zeros(1, 24, video_steps, 2, 2)
     audio = torch.zeros(1, 32, 2, audio_steps)
@@ -129,6 +137,26 @@ class MiniMaxH3MaskedVideoTests(unittest.TestCase):
         self.assertTrue(bool((video_mask == 0).all()))
         self.assertTrue(bool((audio_mask == 1).all()))
         self.assertIs(FakeReferenceNode.calls[0]["ref_images"], refs)
+
+    def test_execute_delegates_to_the_real_native_h3_reference_node(self):
+        MODULE.MiniMaxH3ReferenceToVideo = self.original_reference_node
+        result = MODULE.VTSMiniMaxH3MaskedVideoConditioning.execute(
+            clip=FakeClip(),
+            vae=FakeVAE(),
+            audio_vae="unused-without-audio-references",
+            prompt="A camera moves through the repaired scene",
+            control_video=torch.ones(5, 32, 32, 3),
+            control_mask=torch.ones(5, 32, 32, 3),
+            width=32,
+            height=32,
+            length=5,
+        )
+
+        self.assertEqual(result[0][0][1]["tokens"]["prompt"],
+                         "A camera moves through the repaired scene")
+        video, audio = result[1]["samples"].unbind()
+        self.assertEqual(tuple(video.shape), (1, 24, 2, 2, 2))
+        self.assertEqual(tuple(audio.shape), (1, 32, 2, 8))
 
     def test_node_uses_native_autogrow_reference_inputs(self):
         schema = MODULE.VTSMiniMaxH3MaskedVideoConditioning.define_schema()
