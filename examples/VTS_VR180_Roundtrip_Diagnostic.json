@@ -1,0 +1,145 @@
+{
+  "id": "8efecf21-a996-4cd5-a84b-f75d90ed4ba4",
+  "revision": 0,
+  "last_node_id": 8,
+  "last_link_id": 10,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "EmptyImage",
+      "pos": [-920, -80],
+      "size": [300, 106],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [1, 2]}],
+      "properties": {"Node name for S&R": "EmptyImage"},
+      "widgets_values": [1024, 1024, 1, 4210752]
+    },
+    {
+      "id": 2,
+      "type": "VTSRectilinearToVR180",
+      "pos": [-490, -210],
+      "size": [420, 334],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [{"name": "images", "type": "IMAGE", "link": 1}],
+      "outputs": [
+        {"name": "partial_vr180", "type": "IMAGE", "links": [3, 4]},
+        {"name": "known_mask", "type": "MASK", "links": [5]},
+        {"name": "unknown_mask", "type": "MASK", "links": [6]},
+        {"name": "metadata", "type": "STRING", "links": null}
+      ],
+      "properties": {"Node name for S&R": "VTSRectilinearToVR180"},
+      "widgets_values": [1024, 1024, 90.0, 0.0, 0.0, 0.0, 256, 1, "bilinear"]
+    },
+    {
+      "id": 3,
+      "type": "VTSVR180ToRectilinear",
+      "pos": [40, -210],
+      "size": [420, 334],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {"name": "images", "type": "IMAGE", "link": 4},
+        {"name": "source_known_mask", "type": "MASK", "link": 5}
+      ],
+      "outputs": [
+        {"name": "rectilinear", "type": "IMAGE", "links": [8]},
+        {"name": "known_mask", "type": "MASK", "links": null},
+        {"name": "unknown_mask", "type": "MASK", "links": null},
+        {"name": "metadata", "type": "STRING", "links": null}
+      ],
+      "properties": {"Node name for S&R": "VTSVR180ToRectilinear"},
+      "widgets_values": [1024, 1024, 90.0, 0.0, 0.0, 0.0, 256, 1, "bilinear"]
+    },
+    {
+      "id": 4,
+      "type": "PreviewImage",
+      "pos": [-910, 190],
+      "size": [300, 320],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [{"name": "images", "type": "IMAGE", "link": 2}],
+      "outputs": [],
+      "title": "1. Rectilinear source (replace EmptyImage for real data)",
+      "properties": {"Node name for S&R": "PreviewImage"},
+      "widgets_values": []
+    },
+    {
+      "id": 5,
+      "type": "PreviewImage",
+      "pos": [-480, 190],
+      "size": [300, 320],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [{"name": "images", "type": "IMAGE", "link": 3}],
+      "outputs": [],
+      "title": "2. Partial VR180 (#FF00FF is unknown)",
+      "properties": {"Node name for S&R": "PreviewImage"},
+      "widgets_values": []
+    },
+    {
+      "id": 6,
+      "type": "MaskToImage",
+      "pos": [-50, 190],
+      "size": [220, 58],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [{"name": "mask", "type": "MASK", "link": 6}],
+      "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [7]}],
+      "properties": {"Node name for S&R": "MaskToImage"},
+      "widgets_values": []
+    },
+    {
+      "id": 7,
+      "type": "PreviewImage",
+      "pos": [-50, 290],
+      "size": [300, 320],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [{"name": "images", "type": "IMAGE", "link": 7}],
+      "outputs": [],
+      "title": "3. Exact forward unknown mask",
+      "properties": {"Node name for S&R": "PreviewImage"},
+      "widgets_values": []
+    },
+    {
+      "id": 8,
+      "type": "PreviewImage",
+      "pos": [390, 190],
+      "size": [300, 320],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [{"name": "images", "type": "IMAGE", "link": 8}],
+      "outputs": [],
+      "title": "4. Reverse-projected diagnostic",
+      "properties": {"Node name for S&R": "PreviewImage"},
+      "widgets_values": []
+    }
+  ],
+  "links": [
+    [1, 1, 0, 2, 0, "IMAGE"],
+    [2, 1, 0, 4, 0, "IMAGE"],
+    [3, 2, 0, 5, 0, "IMAGE"],
+    [4, 2, 0, 3, 0, "IMAGE"],
+    [5, 2, 1, 3, 1, "MASK"],
+    [6, 2, 2, 6, 0, "MASK"],
+    [7, 6, 0, 7, 0, "IMAGE"],
+    [8, 3, 0, 8, 0, "IMAGE"]
+  ],
+  "groups": [
+    {"id": 1, "title": "CPU-safe reversible projection diagnostic", "bounding": [-960, -270, 1700, 940], "color": "#3f789e", "font_size": 24, "flags": {}}
+  ],
+  "config": {},
+  "extra": {"frontendVersion": "1.49.6", "ds": {"scale": 0.82, "offset": [980, 350]}},
+  "version": 0.4
+}
