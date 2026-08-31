@@ -146,6 +146,39 @@ class GeneratedWrapperAutogrowTests(unittest.TestCase):
         )
         self.assertEqual(mappings[node_id].GET_SCHEMA().node_id, node_id)
 
+    def test_comfy_loader_relative_module_metadata_is_accepted(self):
+        filesystem_module = (
+            "/home/d_a_s/code/comfyui/comfy_extras/nodes_minimax_h3"
+        )
+        relative_module = "comfy_extras.nodes_minimax_h3"
+        with mock.patch.object(
+            MiniMaxH3ReferenceToVideo,
+            "__module__",
+            filesystem_module,
+        ), mock.patch.object(
+            MiniMaxH3ReferenceToVideo,
+            "RELATIVE_PYTHON_MODULE",
+            relative_module,
+            create=True,
+        ):
+            self.assertTrue(
+                MODULE._is_allowed_wrapper_source(
+                    "MiniMaxH3ReferenceToVideo",
+                    MiniMaxH3ReferenceToVideo,
+                )
+            )
+            spec = MODULE._build_v3_wrapper_spec(
+                "MiniMaxH3ReferenceToVideo",
+                MiniMaxH3ReferenceToVideo,
+                {},
+            )
+            wrapper, _ = MODULE._create_wrapper_class(spec)
+
+        self.assertEqual(
+            wrapper.GET_SCHEMA().node_id,
+            "VTSWrapper_comfy_extras_MiniMaxH3ReferenceToVideo",
+        )
+
     def test_nested_disk_images_materialize_without_renaming_keys(self):
         spec = MODULE._build_v3_wrapper_spec(
             "FakeAutogrowNode", FakeAutogrowNode, {}

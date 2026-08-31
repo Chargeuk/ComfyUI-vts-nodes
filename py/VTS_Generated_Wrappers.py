@@ -96,8 +96,14 @@ _OUTPUT_CONTROL_SPECS_MULTI_OR_NONE = {
 
 
 def _is_builtin_or_extra_node(node_cls):
-    module_name = getattr(node_cls, "__module__", "") or ""
-    return module_name == "nodes" or module_name.startswith("comfy_extras.")
+    module_names = (
+        getattr(node_cls, "__module__", "") or "",
+        getattr(node_cls, "RELATIVE_PYTHON_MODULE", "") or "",
+    )
+    return any(
+        module_name == "nodes" or module_name.startswith("comfy_extras.")
+        for module_name in module_names
+    )
 
 
 def _get_custom_node_folder_name(node_cls):
