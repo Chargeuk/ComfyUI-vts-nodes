@@ -10,6 +10,7 @@ from pathlib import Path
 
 import torch
 from comfy import model_management
+from comfy_api.latest import io
 import nodes as core_nodes
 
 import_dir = os.path.join(os.path.dirname(__file__), "vtsUtils")
@@ -71,8 +72,10 @@ _SAFE_V3_IO_TYPES = {
 }
 _UNSAFE_V3_IO_TYPES = {
     "COMFY_DYNAMICCOMBO_V3",
-    "COMFY_AUTOGROW_V3",
     "COMFY_MATCHTYPE_V3",
+}
+_SUPPORTED_V3_DYNAMIC_IO_TYPES = {
+    "COMFY_AUTOGROW_V3",
 }
 
 _OUTPUT_CONTROL_PREFIX = "vts_"
@@ -302,11 +305,43 @@ def _is_safe_v3_scalar_attr(value):
     return value is None or isinstance(value, (bool, int, float, str))
 
 
+def _is_safe_v3_autogrow_input(input_obj):
+    template = getattr(input_obj, "template", None)
+    if not isinstance(template, io.Autogrow.TemplatePrefix):
+        return False
+    if not isinstance(getattr(template, "prefix", None), str) or not template.prefix:
+        return False
+    if not isinstance(getattr(template, "min", None), int) or template.min < 0:
+        return False
+    if not isinstance(getattr(template, "max", None), int):
+        return False
+    if template.max < 1 or template.max > io.Autogrow._MaxNames:
+        return False
+
+    nested_input = getattr(template, "input", None)
+    if nested_input is None:
+        return False
+    nested_io_type = _resolve_io_type(nested_input)
+    if nested_io_type in _UNSAFE_V3_IO_TYPES or nested_io_type in _SUPPORTED_V3_DYNAMIC_IO_TYPES:
+        return False
+    return _is_safe_v3_input(nested_input)
+
+
+def _v3_input_contains_image(input_obj):
+    io_type = _resolve_io_type(input_obj)
+    if io_type == "IMAGE":
+        return True
+    if io_type != "COMFY_AUTOGROW_V3":
+        return False
+    template = getattr(input_obj, "template", None)
+    return _v3_input_contains_image(getattr(template, "input", None))
+
+
 def _is_safe_v3_input(input_obj):
     io_type = _resolve_io_type(input_obj)
     if io_type in _UNSAFE_V3_IO_TYPES:
         return False
-    if io_type not in _SAFE_V3_IO_TYPES:
+    if io_type not in _SAFE_V3_IO_TYPES and io_type not in _SUPPORTED_V3_DYNAMIC_IO_TYPES:
         return False
 
     if not isinstance(getattr(input_obj, "id", None), str) or not input_obj.id.strip():
@@ -338,6 +373,9 @@ def _is_safe_v3_input(input_obj):
         return False
     if getattr(input_obj, "advanced", None) not in (False, None, True):
         return False
+
+    if io_type == "COMFY_AUTOGROW_V3":
+        return _is_safe_v3_autogrow_input(input_obj)
 
     if io_type == "COMBO":
         options = getattr(input_obj, "options", None)
@@ -582,14 +620,19 @@ def _build_v3_wrapper_spec(node_name, node_cls, display_name_mappings):
     input_config = {"required": {}, "optional": {}}
     image_input_names = []
     all_input_names = []
+    has_dynamic_inputs = False
     for input_obj in inputs:
         if not _is_safe_v3_input(input_obj):
             return None
         input_name = input_obj.id
-        legacy_spec = _convert_v3_input_to_legacy_spec(input_obj)
-        group_name = "optional" if getattr(input_obj, "optional", False) else "required"
-        input_config[group_name][input_name] = legacy_spec
-        if _resolve_io_type(input_obj) == "IMAGE":
+        io_type = _resolve_io_type(input_obj)
+        if io_type in _SUPPORTED_V3_DYNAMIC_IO_TYPES:
+            has_dynamic_inputs = True
+        else:
+            legacy_spec = _convert_v3_input_to_legacy_spec(input_obj)
+            group_name = "optional" if getattr(input_obj, "optional", False) else "required"
+            input_config[group_name][input_name] = legacy_spec
+        if _v3_input_contains_image(input_obj):
             image_input_names.append(input_name)
         all_input_names.append(input_name)
 
@@ -623,7 +666,7 @@ def _build_v3_wrapper_spec(node_name, node_cls, display_name_mappings):
         return_types=tuple(return_types),
         return_names=_resolve_v3_return_names(outputs),
         function_name="execute",
-        schema_style="v3",
+        schema_style="v3_dynamic" if has_dynamic_inputs else "v3",
     )
 
 
@@ -711,6 +754,53 @@ def _normalize_node_result(result):
     return (result,)
 
 
+def _restore_v3_node_output(original_result, processed_outputs):
+    if not isinstance(original_result, io.NodeOutput):
+        return tuple(processed_outputs)
+    return io.NodeOutput(
+        *processed_outputs,
+        ui=original_result.ui,
+        expand=original_result.expand,
+        block_execution=original_result.block_execution,
+    )
+
+
+def _materialize_nested_images(value, materialized_inputs):
+    if isinstance(value, DiskImage):
+        materialized = value.materialize()
+        materialized_inputs.append(materialized)
+        return materialized
+
+    if isinstance(value, dict):
+        converted = {
+            key: _materialize_nested_images(item, materialized_inputs)
+            for key, item in value.items()
+        }
+        if all(converted[key] is value[key] for key in value):
+            return value
+        return converted
+
+    if isinstance(value, list):
+        converted = [
+            _materialize_nested_images(item, materialized_inputs)
+            for item in value
+        ]
+        if all(new is old for new, old in zip(converted, value)):
+            return value
+        return converted
+
+    if isinstance(value, tuple):
+        converted = tuple(
+            _materialize_nested_images(item, materialized_inputs)
+            for item in value
+        )
+        if all(new is old for new, old in zip(converted, value)):
+            return value
+        return converted
+
+    return value
+
+
 def _execute_wrapped_node(spec, kwargs):
     image_controls = {}
     if spec["has_image_output"]:
@@ -725,9 +815,8 @@ def _execute_wrapped_node(spec, kwargs):
             continue
 
         value = kwargs[input_name]
-        if input_name in spec["image_input_names"] and isinstance(value, DiskImage):
-            value = value.materialize()
-            materialized_inputs.append(value)
+        if input_name in spec["image_input_names"]:
+            value = _materialize_nested_images(value, materialized_inputs)
         node_kwargs[input_name] = value
 
     node_instance = spec["class"]()
@@ -735,16 +824,23 @@ def _execute_wrapped_node(spec, kwargs):
 
     try:
         result = node_function(**node_kwargs)
-        result = _normalize_node_result(result)
 
         if not spec["has_image_output"]:
+            if spec["schema_style"] == "v3_dynamic":
+                return result
+            result = _normalize_node_result(result)
             return result
+
+        original_result = result
+        result = _normalize_node_result(result)
 
         resolved_return_type = _resolve_return_type(spec, image_controls["vts_return_type"], kwargs)
         if resolved_return_type == "Tensor":
+            if spec["schema_style"] == "v3_dynamic":
+                return _restore_v3_node_output(original_result, result)
             return result
 
-        return _process_image_outputs(
+        processed = _process_image_outputs(
             spec,
             result,
             resolved_return_type,
@@ -756,6 +852,9 @@ def _execute_wrapped_node(spec, kwargs):
             image_controls["vts_compression_level"],
             image_controls["vts_quality"],
         )
+        if spec["schema_style"] == "v3_dynamic":
+            return _restore_v3_node_output(original_result, processed)
+        return processed
     finally:
         for materialized in materialized_inputs:
             del materialized
@@ -805,8 +904,68 @@ def _build_input_types(spec, wrapper_display_name):
     return input_types
 
 
+def _v3_output_control_inputs(spec, wrapper_display_name):
+    return_type_options = (
+        ["Input", "Tensor", "DiskImage"]
+        if spec["image_input_count"] == 1
+        else ["Tensor", "DiskImage"]
+    )
+    return_type_default = "Input" if spec["image_input_count"] == 1 else "Tensor"
+    return [
+        io.Combo.Input("vts_return_type", options=return_type_options, default=return_type_default),
+        io.String.Input(
+            "vts_prefix",
+            default=re.sub(r"\s+", "_", wrapper_display_name.strip()),
+        ),
+        io.Int.Input("vts_start_sequence", default=0, min=0),
+        io.String.Input("vts_output_dir", default=default_output_dir),
+        io.Combo.Input("vts_format", options=list(vtsImageTypes), default=vtsImageTypes[0]),
+        io.Int.Input("vts_num_workers", default=16, min=1),
+        io.Int.Input("vts_compression_level", default=9, min=0, max=9),
+        io.Int.Input("vts_quality", default=95, min=1, max=101),
+    ]
+
+
+def _create_v3_dynamic_wrapper_class(spec, wrapper_display_name):
+    wrapper_node_id = _sanitize_identifier(
+        f"VTSWrapper_{spec['package']}_{spec['node_name']}"
+    )
+    wrapper_category = f"VTS/wrappers/{spec['category']}"
+    wrapper_description = (
+        f"VTS-generated wrapper around {spec['display_name']} from {spec['package']}. "
+        "IMAGE inputs, including supported Autogrow IMAGE inputs, accept tensors or DiskImages."
+    )
+
+    @classmethod
+    def define_schema(cls):
+        schema = spec["class"].define_schema()
+        schema.node_id = wrapper_node_id
+        schema.display_name = wrapper_display_name
+        schema.category = wrapper_category
+        schema.description = wrapper_description
+        if spec["has_image_output"]:
+            schema.inputs.extend(_v3_output_control_inputs(spec, wrapper_display_name))
+        return schema
+
+    @classmethod
+    def execute(cls, **kwargs):
+        return _execute_wrapped_node(spec, kwargs)
+
+    attrs = {
+        "define_schema": define_schema,
+        "execute": execute,
+    }
+    return type(wrapper_node_id, (io.ComfyNode,), attrs)
+
+
 def _create_wrapper_class(spec):
     wrapper_display_name = f"VTS {spec['display_name']} Wrapper"
+    if spec["schema_style"] == "v3_dynamic":
+        return (
+            _create_v3_dynamic_wrapper_class(spec, wrapper_display_name),
+            wrapper_display_name,
+        )
+
     input_types = _build_input_types(spec, wrapper_display_name)
     category = f"VTS/wrappers/{spec['category']}"
     description = (
