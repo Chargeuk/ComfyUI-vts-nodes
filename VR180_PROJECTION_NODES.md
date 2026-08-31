@@ -43,11 +43,19 @@ projection LoRA or another downstream generator.
 
 The outpaint node does not invent pixels. It copies the angular region supplied
 by the source into a full equirectangular canvas, fills everything else with
-`fill_color`, and returns three tensors:
+`fill_color`, and returns three tensors plus two pixel coordinates:
 
 1. `erp_canvas` (`IMAGE`) - the projected full-ERP image or video batch.
 2. `known_mask` (`MASK`) - pixels genuinely supplied by the source.
 3. `outpaint_mask` (`MASK`) - the exact inverse region that a model must create.
+4. `projected_left_x` (`INT`) - left edge of the retained projection after trims.
+5. `projected_right_x` (`INT`) - right edge of the retained projection after trims.
+
+The coordinates are zero-based output-canvas pixel positions and are calculated
+from the final `known_mask`, so unequal left/right trims move them independently.
+Normally `projected_left_x <= projected_right_x`. If the projection crosses the
+ERP wrap seam, `projected_left_x > projected_right_x`; the retained interval is
+then `[projected_left_x, width)` plus `[0, projected_right_x]`.
 
 The source may be either:
 

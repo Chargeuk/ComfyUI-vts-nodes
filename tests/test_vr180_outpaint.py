@@ -211,19 +211,24 @@ class VR180OutpaintNodeTests(unittest.TestCase):
         inputs = nodes.VTSVR180SquareToERPOutpaint.INPUT_TYPES()["required"]
         self.assertIn("projection_mode", inputs)
         self.assertIn(projection.HALF_ERP_PRODUCTION, inputs["projection_mode"][0])
-        output, known, unknown = nodes.project_square_vr180_to_erp(
+        output, known, unknown, left_x, right_x = nodes.project_square_vr180_to_erp(
             **self.arguments(smooth_square(batch=3, size=32))
         )
         self.assertEqual(output.shape, (3, 32, 64, 3))
         self.assertEqual(known.shape, (3, 32, 64))
         self.assertTrue(torch.equal(known.bool(), ~unknown.bool()))
+        self.assertEqual((left_x, right_x), (16, 47))
+        self.assertEqual(
+            nodes.VTSVR180SquareToERPOutpaint.RETURN_TYPES,
+            ("IMAGE", "MASK", "MASK", "INT", "INT"),
+        )
 
     def test_disk_image_is_loaded_in_bounded_batches(self):
         images = smooth_square(batch=5, size=32)
         disk = FakeDiskImage(images, start_sequence=7)
         arguments = self.arguments(disk)
         arguments.update(trim_left=3, trim_right=2, trim_top=1, trim_bottom=4)
-        output, known, unknown = nodes.project_square_vr180_to_erp(
+        output, known, unknown, left_x, right_x = nodes.project_square_vr180_to_erp(
             **arguments
         )
         tensor_arguments = self.arguments(images)
@@ -236,6 +241,8 @@ class VR180OutpaintNodeTests(unittest.TestCase):
         self.assertTrue(torch.equal(output, expected[0]))
         self.assertTrue(torch.equal(known, expected[1]))
         self.assertTrue(torch.equal(unknown, expected[2]))
+        self.assertEqual((left_x, right_x), (19, 45))
+        self.assertEqual((left_x, right_x), expected[3:])
 
     def test_invalid_fill_colour_is_rejected(self):
         arguments = self.arguments(smooth_square(size=32))
@@ -245,7 +252,7 @@ class VR180OutpaintNodeTests(unittest.TestCase):
 
     def test_trim_is_black_and_added_to_outpaint_mask(self):
         baseline_arguments = self.arguments(smooth_square(size=32))
-        baseline_image, baseline_known, baseline_outpaint = (
+        baseline_image, baseline_known, baseline_outpaint, baseline_left, baseline_right = (
             nodes.project_square_vr180_to_erp(**baseline_arguments)
         )
         trimmed_arguments = dict(baseline_arguments)
@@ -255,7 +262,7 @@ class VR180OutpaintNodeTests(unittest.TestCase):
             trim_top=2,
             trim_bottom=4,
         )
-        image, known, outpaint = nodes.project_square_vr180_to_erp(
+        image, known, outpaint, left_x, right_x = nodes.project_square_vr180_to_erp(
             **trimmed_arguments
         )
 
@@ -274,6 +281,24 @@ class VR180OutpaintNodeTests(unittest.TestCase):
         # is active; trimming begins at the pasted source footprint instead.
         self.assertTrue(torch.equal(image[:, :, :16], baseline_image[:, :, :16]))
         self.assertTrue(outpaint[:, :, :16].bool().all())
+        self.assertEqual((baseline_left, baseline_right), (16, 47))
+        self.assertEqual((left_x, right_x), (19, 42))
+
+    def test_horizontal_extent_reports_wrapped_and_regular_intervals(self):
+        regular = torch.zeros((2, 4, 16))
+        regular[:, :, 3:11] = 1.0
+        self.assertEqual(nodes._horizontal_extent_from_known_mask(regular), (3, 10))
+
+        wrapped = torch.zeros((1, 4, 16))
+        wrapped[:, :, 14:] = 1.0
+        wrapped[:, :, :2] = 1.0
+        self.assertEqual(nodes._horizontal_extent_from_known_mask(wrapped), (14, 1))
+
+        full = torch.ones((1, 1, 16))
+        self.assertEqual(nodes._horizontal_extent_from_known_mask(full), (0, 15))
+
+        with self.assertRaisesRegex(ValueError, "no retained pixels"):
+            nodes._horizontal_extent_from_known_mask(torch.zeros((1, 4, 16)))
 
     def test_trim_must_leave_an_active_row_and_column(self):
         arguments = self.arguments(smooth_square(size=32))
@@ -288,10 +313,11 @@ class VR180OutpaintNodeTests(unittest.TestCase):
 
     @unittest.skipUnless(torch.cuda.is_available(), "CUDA is not available")
     def test_cuda_tensor_stays_on_cuda(self):
-        output, known, unknown = nodes.project_square_vr180_to_erp(
+        output, known, unknown, left_x, right_x = nodes.project_square_vr180_to_erp(
             **self.arguments(smooth_square(batch=2, size=32, device="cuda"))
         )
         self.assertTrue(output.is_cuda and known.is_cuda and unknown.is_cuda)
+        self.assertEqual((left_x, right_x), (16, 47))
 
 
 if __name__ == "__main__":

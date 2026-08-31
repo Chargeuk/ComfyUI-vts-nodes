@@ -14,6 +14,8 @@ half-equirectangular VR180 sources and circular equidistant-fisheye sources.
 Optional per-edge source-pixel trims crop the image being projected. The
 projected crop bands become black, leave the known mask, and enter the
 outpaint mask without changing the full-ERP tensor dimensions.
+The node also reports the final post-trim left and right projected x positions
+as zero-based output-canvas pixel coordinates.
 
 See [VR180_PROJECTION_NODES.md](VR180_PROJECTION_NODES.md) for projection
 conventions, presets, inputs, outputs, and memory behaviour.

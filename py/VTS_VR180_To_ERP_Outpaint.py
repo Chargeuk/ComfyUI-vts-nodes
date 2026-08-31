@@ -77,6 +77,46 @@ def _source_batches(source, batch_size: int) -> Iterator[torch.Tensor]:
         yield batch
 
 
+def _horizontal_extent_from_known_mask(known_mask: torch.Tensor) -> Tuple[int, int]:
+    """Return the smallest circular x interval containing all known pixels.
+
+    For the usual non-wrapped projection, ``left_x <= right_x``. If the
+    projection crosses the ERP wrap seam, ``left_x > right_x`` and the retained
+    interval is ``[left_x, width)`` plus ``[0, right_x]``.
+    """
+
+    if known_mask.ndim != 3:
+        raise ValueError(
+            "known_mask must have shape [frames,height,width], "
+            f"got {tuple(known_mask.shape)}"
+        )
+    width = int(known_mask.shape[2])
+    occupied_columns = known_mask.bool().any(dim=(0, 1))
+    indices = occupied_columns.nonzero(as_tuple=False).flatten().cpu().tolist()
+    if not indices:
+        raise ValueError(
+            "projection and trims leave no retained pixels at the requested output resolution"
+        )
+    if len(indices) == width:
+        return 0, width - 1
+
+    # Find the largest circular run of unoccupied columns. Its complement is
+    # the smallest circular interval containing the projected source.
+    best_gap = -1
+    best_left = indices[0]
+    best_right = indices[-1]
+    for position, right_edge in enumerate(indices):
+        next_left = indices[(position + 1) % len(indices)]
+        if position == len(indices) - 1:
+            next_left += width
+        gap = next_left - right_edge - 1
+        if gap > best_gap:
+            best_gap = gap
+            best_left = next_left % width
+            best_right = right_edge
+    return int(best_left), int(best_right)
+
+
 def project_square_vr180_to_erp(
     source,
     projection_mode,
@@ -169,6 +209,12 @@ def project_square_vr180_to_erp(
         unknown_batches.append(result.unknown_mask[:, 0].float())
 
     source_kind = "tensor" if isinstance(source, torch.Tensor) else "DiskImage"
+    projected_output = torch.cat(projected_batches, dim=0)
+    known_output = torch.cat(known_batches, dim=0)
+    outpaint_output = torch.cat(unknown_batches, dim=0)
+    projected_left_x, projected_right_x = _horizontal_extent_from_known_mask(
+        known_output
+    )
     print(
         "[VTS VR180 -> ERP] "
         f"{source_kind}, mode={projection_mode}, "
@@ -179,20 +225,29 @@ def project_square_vr180_to_erp(
         f"trims=L{trims['trim_left']}/R{trims['trim_right']}/"
         f"T{trims['trim_top']}/B{trims['trim_bottom']}, "
         f"output={width}x{height}, "
+        f"projected_x=L{projected_left_x}/R{projected_right_x}, "
         f"frames={sum(int(item.shape[0]) for item in projected_batches)}"
     )
     return (
-        torch.cat(projected_batches, dim=0),
-        torch.cat(known_batches, dim=0),
-        torch.cat(unknown_batches, dim=0),
+        projected_output,
+        known_output,
+        outpaint_output,
+        projected_left_x,
+        projected_right_x,
     )
 
 
 class VTSVR180SquareToERPOutpaint:
     CATEGORY = "VTS/VR180"
     FUNCTION = "project"
-    RETURN_TYPES = ("IMAGE", "MASK", "MASK")
-    RETURN_NAMES = ("erp_canvas", "known_mask", "outpaint_mask")
+    RETURN_TYPES = ("IMAGE", "MASK", "MASK", "INT", "INT")
+    RETURN_NAMES = (
+        "erp_canvas",
+        "known_mask",
+        "outpaint_mask",
+        "projected_left_x",
+        "projected_right_x",
+    )
     DESCRIPTION = (
         "Place a square half-ERP or equidistant-fisheye VR180 image/video batch on a "
         "full 2:1 equirectangular canvas. Accepts an IMAGE tensor or VTS DiskImage and "
