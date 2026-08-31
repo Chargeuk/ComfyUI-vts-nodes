@@ -328,10 +328,9 @@ def vr180_square_to_full_erp(
         known = known & support_known.expand(int(image.shape[0]), -1, -1, -1)
 
     # ``known`` now represents the complete source footprint, including the
-    # circular support check for fisheye input. Cropping is deliberately kept
-    # separate so cropped source pixels belong to neither output mask.
+    # circular support check for fisheye input. Cropping moves its projected
+    # edge inward; the newly exposed black band is part of the outpaint mask.
     geometric_known = known
-    outpaint = ~geometric_known
     output = _apply_unknown_color(sampled, geometric_known, unknown_color)
     if any(trims.values()):
         trim_keep = _source_trim_keep_mask(grid, size, **trims)
@@ -346,6 +345,7 @@ def vr180_square_to_full_erp(
         output = output.masked_fill(deliberately_trimmed, 0.0)
     else:
         known = geometric_known
+    outpaint = ~known
     return ProjectionResult(output, known, outpaint)
 
 

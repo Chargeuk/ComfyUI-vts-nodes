@@ -105,15 +105,15 @@ class VR180OutpaintCoreTests(unittest.TestCase):
         expected_known = torch.zeros_like(result.known_mask)
         expected_known[:, :, 2:60, 35:91] = True
         self.assertTrue(torch.equal(result.known_mask, expected_known))
-        self.assertTrue(torch.equal(result.unknown_mask, baseline.unknown_mask))
+        self.assertTrue(torch.equal(result.unknown_mask, ~result.known_mask))
 
         deliberately_trimmed = baseline.known_mask & ~result.known_mask
         self.assertTrue(deliberately_trimmed.any())
         self.assertFalse(result.image[deliberately_trimmed.expand_as(result.image)].any())
         self.assertFalse(result.known_mask[deliberately_trimmed].any())
-        self.assertFalse(result.unknown_mask[deliberately_trimmed].any())
+        self.assertTrue(result.unknown_mask[deliberately_trimmed].all())
 
-        genuine_outpaint = result.unknown_mask.expand_as(result.image)
+        genuine_outpaint = baseline.unknown_mask.expand_as(result.image)
         green = torch.tensor([0.0, 1.0, 0.0]).view(1, 3, 1, 1).expand_as(result.image)
         self.assertTrue(torch.equal(result.image[genuine_outpaint], green[genuine_outpaint]))
 
@@ -141,7 +141,8 @@ class VR180OutpaintCoreTests(unittest.TestCase):
                 removed = baseline.known_mask & ~trimmed.known_mask
                 self.assertTrue(removed.any())
                 self.assertFalse((trimmed.known_mask & ~baseline.known_mask).any())
-                self.assertTrue(torch.equal(trimmed.unknown_mask, baseline.unknown_mask))
+                self.assertTrue(torch.equal(trimmed.unknown_mask, ~trimmed.known_mask))
+                self.assertTrue((trimmed.unknown_mask & ~baseline.unknown_mask).any())
                 self.assertFalse(trimmed.image[removed.expand_as(trimmed.image)].any())
 
     def test_equidistant_fisheye_uses_circle_and_marks_back_unknown(self):
@@ -242,7 +243,7 @@ class VR180OutpaintNodeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "fill_color"):
             nodes.project_square_vr180_to_erp(**arguments)
 
-    def test_trim_is_black_and_excluded_from_both_masks(self):
+    def test_trim_is_black_and_added_to_outpaint_mask(self):
         baseline_arguments = self.arguments(smooth_square(size=32))
         baseline_image, baseline_known, baseline_outpaint = (
             nodes.project_square_vr180_to_erp(**baseline_arguments)
@@ -262,11 +263,12 @@ class VR180OutpaintNodeTests(unittest.TestCase):
         self.assertTrue(deliberately_trimmed.any())
         self.assertFalse(image[deliberately_trimmed].any())
         self.assertFalse(known[deliberately_trimmed].any())
-        self.assertFalse(outpaint[deliberately_trimmed].any())
-        self.assertTrue(torch.equal(outpaint, baseline_outpaint))
+        self.assertTrue(outpaint[deliberately_trimmed].bool().all())
+        self.assertTrue(torch.equal(outpaint.bool(), ~known.bool()))
         unchanged = ~deliberately_trimmed
         self.assertTrue(torch.equal(image[unchanged], baseline_image[unchanged]))
         self.assertTrue(torch.equal(known[unchanged], baseline_known[unchanged]))
+        self.assertTrue(torch.equal(outpaint[unchanged], baseline_outpaint[unchanged]))
 
         # The outer canvas remains green/outpaint even though source trimming
         # is active; trimming begins at the pasted source footprint instead.

@@ -268,7 +268,7 @@ class VTSVR180SquareToERPOutpaint:
                         "min": 0,
                         "max": 16383,
                         "step": 1,
-                        "tooltip": "Source-image columns cropped before projection; their projected area is black and excluded from both masks.",
+                        "tooltip": "Source-image columns cropped before projection; their projected area is black and included in the outpaint mask.",
                     },
                 ),
                 "trim_right": (
@@ -278,7 +278,7 @@ class VTSVR180SquareToERPOutpaint:
                         "min": 0,
                         "max": 16383,
                         "step": 1,
-                        "tooltip": "Source-image columns cropped before projection; their projected area is black and excluded from both masks.",
+                        "tooltip": "Source-image columns cropped before projection; their projected area is black and included in the outpaint mask.",
                     },
                 ),
                 "trim_top": (
@@ -288,7 +288,7 @@ class VTSVR180SquareToERPOutpaint:
                         "min": 0,
                         "max": 8191,
                         "step": 1,
-                        "tooltip": "Source-image rows cropped before projection; their projected area is black and excluded from both masks.",
+                        "tooltip": "Source-image rows cropped before projection; their projected area is black and included in the outpaint mask.",
                     },
                 ),
                 "trim_bottom": (
@@ -298,7 +298,7 @@ class VTSVR180SquareToERPOutpaint:
                         "min": 0,
                         "max": 8191,
                         "step": 1,
-                        "tooltip": "Source-image rows cropped before projection; their projected area is black and excluded from both masks.",
+                        "tooltip": "Source-image rows cropped before projection; their projected area is black and included in the outpaint mask.",
                     },
                 ),
             }

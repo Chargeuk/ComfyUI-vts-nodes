@@ -84,12 +84,12 @@ many pixels from the corresponding edges of the square source image. Their
 defaults are zero. The crop is evaluated in source coordinates and then
 projected, so its new edges correctly follow calibrated, rotated, and fisheye
 views instead of trimming the outer full-ERP canvas. Projected crop bands are
-exact black in `erp_canvas` and zero in both masks, meaning they must not be
-preserved or outpainted. Opposing trims must leave at least one source row or
-column. Output tensor dimensions remain unchanged.
+exact black in `erp_canvas`, zero in `known_mask`, and one in `outpaint_mask`.
+The outpaint mask therefore follows the pasted image's new cropped edges.
+Opposing trims must leave at least one source row or column. Output tensor
+dimensions remain unchanged.
 
 For an outpaint workflow, pass `erp_canvas` as the starting image and
 `outpaint_mask` as the region to generate. The known mask is useful when the
 generated result must later be composited without changing the source view.
-When trims are non-zero the two masks are intentionally not exact inverses:
-trimmed pixels belong to neither mask.
+The two masks remain exact inverses when trims are non-zero.
