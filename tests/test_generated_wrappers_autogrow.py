@@ -119,6 +119,10 @@ class GeneratedWrapperAutogrowTests(unittest.TestCase):
             schema.node_id,
             "VTSWrapper_comfy_extras_MiniMaxH3ReferenceToVideo",
         )
+        self.assertEqual(
+            wrapper.RELATIVE_PYTHON_MODULE,
+            "custom_nodes.ComfyUI-vts-nodes",
+        )
         autogrow = {item.id: item for item in schema.inputs if isinstance(item, io.Autogrow.Input)}
         self.assertEqual(autogrow["ref_images"].template.prefix, "ref_image_")
         self.assertEqual(autogrow["ref_images"].template.max, 9)

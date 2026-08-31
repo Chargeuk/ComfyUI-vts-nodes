@@ -960,6 +960,7 @@ def _create_v3_dynamic_wrapper_class(spec, wrapper_display_name):
     attrs = {
         "define_schema": define_schema,
         "execute": execute,
+        "RELATIVE_PYTHON_MODULE": "custom_nodes.ComfyUI-vts-nodes",
     }
     return type(wrapper_node_id, (io.ComfyNode,), attrs)
 
