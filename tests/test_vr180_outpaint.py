@@ -126,6 +126,10 @@ class VR180OutpaintNodeTests(unittest.TestCase):
             projection_mode=projection.HALF_ERP_IDEAL,
             output_width=64,
             output_height=32,
+            trim_left=0,
+            trim_right=0,
+            trim_top=0,
+            trim_bottom=0,
             custom_horizontal_fov_degrees=180.0,
             custom_vertical_fov_degrees=180.0,
             yaw_degrees=0.0,
@@ -168,6 +172,43 @@ class VR180OutpaintNodeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "fill_color"):
             nodes.project_square_vr180_to_erp(**arguments)
 
+    def test_trim_is_black_and_excluded_from_both_masks(self):
+        baseline_arguments = self.arguments(smooth_square(size=32))
+        baseline_image, baseline_known, baseline_outpaint = (
+            nodes.project_square_vr180_to_erp(**baseline_arguments)
+        )
+        trimmed_arguments = dict(baseline_arguments)
+        trimmed_arguments.update(
+            trim_left=3,
+            trim_right=5,
+            trim_top=2,
+            trim_bottom=4,
+        )
+        image, known, outpaint = nodes.project_square_vr180_to_erp(
+            **trimmed_arguments
+        )
+
+        active = torch.zeros_like(known, dtype=torch.bool)
+        active[:, 2:-4, 3:-5] = True
+        excluded = ~active
+        self.assertFalse(image[excluded].any())
+        self.assertFalse(known[excluded].any())
+        self.assertFalse(outpaint[excluded].any())
+        self.assertTrue(torch.equal(image[active], baseline_image[active]))
+        self.assertTrue(torch.equal(known[active], baseline_known[active]))
+        self.assertTrue(torch.equal(outpaint[active], baseline_outpaint[active]))
+
+    def test_trim_must_leave_an_active_row_and_column(self):
+        arguments = self.arguments(smooth_square(size=32))
+        arguments.update(trim_left=32, trim_right=32)
+        with self.assertRaisesRegex(ValueError, "at least one output column"):
+            nodes.project_square_vr180_to_erp(**arguments)
+
+        arguments = self.arguments(smooth_square(size=32))
+        arguments.update(trim_top=16, trim_bottom=16)
+        with self.assertRaisesRegex(ValueError, "at least one output row"):
+            nodes.project_square_vr180_to_erp(**arguments)
+
     @unittest.skipUnless(torch.cuda.is_available(), "CUDA is not available")
     def test_cuda_tensor_stays_on_cuda(self):
         output, known, unknown = nodes.project_square_vr180_to_erp(
@@ -178,4 +219,3 @@ class VR180OutpaintNodeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-

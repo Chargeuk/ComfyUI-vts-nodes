@@ -77,6 +77,36 @@ def _source_batches(source, batch_size: int) -> Iterator[torch.Tensor]:
         yield batch
 
 
+def _apply_trim_matte(
+    image: torch.Tensor,
+    known_mask: torch.Tensor,
+    outpaint_mask: torch.Tensor,
+    *,
+    trim_left: int,
+    trim_right: int,
+    trim_top: int,
+    trim_bottom: int,
+) -> None:
+    """Blacken trimmed borders and exclude them from both output masks."""
+
+    if trim_top:
+        image[:, :, :trim_top, :] = 0
+        known_mask[:, :, :trim_top, :] = False
+        outpaint_mask[:, :, :trim_top, :] = False
+    if trim_bottom:
+        image[:, :, -trim_bottom:, :] = 0
+        known_mask[:, :, -trim_bottom:, :] = False
+        outpaint_mask[:, :, -trim_bottom:, :] = False
+    if trim_left:
+        image[:, :, :, :trim_left] = 0
+        known_mask[:, :, :, :trim_left] = False
+        outpaint_mask[:, :, :, :trim_left] = False
+    if trim_right:
+        image[:, :, :, -trim_right:] = 0
+        known_mask[:, :, :, -trim_right:] = False
+        outpaint_mask[:, :, :, -trim_right:] = False
+
+
 def project_square_vr180_to_erp(
     source,
     projection_mode,
@@ -91,12 +121,28 @@ def project_square_vr180_to_erp(
     chunk_rows,
     frame_batch_size,
     sampling,
+    trim_left,
+    trim_right,
+    trim_top,
+    trim_bottom,
 ):
     """Project a tensor or streamed VTS DiskImage and return tensor outputs."""
 
     width, height = int(output_width), int(output_height)
     if width < 2 or height < 1 or width != height * 2:
         raise ValueError("output_width must be exactly twice output_height for full ERP")
+    trims = {
+        "trim_left": int(trim_left),
+        "trim_right": int(trim_right),
+        "trim_top": int(trim_top),
+        "trim_bottom": int(trim_bottom),
+    }
+    if any(value < 0 for value in trims.values()):
+        raise ValueError("trim values must not be negative")
+    if trims["trim_left"] + trims["trim_right"] >= width:
+        raise ValueError("left and right trims must leave at least one output column")
+    if trims["trim_top"] + trims["trim_bottom"] >= height:
+        raise ValueError("top and bottom trims must leave at least one output row")
     batch_size = int(frame_batch_size)
     if batch_size < 1:
         raise ValueError("frame_batch_size must be at least 1")
@@ -141,6 +187,12 @@ def project_square_vr180_to_erp(
             unknown_color=unknown_color,
             chunk_rows=chunk_rows,
             mode=sampling,
+        )
+        _apply_trim_matte(
+            result.image,
+            result.known_mask,
+            result.unknown_mask,
+            **trims,
         )
         projected_batches.append(result.image.movedim(1, -1).contiguous())
         known_batches.append(result.known_mask[:, 0].float())
@@ -233,6 +285,46 @@ class VTSVR180SquareToERPOutpaint:
                     ["bilinear", "bicubic", "nearest"],
                     {"default": "bilinear"},
                 ),
+                "trim_left": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 16383,
+                        "step": 1,
+                        "tooltip": "Black columns excluded from both masks at the left edge.",
+                    },
+                ),
+                "trim_right": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 16383,
+                        "step": 1,
+                        "tooltip": "Black columns excluded from both masks at the right edge.",
+                    },
+                ),
+                "trim_top": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 8191,
+                        "step": 1,
+                        "tooltip": "Black rows excluded from both masks at the top edge.",
+                    },
+                ),
+                "trim_bottom": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 8191,
+                        "step": 1,
+                        "tooltip": "Black rows excluded from both masks at the bottom edge.",
+                    },
+                ),
             }
         }
 
@@ -247,4 +339,3 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "VTSVR180SquareToERPOutpaint": "VTS VR180 Square To ERP Outpaint Canvas",
 }
-

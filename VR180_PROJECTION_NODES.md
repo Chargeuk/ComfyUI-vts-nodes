@@ -79,6 +79,15 @@ the sphere. `chunk_rows` bounds temporary projection work. `frame_batch_size`
 bounds disk loading and per-call frame processing. `sampling` controls image
 resampling; masks remain geometric and exact.
 
+`trim_left`, `trim_right`, `trim_top`, and `trim_bottom` optionally exclude
+pixel-wide border bands without changing the output tensor dimensions. Their
+defaults are zero. Trimmed pixels are exact black in `erp_canvas` and zero in
+both masks, meaning they are deliberately outside the active canvas and must
+not be preserved or outpainted. Opposing trims must leave at least one active
+row or column.
+
 For an outpaint workflow, pass `erp_canvas` as the starting image and
 `outpaint_mask` as the region to generate. The known mask is useful when the
 generated result must later be composited without changing the source view.
+When trims are non-zero the two masks are intentionally not exact inverses:
+trimmed pixels belong to neither mask.

@@ -11,6 +11,8 @@ The outpaint node accepts either a normal ComfyUI `IMAGE` tensor or a VTS
 `DiskImage` sequence. Its outputs are ordinary in-memory tensors, ready for an
 outpainting or harmonisation workflow. It supports both rectangular
 half-equirectangular VR180 sources and circular equidistant-fisheye sources.
+Optional per-edge pixel trims create black matte borders that are excluded
+from both output masks without changing the tensor dimensions.
 
 See [VR180_PROJECTION_NODES.md](VR180_PROJECTION_NODES.md) for projection
 conventions, presets, inputs, outputs, and memory behaviour.
