@@ -20,6 +20,52 @@ def image_alpha_fix(destination, source):
         destination[..., -1] = 1.0
     return destination, source
 
+
+def _batch_length(images):
+    if isinstance(images, torch.Tensor):
+        length = int(images.shape[0])
+    elif isinstance(images, DiskImage):
+        length = images.number_of_images
+        if length is None and images.shape is not None:
+            length = images.shape[0]
+        length = int(length or 0)
+    else:
+        raise TypeError(
+            "VTS Image Composite Masked expects Tensor or DiskImage image "
+            f"batches, got {type(images)!r}."
+        )
+    if length < 1:
+        raise ValueError("VTS Image Composite Masked received an empty image batch.")
+    return length
+
+
+def _slice_repeated_batch(images, start, count):
+    """Slice a global batch range using ComfyUI's cyclic repeat semantics."""
+    total = _batch_length(images)
+    if isinstance(images, torch.Tensor):
+        indexes = torch.arange(
+            start,
+            start + count,
+            device=images.device,
+        ).remainder(total)
+        return images.index_select(0, indexes)
+
+    pieces = []
+    cursor = start % total
+    remaining = count
+    while remaining:
+        piece_count = min(remaining, total - cursor)
+        piece = images.materialize(start=cursor, count=piece_count)
+        if not isinstance(piece, torch.Tensor) or piece.shape[0] != piece_count:
+            raise RuntimeError(
+                "VTS Image Composite Masked could not materialize the "
+                "requested source frames."
+            )
+        pieces.append(piece)
+        remaining -= piece_count
+        cursor = 0
+    return pieces[0] if len(pieces) == 1 else torch.cat(pieces, dim=0)
+
 def colormatch(image_ref, image_target, method, strength=1.0):
     try:
         from color_matcher import ColorMatcher
@@ -153,8 +199,28 @@ class VTS_Image_Composite_Masked:
 
 
     def composite(self, source, x, y, resize_source, color_match_method, color_match_strength = 0.0, mask = None, **kwargs):
+        kwargs = ensure_image_defaults(kwargs)
+        if isinstance(mask, torch.Tensor) and mask.ndim == 2:
+            mask = mask.unsqueeze(0)
+        batch_start = 0
+
         def transform_fn(batch_tensor):
-            batch_tensor, updated_source = image_alpha_fix(batch_tensor, source)
+            nonlocal batch_start
+            batch_count = int(batch_tensor.shape[0])
+            updated_source = _slice_repeated_batch(
+                source,
+                batch_start,
+                batch_count,
+            )
+            updated_mask = (
+                None
+                if mask is None
+                else _slice_repeated_batch(mask, batch_start, batch_count)
+            )
+            batch_tensor, updated_source = image_alpha_fix(
+                batch_tensor,
+                updated_source,
+            )
             batch_tensor = batch_tensor.movedim(-1, 1)
             output = composite(destination=batch_tensor,
                                source=updated_source.movedim(-1, 1),
@@ -162,9 +228,10 @@ class VTS_Image_Composite_Masked:
                                y=y,
                                color_match_method=color_match_method,
                                color_match_strength=color_match_strength,
-                               mask=mask,
+                               mask=updated_mask,
                                multiplier=1,
                                resize_source=resize_source).movedim(1, -1)
+            batch_start += batch_count
             return output
 
         result = transform_and_save_images(
