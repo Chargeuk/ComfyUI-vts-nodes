@@ -77,36 +77,6 @@ def _source_batches(source, batch_size: int) -> Iterator[torch.Tensor]:
         yield batch
 
 
-def _apply_trim_matte(
-    image: torch.Tensor,
-    known_mask: torch.Tensor,
-    outpaint_mask: torch.Tensor,
-    *,
-    trim_left: int,
-    trim_right: int,
-    trim_top: int,
-    trim_bottom: int,
-) -> None:
-    """Blacken trimmed borders and exclude them from both output masks."""
-
-    if trim_top:
-        image[:, :, :trim_top, :] = 0
-        known_mask[:, :, :trim_top, :] = False
-        outpaint_mask[:, :, :trim_top, :] = False
-    if trim_bottom:
-        image[:, :, -trim_bottom:, :] = 0
-        known_mask[:, :, -trim_bottom:, :] = False
-        outpaint_mask[:, :, -trim_bottom:, :] = False
-    if trim_left:
-        image[:, :, :, :trim_left] = 0
-        known_mask[:, :, :, :trim_left] = False
-        outpaint_mask[:, :, :, :trim_left] = False
-    if trim_right:
-        image[:, :, :, -trim_right:] = 0
-        known_mask[:, :, :, -trim_right:] = False
-        outpaint_mask[:, :, :, -trim_right:] = False
-
-
 def project_square_vr180_to_erp(
     source,
     projection_mode,
@@ -139,10 +109,6 @@ def project_square_vr180_to_erp(
     }
     if any(value < 0 for value in trims.values()):
         raise ValueError("trim values must not be negative")
-    if trims["trim_left"] + trims["trim_right"] >= width:
-        raise ValueError("left and right trims must leave at least one output column")
-    if trims["trim_top"] + trims["trim_bottom"] >= height:
-        raise ValueError("top and bottom trims must leave at least one output row")
     batch_size = int(frame_batch_size)
     if batch_size < 1:
         raise ValueError("frame_batch_size must be at least 1")
@@ -161,6 +127,7 @@ def project_square_vr180_to_erp(
     projected_batches = []
     known_batches = []
     unknown_batches = []
+    source_size = None
 
     for batch in _source_batches(source, batch_size):
         if batch.ndim != 4 or batch.shape[-1] < 3:
@@ -172,6 +139,14 @@ def project_square_vr180_to_erp(
             raise ValueError(
                 "source images must be square, "
                 f"got {int(batch.shape[2])}x{int(batch.shape[1])}"
+            )
+        current_source_size = int(batch.shape[1])
+        if source_size is None:
+            source_size = current_source_size
+        elif current_source_size != source_size:
+            raise ValueError(
+                "all source frames must have the same square dimensions, "
+                f"got both {source_size} and {current_source_size}"
             )
         if not batch.is_floating_point():
             raise TypeError("source images must use a floating-point dtype")
@@ -187,11 +162,6 @@ def project_square_vr180_to_erp(
             unknown_color=unknown_color,
             chunk_rows=chunk_rows,
             mode=sampling,
-        )
-        _apply_trim_matte(
-            result.image,
-            result.known_mask,
-            result.unknown_mask,
             **trims,
         )
         projected_batches.append(result.image.movedim(1, -1).contiguous())
@@ -203,7 +173,13 @@ def project_square_vr180_to_erp(
         "[VTS VR180 -> ERP] "
         f"{source_kind}, mode={projection_mode}, "
         f"effective_fov={horizontal_fov:.6f}x{vertical_fov:.6f}, "
-        f"output={width}x{height}, frames={sum(int(item.shape[0]) for item in projected_batches)}"
+        f"source={source_size}x{source_size}, "
+        f"retained_source={source_size - trims['trim_left'] - trims['trim_right']}x"
+        f"{source_size - trims['trim_top'] - trims['trim_bottom']}, "
+        f"trims=L{trims['trim_left']}/R{trims['trim_right']}/"
+        f"T{trims['trim_top']}/B{trims['trim_bottom']}, "
+        f"output={width}x{height}, "
+        f"frames={sum(int(item.shape[0]) for item in projected_batches)}"
     )
     return (
         torch.cat(projected_batches, dim=0),
@@ -292,7 +268,7 @@ class VTSVR180SquareToERPOutpaint:
                         "min": 0,
                         "max": 16383,
                         "step": 1,
-                        "tooltip": "Black columns excluded from both masks at the left edge.",
+                        "tooltip": "Source-image columns cropped before projection; their projected area is black and excluded from both masks.",
                     },
                 ),
                 "trim_right": (
@@ -302,7 +278,7 @@ class VTSVR180SquareToERPOutpaint:
                         "min": 0,
                         "max": 16383,
                         "step": 1,
-                        "tooltip": "Black columns excluded from both masks at the right edge.",
+                        "tooltip": "Source-image columns cropped before projection; their projected area is black and excluded from both masks.",
                     },
                 ),
                 "trim_top": (
@@ -312,7 +288,7 @@ class VTSVR180SquareToERPOutpaint:
                         "min": 0,
                         "max": 8191,
                         "step": 1,
-                        "tooltip": "Black rows excluded from both masks at the top edge.",
+                        "tooltip": "Source-image rows cropped before projection; their projected area is black and excluded from both masks.",
                     },
                 ),
                 "trim_bottom": (
@@ -322,7 +298,7 @@ class VTSVR180SquareToERPOutpaint:
                         "min": 0,
                         "max": 8191,
                         "step": 1,
-                        "tooltip": "Black rows excluded from both masks at the bottom edge.",
+                        "tooltip": "Source-image rows cropped before projection; their projected area is black and excluded from both masks.",
                     },
                 ),
             }

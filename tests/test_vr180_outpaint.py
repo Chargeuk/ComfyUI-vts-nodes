@@ -83,6 +83,67 @@ class VR180OutpaintCoreTests(unittest.TestCase):
         self.assertFalse(bool(fitted.known_mask[0, 0, 0, 128]))
         self.assertTrue(bool(ideal.known_mask[0, 0, 0, 128]))
 
+    def test_source_trim_creates_three_distinct_pixel_states(self):
+        source = smooth_square(size=64).movedim(-1, 1)
+        baseline = projection.vr180_square_to_full_erp(
+            source,
+            (64, 128),
+            projection_mode=projection.HALF_ERP_IDEAL,
+            unknown_color=(0.0, 1.0, 0.0),
+        )
+        result = projection.vr180_square_to_full_erp(
+            source,
+            (64, 128),
+            projection_mode=projection.HALF_ERP_IDEAL,
+            unknown_color=(0.0, 1.0, 0.0),
+            trim_left=3,
+            trim_right=5,
+            trim_top=2,
+            trim_bottom=4,
+        )
+
+        expected_known = torch.zeros_like(result.known_mask)
+        expected_known[:, :, 2:60, 35:91] = True
+        self.assertTrue(torch.equal(result.known_mask, expected_known))
+        self.assertTrue(torch.equal(result.unknown_mask, baseline.unknown_mask))
+
+        deliberately_trimmed = baseline.known_mask & ~result.known_mask
+        self.assertTrue(deliberately_trimmed.any())
+        self.assertFalse(result.image[deliberately_trimmed.expand_as(result.image)].any())
+        self.assertFalse(result.known_mask[deliberately_trimmed].any())
+        self.assertFalse(result.unknown_mask[deliberately_trimmed].any())
+
+        genuine_outpaint = result.unknown_mask.expand_as(result.image)
+        green = torch.tensor([0.0, 1.0, 0.0]).view(1, 3, 1, 1).expand_as(result.image)
+        self.assertTrue(torch.equal(result.image[genuine_outpaint], green[genuine_outpaint]))
+
+    def test_source_trim_follows_calibrated_rotated_and_fisheye_views(self):
+        source = smooth_square(size=96).movedim(-1, 1)
+        cases = (
+            (projection.HALF_ERP_PRODUCTION, 17.0),
+            (projection.FISHEYE_IDEAL, -13.0),
+        )
+        for mode, yaw in cases:
+            with self.subTest(mode=mode):
+                baseline = projection.vr180_square_to_full_erp(
+                    source, (64, 128), projection_mode=mode, yaw_degrees=yaw
+                )
+                trimmed = projection.vr180_square_to_full_erp(
+                    source,
+                    (64, 128),
+                    projection_mode=mode,
+                    yaw_degrees=yaw,
+                    trim_left=9,
+                    trim_right=7,
+                    trim_top=5,
+                    trim_bottom=3,
+                )
+                removed = baseline.known_mask & ~trimmed.known_mask
+                self.assertTrue(removed.any())
+                self.assertFalse((trimmed.known_mask & ~baseline.known_mask).any())
+                self.assertTrue(torch.equal(trimmed.unknown_mask, baseline.unknown_mask))
+                self.assertFalse(trimmed.image[removed.expand_as(trimmed.image)].any())
+
     def test_equidistant_fisheye_uses_circle_and_marks_back_unknown(self):
         source = smooth_square(size=96).movedim(-1, 1)
         result = projection.vr180_square_to_full_erp(
@@ -157,14 +218,23 @@ class VR180OutpaintNodeTests(unittest.TestCase):
         self.assertTrue(torch.equal(known.bool(), ~unknown.bool()))
 
     def test_disk_image_is_loaded_in_bounded_batches(self):
-        disk = FakeDiskImage(smooth_square(batch=5, size=32), start_sequence=7)
+        images = smooth_square(batch=5, size=32)
+        disk = FakeDiskImage(images, start_sequence=7)
+        arguments = self.arguments(disk)
+        arguments.update(trim_left=3, trim_right=2, trim_top=1, trim_bottom=4)
         output, known, unknown = nodes.project_square_vr180_to_erp(
-            **self.arguments(disk)
+            **arguments
         )
+        tensor_arguments = self.arguments(images)
+        tensor_arguments.update(trim_left=3, trim_right=2, trim_top=1, trim_bottom=4)
+        expected = nodes.project_square_vr180_to_erp(**tensor_arguments)
         self.assertEqual(output.shape, (5, 32, 64, 3))
         self.assertEqual(known.shape, (5, 32, 64))
         self.assertEqual(unknown.shape, (5, 32, 64))
         self.assertEqual(disk.calls, [(7, 2), (9, 2), (11, 1)])
+        self.assertTrue(torch.equal(output, expected[0]))
+        self.assertTrue(torch.equal(known, expected[1]))
+        self.assertTrue(torch.equal(unknown, expected[2]))
 
     def test_invalid_fill_colour_is_rejected(self):
         arguments = self.arguments(smooth_square(size=32))
@@ -188,25 +258,30 @@ class VR180OutpaintNodeTests(unittest.TestCase):
             **trimmed_arguments
         )
 
-        active = torch.zeros_like(known, dtype=torch.bool)
-        active[:, 2:-4, 3:-5] = True
-        excluded = ~active
-        self.assertFalse(image[excluded].any())
-        self.assertFalse(known[excluded].any())
-        self.assertFalse(outpaint[excluded].any())
-        self.assertTrue(torch.equal(image[active], baseline_image[active]))
-        self.assertTrue(torch.equal(known[active], baseline_known[active]))
-        self.assertTrue(torch.equal(outpaint[active], baseline_outpaint[active]))
+        deliberately_trimmed = baseline_known.bool() & ~known.bool()
+        self.assertTrue(deliberately_trimmed.any())
+        self.assertFalse(image[deliberately_trimmed].any())
+        self.assertFalse(known[deliberately_trimmed].any())
+        self.assertFalse(outpaint[deliberately_trimmed].any())
+        self.assertTrue(torch.equal(outpaint, baseline_outpaint))
+        unchanged = ~deliberately_trimmed
+        self.assertTrue(torch.equal(image[unchanged], baseline_image[unchanged]))
+        self.assertTrue(torch.equal(known[unchanged], baseline_known[unchanged]))
+
+        # The outer canvas remains green/outpaint even though source trimming
+        # is active; trimming begins at the pasted source footprint instead.
+        self.assertTrue(torch.equal(image[:, :, :16], baseline_image[:, :, :16]))
+        self.assertTrue(outpaint[:, :, :16].bool().all())
 
     def test_trim_must_leave_an_active_row_and_column(self):
         arguments = self.arguments(smooth_square(size=32))
         arguments.update(trim_left=32, trim_right=32)
-        with self.assertRaisesRegex(ValueError, "at least one output column"):
+        with self.assertRaisesRegex(ValueError, "at least one source column"):
             nodes.project_square_vr180_to_erp(**arguments)
 
         arguments = self.arguments(smooth_square(size=32))
         arguments.update(trim_top=16, trim_bottom=16)
-        with self.assertRaisesRegex(ValueError, "at least one output row"):
+        with self.assertRaisesRegex(ValueError, "at least one source row"):
             nodes.project_square_vr180_to_erp(**arguments)
 
     @unittest.skipUnless(torch.cuda.is_available(), "CUDA is not available")

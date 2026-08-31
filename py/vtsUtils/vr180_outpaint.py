@@ -218,6 +218,31 @@ def _fisheye_source_support(size: int, *, device: torch.device) -> torch.Tensor:
     return support.to(torch.float32).unsqueeze(0).unsqueeze(0)
 
 
+def _source_trim_keep_mask(
+    grid: torch.Tensor,
+    size: int,
+    *,
+    trim_left: int,
+    trim_right: int,
+    trim_top: int,
+    trim_bottom: int,
+) -> torch.Tensor:
+    """Return output samples whose source coordinates survive the crop."""
+
+    # With align_corners=False, source pixel edges span normalized [-1, +1].
+    # Moving an edge inward by N source pixels therefore moves it by 2*N/size.
+    left_edge = -1.0 + 2.0 * float(trim_left) / float(size)
+    right_edge = 1.0 - 2.0 * float(trim_right) / float(size)
+    top_edge = -1.0 + 2.0 * float(trim_top) / float(size)
+    bottom_edge = 1.0 - 2.0 * float(trim_bottom) / float(size)
+    return (
+        (grid[..., 0] >= left_edge)
+        & (grid[..., 0] <= right_edge)
+        & (grid[..., 1] >= top_edge)
+        & (grid[..., 1] <= bottom_edge)
+    ).contiguous()
+
+
 def vr180_square_to_full_erp(
     image: torch.Tensor,
     output_size: Sequence[int],
@@ -231,6 +256,10 @@ def vr180_square_to_full_erp(
     unknown_color: Sequence[float] = (0.0, 0.0, 0.0),
     chunk_rows: Optional[int] = 256,
     mode: str = "bilinear",
+    trim_left: int = 0,
+    trim_right: int = 0,
+    trim_top: int = 0,
+    trim_bottom: int = 0,
 ) -> ProjectionResult:
     """Place a square VR180 source into a full 2:1 ERP outpaint canvas."""
 
@@ -253,6 +282,18 @@ def vr180_square_to_full_erp(
         for value in (yaw_degrees, pitch_degrees, roll_degrees)
     ]
     size = int(image.shape[2])
+    trims = {
+        "trim_left": int(trim_left),
+        "trim_right": int(trim_right),
+        "trim_top": int(trim_top),
+        "trim_bottom": int(trim_bottom),
+    }
+    if any(value < 0 for value in trims.values()):
+        raise ValueError("trim values must not be negative")
+    if trims["trim_left"] + trims["trim_right"] >= size:
+        raise ValueError("left and right trims must leave at least one source column")
+    if trims["trim_top"] + trims["trim_bottom"] >= size:
+        raise ValueError("top and bottom trims must leave at least one source row")
     grid, geometric_known_cpu = _projection_grid(
         size,
         output_height,
@@ -286,8 +327,26 @@ def vr180_square_to_full_erp(
         support_known = sampled_support >= 1.0 - 1.0e-6
         known = known & support_known.expand(int(image.shape[0]), -1, -1, -1)
 
-    output = _apply_unknown_color(sampled, known, unknown_color)
-    return ProjectionResult(output, known, ~known)
+    # ``known`` now represents the complete source footprint, including the
+    # circular support check for fisheye input. Cropping is deliberately kept
+    # separate so cropped source pixels belong to neither output mask.
+    geometric_known = known
+    outpaint = ~geometric_known
+    output = _apply_unknown_color(sampled, geometric_known, unknown_color)
+    if any(trims.values()):
+        trim_keep = _source_trim_keep_mask(grid, size, **trims)
+        trim_keep = (
+            trim_keep.to(device=image.device)
+            .unsqueeze(0)
+            .unsqueeze(0)
+            .expand(int(image.shape[0]), 1, -1, -1)
+        )
+        known = geometric_known & trim_keep
+        deliberately_trimmed = geometric_known & ~trim_keep
+        output = output.masked_fill(deliberately_trimmed, 0.0)
+    else:
+        known = geometric_known
+    return ProjectionResult(output, known, outpaint)
 
 
 def clear_outpaint_projection_cache() -> None:
