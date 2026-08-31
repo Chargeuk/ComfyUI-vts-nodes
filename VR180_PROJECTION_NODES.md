@@ -8,6 +8,9 @@ to ComfyUI:
 - **VTS VR180 To Rectilinear Video** performs the explicit reverse view for
   diagnostics and round-trip checks. Its optional `source_known_mask` prevents
   unknown source pixels from becoming apparently valid.
+- **VTS VR180 Square To ERP Outpaint Canvas** converts one square VR180 eye
+  view into a full 360 by 180 degree, 2:1 equirectangular canvas for learned
+  outpainting. It accepts a normal `IMAGE` tensor or a VTS `DiskImage`.
 
 Both nodes return the image, exact known and unknown masks, and sorted JSON
 metadata recording every geometry setting. Use identical output size, FOV,
@@ -35,3 +38,47 @@ LRU persists.
 This is a geometric projection, not a learned outpainting operation. Areas
 outside the rectilinear camera view remain unknown and must be handled by the
 projection LoRA or another downstream generator.
+
+## Square VR180 to full-ERP outpaint canvas
+
+The outpaint node does not invent pixels. It copies the angular region supplied
+by the source into a full equirectangular canvas, fills everything else with
+`fill_color`, and returns three tensors:
+
+1. `erp_canvas` (`IMAGE`) - the projected full-ERP image or video batch.
+2. `known_mask` (`MASK`) - pixels genuinely supplied by the source.
+3. `outpaint_mask` (`MASK`) - the exact inverse region that a model must create.
+
+The source may be either:
+
+- a ComfyUI `IMAGE` tensor with shape `[frames, height, width, channels]`; or
+- a VTS `DiskImage`. Disk-backed sequences are loaded in bounded groups set by
+  `frame_batch_size`.
+
+Outputs are always ordinary in-memory tensors. The source must be square and
+the requested output must be exactly 2:1, for example 2048 by 1024.
+
+### Projection modes
+
+- `half_equirectangular_ideal_180` - a rectangular 180 by 180 degree source;
+  it occupies the centre half of the full ERP canvas.
+- `half_equirectangular_production_calibrated` - the current production-video
+  fit, with effective spans of 202.611324 by 160.978888 degrees.
+- `half_equirectangular_custom` - user-supplied rectangular angular spans.
+- `equidistant_fisheye_180` - a circular 180-degree equidistant fisheye.
+- `equidistant_fisheye_custom` - a circular equidistant fisheye with a custom
+  angular diameter; horizontal and vertical values must match.
+
+The production preset reflects the measured source encoding used by the VTS
+pipeline. The ideal half-ERP mode is appropriate for mathematically standard
+square VR180 frames. The fisheye modes are for genuinely circular lens images;
+they must not be used merely because a rectangular VR180 frame looks curved.
+
+`yaw_degrees`, `pitch_degrees`, and `roll_degrees` rotate the supplied view on
+the sphere. `chunk_rows` bounds temporary projection work. `frame_batch_size`
+bounds disk loading and per-call frame processing. `sampling` controls image
+resampling; masks remain geometric and exact.
+
+For an outpaint workflow, pass `erp_canvas` as the starting image and
+`outpaint_mask` as the region to generate. The known mask is useful when the
+generated result must later be composited without changing the source view.

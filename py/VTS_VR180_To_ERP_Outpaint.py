@@ -1,0 +1,250 @@
+"""ComfyUI node for placing square VR180 sources on a full ERP canvas."""
+
+from __future__ import annotations
+
+import math
+import os
+import sys
+from typing import Iterator, Tuple
+
+import torch
+
+
+_UTILS = os.path.join(os.path.dirname(__file__), "vtsUtils")
+if _UTILS not in sys.path:
+    sys.path.append(_UTILS)
+
+from vr180_outpaint import (  # noqa: E402
+    PROJECTION_MODES,
+    resolve_projection_fov,
+    vr180_square_to_full_erp,
+)
+
+
+def _parse_fill_color(value: str) -> Tuple[float, float, float]:
+    text = str(value).strip().lstrip("#")
+    if len(text) == 3:
+        text = "".join(character * 2 for character in text)
+    if len(text) != 6:
+        raise ValueError("fill_color must be #RGB or #RRGGBB")
+    try:
+        channels = tuple(int(text[index : index + 2], 16) / 255.0 for index in (0, 2, 4))
+    except ValueError as error:
+        raise ValueError("fill_color must be #RGB or #RRGGBB") from error
+    return channels
+
+
+def _is_disk_image(value) -> bool:
+    return (
+        not isinstance(value, torch.Tensor)
+        and hasattr(value, "load_images")
+        and hasattr(value, "number_of_images")
+        and hasattr(value, "start_sequence")
+    )
+
+
+def _source_count(source) -> int:
+    if isinstance(source, torch.Tensor):
+        if source.ndim != 4:
+            raise ValueError(
+                "tensor source must be a ComfyUI IMAGE [B,H,W,C], "
+                f"got {tuple(source.shape)}"
+            )
+        return int(source.shape[0])
+    if not _is_disk_image(source):
+        raise TypeError("source must be a ComfyUI IMAGE tensor or VTS DiskImage")
+    count = int(source.number_of_images)
+    if count < 1:
+        raise ValueError("DiskImage source must contain at least one image")
+    return count
+
+
+def _source_batches(source, batch_size: int) -> Iterator[torch.Tensor]:
+    count = _source_count(source)
+    if isinstance(source, torch.Tensor):
+        for start in range(0, count, batch_size):
+            yield source[start : min(start + batch_size, count)]
+        return
+
+    for start in range(0, count, batch_size):
+        amount = min(batch_size, count - start)
+        batch = source.load_images(
+            start_sequence=int(source.start_sequence) + start,
+            count=amount,
+        )
+        if not isinstance(batch, torch.Tensor):
+            raise TypeError("DiskImage.load_images must return a torch.Tensor")
+        yield batch
+
+
+def project_square_vr180_to_erp(
+    source,
+    projection_mode,
+    output_width,
+    output_height,
+    custom_horizontal_fov_degrees,
+    custom_vertical_fov_degrees,
+    yaw_degrees,
+    pitch_degrees,
+    roll_degrees,
+    fill_color,
+    chunk_rows,
+    frame_batch_size,
+    sampling,
+):
+    """Project a tensor or streamed VTS DiskImage and return tensor outputs."""
+
+    width, height = int(output_width), int(output_height)
+    if width < 2 or height < 1 or width != height * 2:
+        raise ValueError("output_width must be exactly twice output_height for full ERP")
+    batch_size = int(frame_batch_size)
+    if batch_size < 1:
+        raise ValueError("frame_batch_size must be at least 1")
+    if not all(
+        math.isfinite(float(value))
+        for value in (yaw_degrees, pitch_degrees, roll_degrees)
+    ):
+        raise ValueError("yaw, pitch and roll must be finite")
+
+    unknown_color = _parse_fill_color(fill_color)
+    horizontal_fov, vertical_fov = resolve_projection_fov(
+        projection_mode,
+        custom_horizontal_fov_degrees,
+        custom_vertical_fov_degrees,
+    )
+    projected_batches = []
+    known_batches = []
+    unknown_batches = []
+
+    for batch in _source_batches(source, batch_size):
+        if batch.ndim != 4 or batch.shape[-1] < 3:
+            raise ValueError(
+                "source images must be [B,H,W,C] with RGB channels, "
+                f"got {tuple(batch.shape)}"
+            )
+        if int(batch.shape[1]) != int(batch.shape[2]):
+            raise ValueError(
+                "source images must be square, "
+                f"got {int(batch.shape[2])}x{int(batch.shape[1])}"
+            )
+        if not batch.is_floating_point():
+            raise TypeError("source images must use a floating-point dtype")
+        result = vr180_square_to_full_erp(
+            batch[..., :3].movedim(-1, 1).contiguous(),
+            (height, width),
+            projection_mode=projection_mode,
+            custom_horizontal_fov_degrees=custom_horizontal_fov_degrees,
+            custom_vertical_fov_degrees=custom_vertical_fov_degrees,
+            yaw_degrees=yaw_degrees,
+            pitch_degrees=pitch_degrees,
+            roll_degrees=roll_degrees,
+            unknown_color=unknown_color,
+            chunk_rows=chunk_rows,
+            mode=sampling,
+        )
+        projected_batches.append(result.image.movedim(1, -1).contiguous())
+        known_batches.append(result.known_mask[:, 0].float())
+        unknown_batches.append(result.unknown_mask[:, 0].float())
+
+    source_kind = "tensor" if isinstance(source, torch.Tensor) else "DiskImage"
+    print(
+        "[VTS VR180 -> ERP] "
+        f"{source_kind}, mode={projection_mode}, "
+        f"effective_fov={horizontal_fov:.6f}x{vertical_fov:.6f}, "
+        f"output={width}x{height}, frames={sum(int(item.shape[0]) for item in projected_batches)}"
+    )
+    return (
+        torch.cat(projected_batches, dim=0),
+        torch.cat(known_batches, dim=0),
+        torch.cat(unknown_batches, dim=0),
+    )
+
+
+class VTSVR180SquareToERPOutpaint:
+    CATEGORY = "VTS/VR180"
+    FUNCTION = "project"
+    RETURN_TYPES = ("IMAGE", "MASK", "MASK")
+    RETURN_NAMES = ("erp_canvas", "known_mask", "outpaint_mask")
+    DESCRIPTION = (
+        "Place a square half-ERP or equidistant-fisheye VR180 image/video batch on a "
+        "full 2:1 equirectangular canvas. Accepts an IMAGE tensor or VTS DiskImage and "
+        "always returns in-memory tensors."
+    )
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "source": ("IMAGE",),
+                "projection_mode": (
+                    list(PROJECTION_MODES),
+                    {
+                        "default": PROJECTION_MODES[0],
+                        "tooltip": (
+                            "Ideal/custom rectangular half-ERP, the fitted production "
+                            "source preset, or ideal/custom circular equidistant fisheye."
+                        ),
+                    },
+                ),
+                "output_width": (
+                    "INT",
+                    {"default": 2048, "min": 32, "max": 16384, "step": 32},
+                ),
+                "output_height": (
+                    "INT",
+                    {"default": 1024, "min": 16, "max": 8192, "step": 16},
+                ),
+                "custom_horizontal_fov_degrees": (
+                    "FLOAT",
+                    {"default": 180.0, "min": 0.01, "max": 359.99, "step": 0.01},
+                ),
+                "custom_vertical_fov_degrees": (
+                    "FLOAT",
+                    {"default": 180.0, "min": 0.01, "max": 180.0, "step": 0.01},
+                ),
+                "yaw_degrees": (
+                    "FLOAT",
+                    {"default": 0.0, "min": -180.0, "max": 180.0, "step": 0.1},
+                ),
+                "pitch_degrees": (
+                    "FLOAT",
+                    {"default": 0.0, "min": -90.0, "max": 90.0, "step": 0.1},
+                ),
+                "roll_degrees": (
+                    "FLOAT",
+                    {"default": 0.0, "min": -180.0, "max": 180.0, "step": 0.1},
+                ),
+                "fill_color": (
+                    "STRING",
+                    {
+                        "default": "#000000",
+                        "tooltip": "RGB colour used outside the known source footprint.",
+                    },
+                ),
+                "chunk_rows": (
+                    "INT",
+                    {"default": 256, "min": 0, "max": 8192, "step": 16},
+                ),
+                "frame_batch_size": (
+                    "INT",
+                    {"default": 8, "min": 1, "max": 4096, "step": 1},
+                ),
+                "sampling": (
+                    ["bilinear", "bicubic", "nearest"],
+                    {"default": "bilinear"},
+                ),
+            }
+        }
+
+    def project(self, **kwargs):
+        return project_square_vr180_to_erp(**kwargs)
+
+
+NODE_CLASS_MAPPINGS = {
+    "VTSVR180SquareToERPOutpaint": VTSVR180SquareToERPOutpaint,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "VTSVR180SquareToERPOutpaint": "VTS VR180 Square To ERP Outpaint Canvas",
+}
+
