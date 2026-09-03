@@ -33,7 +33,19 @@ class VTS_ImageFromBatch:
                 "length": ("INT", {"default": -1, "min": -1, "step": 1}),
             }
         }
-        return deep_merge(input_types, get_default_image_output_types(prefix="image_from_batch"))
+        output_types = get_default_image_output_types(prefix="image_from_batch")
+        output_types["required"]["return_type"] = (
+            ["Tensor", "DiskImage", "Input"],
+            {
+                "default": "Tensor",
+                "tooltip": (
+                    "Tensor loads the selected frames into memory; DiskImage writes a new "
+                    "disk-backed copy; Input preserves the input representation and, for "
+                    "DiskImage inputs, returns a lightweight view referencing the same files."
+                ),
+            },
+        )
+        return deep_merge(input_types, output_types)
 
     def _is_tensor(self, image):
         return isinstance(image, torch.Tensor)
