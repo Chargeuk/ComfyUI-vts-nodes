@@ -50,8 +50,12 @@ class VTS_VAEDecodeTiled:
             temporal_overlap = None
 
         compression = vae.spacial_compression_decode()
+        latent = samples["samples"]
+        if latent.is_nested:
+            latent = latent.unbind()[0]
+
         images = vae.decode_tiled(
-            samples["samples"],
+            latent,
             tile_x=tile_size_x // compression,
             tile_y=tile_size_y // compression,
             overlap=overlap // compression,
