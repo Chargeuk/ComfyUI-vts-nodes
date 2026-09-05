@@ -5,6 +5,7 @@ import sys
 import torch
 import torchaudio
 
+import comfy.nested_tensor
 import comfy.utils
 from comfy.ldm.minimax.model import FRAME_PER_TOKEN, FRAME_RESCALE
 from comfy_extras.nodes_minimax_h3 import MiniMaxH3AddGuide
@@ -247,6 +248,67 @@ def _merge_guides(conditioning, guides, head_frames):
     return output
 
 
+def _masked_latent_prefix(latent, video_prefix):
+    target_video = _video_stream(latent)
+    target_audio = _audio_stream(latent)
+    prefix_steps = int(video_prefix.shape[2])
+    if prefix_steps >= int(target_video.shape[2]):
+        raise ValueError(
+            "VTS H3 Motion Context prefix consumes the whole target latent.")
+    if (int(video_prefix.shape[1]) != int(target_video.shape[1])
+            or tuple(video_prefix.shape[3:]) != tuple(target_video.shape[3:])):
+        raise ValueError(
+            "VTS H3 Motion Context prefix shape %s does not match target %s."
+            % (tuple(video_prefix.shape), tuple(target_video.shape)))
+
+    output_video = target_video.clone()
+    output_video[:, :, :prefix_steps] = video_prefix.to(
+        device=output_video.device, dtype=output_video.dtype)
+    output_audio = target_audio.clone()
+
+    existing_mask = latent.get("noise_mask")
+    if existing_mask is None:
+        video_mask = torch.ones_like(output_video, dtype=torch.float32)
+        audio_mask = torch.ones_like(output_audio, dtype=torch.float32)
+    else:
+        if hasattr(existing_mask, "unbind"):
+            mask_streams = list(existing_mask.unbind())
+        elif isinstance(existing_mask, (tuple, list)):
+            mask_streams = list(existing_mask)
+        else:
+            raise ValueError(
+                "VTS H3 Motion Context target noise_mask is not a nested "
+                "video/audio mask.")
+        if len(mask_streams) != 2:
+            raise ValueError(
+                "VTS H3 Motion Context target noise_mask must contain video "
+                "and audio streams.")
+        video_mask, audio_mask = mask_streams
+        if video_mask.ndim == 4:
+            video_mask = video_mask.unsqueeze(0)
+        if audio_mask.ndim == 3:
+            audio_mask = audio_mask.unsqueeze(0)
+        try:
+            video_mask = torch.broadcast_to(
+                video_mask, output_video.shape).clone().float()
+            audio_mask = torch.broadcast_to(
+                audio_mask, output_audio.shape).clone().float()
+        except RuntimeError as exc:
+            raise ValueError(
+                "VTS H3 Motion Context target noise-mask shapes %s / %s do "
+                "not match its latent streams %s / %s."
+                % (tuple(video_mask.shape), tuple(audio_mask.shape),
+                   tuple(output_video.shape), tuple(output_audio.shape))) from exc
+
+    video_mask[:, :, :prefix_steps] = 0.0
+    output = latent.copy()
+    output["samples"] = comfy.nested_tensor.NestedTensor(
+        (output_video, output_audio))
+    output["noise_mask"] = comfy.nested_tensor.NestedTensor(
+        (video_mask, audio_mask))
+    return output
+
+
 class VTS_MiniMaxH3MotionContext:
     @classmethod
     def INPUT_TYPES(cls):
@@ -276,14 +338,15 @@ class VTS_MiniMaxH3MotionContext:
             },
         }
 
-    RETURN_TYPES = ("CONDITIONING", "INT")
-    RETURN_NAMES = ("conditioning", "trim_frames")
+    RETURN_TYPES = ("CONDITIONING", "INT", "LATENT")
+    RETURN_NAMES = ("conditioning", "trim_frames", "masked_latent")
     FUNCTION = "execute"
     CATEGORY = "VTS/wrappers/conditioning/minimax"
     DESCRIPTION = (
         "VTS-native MiniMax H3 motion continuation. Accepts Tensor or "
         "DiskImage frames and uses ComfyUI's native H3 guides, so it does not "
-        "compete with SolAttn for PackedLayout ownership.")
+        "compete with SolAttn for PackedLayout ownership. Also returns an "
+        "alternative target latent with the video prefix copied and masked.")
 
     def execute(self, conditioning, vae, latent, context_length,
                 audio_context_length=24, context_frames=None,
@@ -345,11 +408,12 @@ class VTS_MiniMaxH3MotionContext:
             })
 
         output = _merge_guides(conditioning, guides, frame_count)
+        masked_latent = _masked_latent_prefix(latent, video_guide)
         _LOG.info(
             "VTS H3 Motion Context: %d-frame %s guide, trim %d, audio %s",
             frame_count, video_source, frame_count,
             "%d latent steps" % audio_steps if audio_steps else "off")
-        return output, frame_count
+        return output, frame_count, masked_latent
 
 
 NODE_CLASS_MAPPINGS = {

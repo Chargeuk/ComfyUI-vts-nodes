@@ -54,8 +54,12 @@ class MotionContextTests(unittest.TestCase):
         target = av_latent()
 
         tensor_vae = FakeVideoVAE()
-        tensor_output, tensor_trim = MODULE.VTS_MiniMaxH3MotionContext().execute(
-            conditioning(), tensor_vae, target, "22", context_frames=frames)
+        tensor_output, tensor_trim, tensor_masked = (
+            MODULE.VTS_MiniMaxH3MotionContext().execute(
+                conditioning(), tensor_vae, target, "22",
+                context_frames=frames,
+            )
+        )
 
         disk_image = MODULE.DiskImage(
             prefix="context",
@@ -73,8 +77,12 @@ class MotionContextTests(unittest.TestCase):
 
         disk_image.materialize = materialize
         disk_vae = FakeVideoVAE()
-        disk_output, disk_trim = MODULE.VTS_MiniMaxH3MotionContext().execute(
-            conditioning(), disk_vae, target, "22", context_frames=disk_image)
+        disk_output, disk_trim, disk_masked = (
+            MODULE.VTS_MiniMaxH3MotionContext().execute(
+                conditioning(), disk_vae, target, "22",
+                context_frames=disk_image,
+            )
+        )
 
         self.assertEqual(tensor_trim, 22)
         self.assertEqual(disk_trim, 22)
@@ -87,6 +95,22 @@ class MotionContextTests(unittest.TestCase):
         self.assertEqual([guide["resolved_frame_index"] for guide in disk_guides], [38, 0])
         self.assertTrue(torch.equal(tensor_guides[-1]["latent"],
                                     disk_guides[-1]["latent"]))
+        tensor_video, tensor_audio = tensor_masked["samples"].unbind()
+        disk_video, disk_audio = disk_masked["samples"].unbind()
+        tensor_video_mask, tensor_audio_mask = tensor_masked["noise_mask"].unbind()
+        disk_video_mask, disk_audio_mask = disk_masked["noise_mask"].unbind()
+        self.assertTrue(torch.equal(tensor_video[:, :, :7],
+                                    tensor_guides[-1]["latent"]))
+        self.assertTrue(torch.equal(tensor_video, disk_video))
+        self.assertTrue(torch.equal(tensor_audio, disk_audio))
+        self.assertTrue(torch.equal(tensor_video_mask, disk_video_mask))
+        self.assertTrue(torch.equal(tensor_audio_mask, disk_audio_mask))
+        self.assertTrue(torch.equal(tensor_video_mask[:, :, :7],
+                                    torch.zeros_like(tensor_video_mask[:, :, :7])))
+        self.assertTrue(torch.equal(tensor_video_mask[:, :, 7:],
+                                    torch.ones_like(tensor_video_mask[:, :, 7:])))
+        self.assertTrue(torch.equal(tensor_audio_mask,
+                                    torch.ones_like(tensor_audio_mask)))
 
     def test_latent_context_does_not_touch_disk_image_or_layout_owner(self):
         from comfy.ldm.minimax import model as minimax_model
@@ -115,11 +139,13 @@ class MotionContextTests(unittest.TestCase):
         solattn_observer.__module__ = "ComfyUI-SolAttn_triton._morton_h3"
         minimax_model.PackedLayout.__init__ = solattn_observer
         try:
-            output, trim = MODULE.VTS_MiniMaxH3MotionContext().execute(
-                conditioning(), FakeVideoVAE(), target, "22",
-                audio_context_length=24,
-                context_frames=disk_image,
-                context_latent=previous,
+            output, trim, masked_latent = (
+                MODULE.VTS_MiniMaxH3MotionContext().execute(
+                    conditioning(), FakeVideoVAE(), target, "22",
+                    audio_context_length=24,
+                    context_frames=disk_image,
+                    context_latent=previous,
+                )
             )
             self.assertIs(minimax_model.PackedLayout.__init__, solattn_observer)
             guides = output[0][1]["minimax_keyframes"]
@@ -128,6 +154,19 @@ class MotionContextTests(unittest.TestCase):
             self.assertEqual(guides[1]["latent"].shape, (1, 24, 7, 2, 2))
             self.assertAlmostEqual(guides[2]["resolved_frame_index"], -1.8)
             self.assertEqual(guides[2]["audio_latent"].shape, (1, 32, 2, 40))
+
+            masked_video, masked_audio = masked_latent["samples"].unbind()
+            video_mask, audio_mask = masked_latent["noise_mask"].unbind()
+            previous_video = previous["samples"].unbind()[0]
+            target_audio = target["samples"].unbind()[1]
+            self.assertTrue(torch.equal(masked_video[:, :, :7],
+                                        previous_video[:, :, -7:]))
+            self.assertTrue(torch.equal(masked_audio, target_audio))
+            self.assertTrue(torch.equal(video_mask[:, :, :7],
+                                        torch.zeros_like(video_mask[:, :, :7])))
+            self.assertTrue(torch.equal(video_mask[:, :, 7:],
+                                        torch.ones_like(video_mask[:, :, 7:])))
+            self.assertTrue(torch.equal(audio_mask, torch.ones_like(audio_mask)))
 
             layout = minimax_model.PackedLayout(
                 4, 12, 2, 2, 65, keyframes=guides)
@@ -142,7 +181,9 @@ class MotionContextTests(unittest.TestCase):
         self.assertIs(MODULE.NODE_CLASS_MAPPINGS[node_id],
                       MODULE.VTS_MiniMaxH3MotionContext)
         self.assertEqual(MODULE.VTS_MiniMaxH3MotionContext.RETURN_TYPES,
-                         ("CONDITIONING", "INT"))
+                         ("CONDITIONING", "INT", "LATENT"))
+        self.assertEqual(MODULE.VTS_MiniMaxH3MotionContext.RETURN_NAMES[:2],
+                         ("conditioning", "trim_frames"))
         required = MODULE.VTS_MiniMaxH3MotionContext.INPUT_TYPES()["required"]
         self.assertNotIn("vts_return_type", required)
 
