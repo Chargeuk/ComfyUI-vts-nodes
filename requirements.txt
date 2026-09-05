@@ -4,3 +4,5 @@ numpy<2
 webcolors
 matplotlib
 PyOpenGL-accelerate
+color-matcher>=0.6.0
+kornia>=0.7.1
