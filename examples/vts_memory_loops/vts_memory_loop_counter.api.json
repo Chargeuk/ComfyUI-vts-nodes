@@ -1,0 +1,76 @@
+{
+  "initial": {
+    "class_type": "PrimitiveInt",
+    "inputs": {
+      "value": 0
+    }
+  },
+  "start": {
+    "class_type": "VTS Memory-Aware Loop Start",
+    "inputs": {
+      "total": 3,
+      "initial.item0": [
+        "initial",
+        0
+      ]
+    }
+  },
+  "current": {
+    "class_type": "VTS Loop Value",
+    "inputs": {
+      "values": [
+        "start",
+        2
+      ],
+      "key": "item0"
+    }
+  },
+  "increment": {
+    "class_type": "ComfyMathExpression",
+    "inputs": {
+      "expression": "a + 1",
+      "values.a": [
+        "current",
+        0
+      ]
+    }
+  },
+  "end": {
+    "class_type": "VTS Memory-Aware Loop End",
+    "inputs": {
+      "flow": [
+        "start",
+        0
+      ],
+      "release_previous": true,
+      "collect_garbage": false,
+      "empty_cuda_cache": false,
+      "trim_cpu": false,
+      "cleanup_every": 1,
+      "log_memory": true,
+      "values.item0": [
+        "increment",
+        1
+      ]
+    }
+  },
+  "final": {
+    "class_type": "VTS Loop Value",
+    "inputs": {
+      "values": [
+        "end",
+        0
+      ],
+      "key": "item0"
+    }
+  },
+  "preview": {
+    "class_type": "PreviewAny",
+    "inputs": {
+      "source": [
+        "final",
+        0
+      ]
+    }
+  }
+}

@@ -6,3 +6,4 @@ matplotlib
 PyOpenGL-accelerate
 color-matcher>=0.6.0
 kornia>=0.7.1
+soundfile>=0.13.1

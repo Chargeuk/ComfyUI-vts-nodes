@@ -1,0 +1,472 @@
+{
+  "last_node_id": 2006,
+  "last_link_id": 7,
+  "nodes": [
+    {
+      "id": 2000,
+      "type": "PrimitiveInt",
+      "pos": [
+        0,
+        0
+      ],
+      "size": [
+        330,
+        150
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "value",
+          "type": "INT",
+          "widget": {
+            "name": "value"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            1
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PrimitiveInt"
+      },
+      "title": "PrimitiveInt [initial]",
+      "widgets_values": [
+        0
+      ],
+      "widgets_values_named": {
+        "value": 0
+      }
+    },
+    {
+      "id": 2001,
+      "type": "VTS Memory-Aware Loop Start",
+      "pos": [
+        360,
+        0
+      ],
+      "size": [
+        330,
+        210
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "total",
+          "type": "INT",
+          "widget": {
+            "name": "total"
+          },
+          "link": null
+        },
+        {
+          "name": "initial.item0",
+          "type": "INT",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "flow",
+          "type": "VTS_LOOP_FLOW",
+          "links": [
+            4
+          ]
+        },
+        {
+          "name": "index",
+          "type": "INT",
+          "links": []
+        },
+        {
+          "name": "values",
+          "type": "VTS_LOOP_VALUES",
+          "links": [
+            2
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VTS Memory-Aware Loop Start"
+      },
+      "title": "VTS Memory-Aware Loop Start [start]",
+      "widgets_values": [
+        3
+      ],
+      "widgets_values_named": {
+        "total": 3
+      }
+    },
+    {
+      "id": 2002,
+      "type": "VTS Loop Value",
+      "pos": [
+        720,
+        0
+      ],
+      "size": [
+        330,
+        150
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "values",
+          "type": "VTS_LOOP_VALUES",
+          "link": 2
+        },
+        {
+          "name": "key",
+          "type": "STRING",
+          "widget": {
+            "name": "key"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "value",
+          "type": "*",
+          "links": [
+            3
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VTS Loop Value"
+      },
+      "title": "VTS Loop Value [current]",
+      "widgets_values": [
+        "item0"
+      ],
+      "widgets_values_named": {
+        "key": "item0"
+      }
+    },
+    {
+      "id": 2003,
+      "type": "ComfyMathExpression",
+      "pos": [
+        1080,
+        0
+      ],
+      "size": [
+        330,
+        210
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "expression",
+          "type": "STRING",
+          "widget": {
+            "name": "expression"
+          },
+          "link": null
+        },
+        {
+          "name": "values.a",
+          "type": "*",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "FLOAT",
+          "type": "FLOAT",
+          "links": []
+        },
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            5
+          ]
+        },
+        {
+          "name": "BOOL",
+          "type": "BOOLEAN",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ComfyMathExpression"
+      },
+      "title": "ComfyMathExpression [increment]",
+      "widgets_values": [
+        "a + 1"
+      ],
+      "widgets_values_named": {
+        "expression": "a + 1"
+      }
+    },
+    {
+      "id": 2004,
+      "type": "VTS Memory-Aware Loop End",
+      "pos": [
+        1440,
+        0
+      ],
+      "size": [
+        330,
+        350
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "flow",
+          "type": "VTS_LOOP_FLOW",
+          "link": 4
+        },
+        {
+          "name": "release_previous",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "release_previous"
+          },
+          "link": null
+        },
+        {
+          "name": "collect_garbage",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "collect_garbage"
+          },
+          "link": null
+        },
+        {
+          "name": "empty_cuda_cache",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "empty_cuda_cache"
+          },
+          "link": null
+        },
+        {
+          "name": "trim_cpu",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "trim_cpu"
+          },
+          "link": null
+        },
+        {
+          "name": "cleanup_every",
+          "type": "INT",
+          "widget": {
+            "name": "cleanup_every"
+          },
+          "link": null
+        },
+        {
+          "name": "log_memory",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "log_memory"
+          },
+          "link": null
+        },
+        {
+          "name": "values.item0",
+          "type": "INT",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "name": "values",
+          "type": "VTS_LOOP_VALUES",
+          "links": [
+            6
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VTS Memory-Aware Loop End"
+      },
+      "title": "VTS Memory-Aware Loop End [end]",
+      "widgets_values": [
+        true,
+        false,
+        false,
+        false,
+        1,
+        true
+      ],
+      "widgets_values_named": {
+        "release_previous": true,
+        "collect_garbage": false,
+        "empty_cuda_cache": false,
+        "trim_cpu": false,
+        "cleanup_every": 1,
+        "log_memory": true
+      }
+    },
+    {
+      "id": 2005,
+      "type": "VTS Loop Value",
+      "pos": [
+        1800,
+        0
+      ],
+      "size": [
+        330,
+        150
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "values",
+          "type": "VTS_LOOP_VALUES",
+          "link": 6
+        },
+        {
+          "name": "key",
+          "type": "STRING",
+          "widget": {
+            "name": "key"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "value",
+          "type": "*",
+          "links": [
+            7
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VTS Loop Value"
+      },
+      "title": "VTS Loop Value [final]",
+      "widgets_values": [
+        "item0"
+      ],
+      "widgets_values_named": {
+        "key": "item0"
+      }
+    },
+    {
+      "id": 2006,
+      "type": "PreviewAny",
+      "pos": [
+        2160,
+        0
+      ],
+      "size": [
+        330,
+        150
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PreviewAny"
+      },
+      "title": "PreviewAny [preview]",
+      "widgets_values": [],
+      "widgets_values_named": {}
+    }
+  ],
+  "links": [
+    [
+      1,
+      2000,
+      0,
+      2001,
+      1,
+      "INT"
+    ],
+    [
+      2,
+      2001,
+      2,
+      2002,
+      0,
+      "VTS_LOOP_VALUES"
+    ],
+    [
+      3,
+      2002,
+      0,
+      2003,
+      1,
+      "*"
+    ],
+    [
+      4,
+      2001,
+      0,
+      2004,
+      0,
+      "VTS_LOOP_FLOW"
+    ],
+    [
+      5,
+      2003,
+      1,
+      2004,
+      7,
+      "INT"
+    ],
+    [
+      6,
+      2004,
+      0,
+      2005,
+      0,
+      "VTS_LOOP_VALUES"
+    ],
+    [
+      7,
+      2005,
+      0,
+      2006,
+      0,
+      "*"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "vts_experimental": true,
+    "notes": "Model-free VTS loop example: start at zero, add one three times, final preview should be 3."
+  },
+  "version": 0.4
+}
