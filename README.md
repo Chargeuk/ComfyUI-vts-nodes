@@ -1,5 +1,13 @@
 # ComfyUI-vts-nodes
 
+## Prepared H3 models
+
+Experimental save/load nodes bundle merged MiniMax-H3 weights with VDN, SLA or
+hybrid attention settings. A separate runtime-options node overrides sparsity,
+dense steps, memory policy and sampling settings without rebaking the weights.
+See [Prepared H3 models](docs/PREPARED_H3.md) for the one-time export workflow,
+supported overrides and limitations.
+
 ## VR180 projection and outpainting
 
 The package includes geometric nodes for converting between rectilinear and
