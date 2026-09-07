@@ -18,8 +18,10 @@ from safetensors import safe_open
 import folder_paths
 import comfy.model_base
 import comfy.model_management
+import comfy.model_patcher
 import comfy.model_sampling
 import comfy.sd
+import comfy.utils
 
 
 log = logging.getLogger("comfy.vts.prepared_h3")
@@ -368,6 +370,51 @@ def _resolve_file(name, explicit=False):
     return path
 
 
+class _QuantizedExportPiece(comfy.model_patcher.LazyCastingParamPiece):
+    def __new__(cls, caster, state_dict_key, tensor):
+        # Core's LazyCastingParamPiece defaults to requires_grad=True, which
+        # fails for integer storage under dynamic VRAM (ComfyUI ea33b154).
+        return torch.nn.Parameter.__new__(cls, tensor, requires_grad=False)
+
+
+def _export_state_dict(model):
+    """Native lazy weight patching, with integer-safe serialization pieces.
+
+    Kept inside this exporter: no global class replacement or model mutation.
+    The native caster still applies/requantizes one weight at a time.
+    """
+    diffusion = model.model.diffusion_model
+    state_dict = diffusion.state_dict()
+    for name, op in diffusion.named_modules():
+        if not hasattr(op, "comfy_cast_weights") or getattr(op, "comfy_patched_weights", False):
+            continue
+        for parameter in ("weight", "bias"):
+            key = f"{name}.{parameter}" if name else parameter
+            if key not in state_dict:
+                continue
+            weight = getattr(op, parameter)
+            full_key = "diffusion_model." + key
+            if isinstance(weight, comfy.model_patcher.QuantizedTensor):
+                caster = comfy.model_patcher.LazyCastingQuantizedParam(model, full_key)
+                for piece_key in weight.state_dict(key):
+                    if piece_key in state_dict:
+                        state_dict[piece_key] = _QuantizedExportPiece(
+                            caster, "diffusion_model." + piece_key, state_dict[piece_key])
+            else:
+                state_dict[key] = comfy.model_patcher.LazyCastingParam(model, full_key, weight)
+    return model.model.state_dict_for_saving(state_dict)
+
+
+def _write_checkpoint(path, model, metadata, extra_keys):
+    comfy.model_management.load_models_gpu([model])
+    state_dict = _export_state_dict(model)
+    state_dict.update(extra_keys)
+    for key, tensor in state_dict.items():
+        if not tensor.is_contiguous():
+            state_dict[key] = tensor.contiguous()
+    comfy.utils.save_torch_file(state_dict, path, metadata=metadata)
+
+
 def _save(model, prefix, prompt=None, unique_id=None, sla_dense_backend="from workflow", output_directory=""):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}", prefix):
         raise ValueError("Use a plain filename prefix (letters, numbers, dots, underscores or hyphens).")
@@ -387,7 +434,7 @@ def _save(model, prefix, prompt=None, unique_id=None, sla_dense_backend="from wo
                 manifest["vdn"]["branches"] = descriptors
             log.info("[VTS Prepared H3] Baking %d patched weights into %s. This is a one-time export.",
                      len(model.patches), path)
-            comfy.sd.save_checkpoint(str(temporary), model,
+            _write_checkpoint(str(temporary), model,
                 metadata={META: json.dumps(manifest, allow_nan=False)}, extra_keys=tensors)
         temporary.replace(path)
     finally:

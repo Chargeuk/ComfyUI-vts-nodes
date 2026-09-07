@@ -106,6 +106,10 @@ One safetensors file contains native ComfyUI diffusion weights with merged
 patches, original VDN branch data/scales where applicable, and a JSON manifest.
 Native ComfyUI save/load routines handle quantization and Comfy Kitchen ops;
 there is no alternative quantizer, pickle or serialized Python code here.
+The exporter uses an integer-safe lazy tensor wrapper to work around ComfyUI
+ea33b154's gradient-enabled `LazyCastingParamPiece`, which cannot wrap INT8/UINT8
+storage during dynamic-VRAM export. Weight patching, requantization and
+safetensors serialization still use native helpers; no core classes are patched.
 VDN restoration installs its trained branch without loading/applying adapters.
 SLA/hybrid restoration reinstalls runtime attention functions from installed
 code. The original branch/adapter files are not required to load the bundle.
@@ -133,5 +137,6 @@ The other choices pass a dtype preference to ComfyUI; they are not offline
 requantization controls. Ordinary model-load launch flags still apply.
 
 Validation uses small real H3 CPU save/load fixtures, including quantized weights,
-adapter-once checks and runtime restoration. This is not a full-size video-quality
+both eagerly patched and unmaterialized/lazy export paths, adapter-once checks
+and runtime restoration. This is not a full-size video-quality
 or cold-start benchmark; measure the actual workflow before assuming a speedup.

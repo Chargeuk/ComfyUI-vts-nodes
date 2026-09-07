@@ -220,7 +220,7 @@ def test_partial_export_is_removed(tmp_path, monkeypatch):
     def failing_writer(path, *args, **kwargs):
         save_file({"partial": torch.zeros(1)}, path)
         raise OSError("test write failure")
-    monkeypatch.setattr(NODE.comfy.sd, "save_checkpoint", failing_writer)
+    monkeypatch.setattr(NODE, "_write_checkpoint", failing_writer)
     with pytest.raises(OSError, match="test write failure"):
         NODE._save(model, "failure")
     assert list((tmp_path / "output/prepared_h3").iterdir()) == []
@@ -314,3 +314,39 @@ def test_custom_paths_require_absolute_paths():
         NODE._resolve_file("../file.safetensors", explicit=True)
     with pytest.raises(ValueError, match="absolute WSL output"):
         NODE._save(None, "valid", output_directory="../models")
+
+
+@pytest.mark.parametrize("dtype", [torch.int8, torch.uint8, torch.float8_e4m3fn, torch.float32])
+@pytest.mark.parametrize("inference", [False, True])
+def test_export_piece_is_gradient_free_and_does_not_copy(dtype, inference):
+    with torch.inference_mode(inference):
+        tensor = torch.zeros(4, dtype=dtype)
+        piece = NODE._QuantizedExportPiece(None, "weight", tensor)
+        assert not piece.requires_grad
+        assert piece.dtype == dtype
+        assert piece.data_ptr() == tensor.data_ptr()
+
+
+@pytest.mark.parametrize("quant_format", ["int8_tensorwise", "float8_e4m3fn"])
+def test_unmaterialized_quantized_export(tmp_path, monkeypatch, quant_format):
+    """Exercise the lazy branch used by dynamic VRAM, even on a CPU test host."""
+    from comfy_kitchen.tensor import QuantizedTensor
+    model, _ = with_vdn(tmp_path, tiny_model(quantized=quant_format))
+    key = "diffusion_model.blocks.0.attn.qkv_proj.weight"
+    op = model.model.diffusion_model.blocks[0].attn.qkv_proj
+    assert not getattr(op, "comfy_patched_weights", False)
+    original = op.weight
+    model.add_patches({key: ("diff", (torch.full(op.weight.shape, 0.025),))}, strength_patch=0.5)
+    expected = model.patch_weight_to_device(key, device_to=torch.device("cpu"), return_weight=True).state_dict(key)
+    # Normal CPU loading eagerly patches weights; dynamic VRAM leaves them lazy.
+    # Keep the actual ComfyUI ops unmaterialized to hit that same exporter path.
+    monkeypatch.setattr(NODE.comfy.model_management, "load_models_gpu", lambda *a, **k: None)
+    path = NODE._save(model, "lazy_quantized")
+    assert op.weight is original  # Export must not replace live model weights.
+    loaded, _ = NODE._load(path)
+    weight = loaded.model.diffusion_model.blocks[0].attn.qkv_proj.weight
+    assert isinstance(weight, QuantizedTensor)
+    assert not loaded.patches
+    for piece, value in weight.state_dict(key).items():
+        torch.testing.assert_close(value.reshape(-1).view(torch.uint8),
+            expected[piece].reshape(-1).view(torch.uint8), rtol=0, atol=0)
