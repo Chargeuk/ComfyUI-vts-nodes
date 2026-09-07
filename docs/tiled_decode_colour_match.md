@@ -6,6 +6,37 @@ Connect an optional `color_ref` to correct decoded frames before saving.
 No reference, zero overall weight, or all component weights at zero bypasses
 correction. Audio and input latents are not modified.
 
+## Corrected H3 continuation context
+
+`encode_corrected_context` defaults to **false**, preserving the existing image
+output and doing no extra encoding. The new second output,
+`corrected_video_context`, is `None` when disabled. Existing image links stay on
+output 0. Restart ComfyUI and refresh the frontend to load the new sockets.
+
+Enable it to encode only the final `context_length` corrected frames directly
+from the decoded image tensor, before disk compression. Lengths are 5, 22
+(default), 39 or 56 frames; shorter clips use the largest valid length available
+(including one frame). It requires a single H3 video and its matching video VAE.
+It uses the VAE's normal encode method and memory management, independently of
+the decoder's tile settings. Encoding adds work and temporary memory use; this
+is an optional colour-continuity experiment, not a speed optimisation.
+
+Connect this output to `corrected_video_context` on **VTS H3 Prepare Loop Context**.
+Keep the original AV sampler latent connected to Prepare's `context_latent` so
+audio and its timing remain unchanged. Set the same `context_length` on both
+nodes, and use the same source clip. Prepare rejects mismatched lengths and
+resolutions; it cannot identify unrelated clips with identical shapes.
+Apply Loop Context uses the corrected video for both its guide and masked prefix.
+Repeat this wiring for the initial clip and for the loop body as applicable.
+
+The normal Tensor/DiskImage output is unchanged. No saved images are read back,
+and the new output owns only the small encoded tail, not the full images or
+original AV latent. If colour correction is bypassed while encoding is enabled,
+the tail is still re-encoded, using the unchanged decoded images. Disconnecting
+the new output alone does not disable encoding: turn its flag off as well.
+Use a stable colour reference to avoid repeatedly compounding a grade. Compare
+several continuations for colour, detail and motion before relying on this path.
+
 ## Controls
 
 - `color_match_method`: MKL, histogram matching, CPU Reinhard, MVGD,

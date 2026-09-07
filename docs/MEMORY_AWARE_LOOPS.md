@@ -47,6 +47,14 @@ Prepare belongs after the current sampler and before the loop hand-off. The curr
 
 Keep `context_length` and `audio_context_length` equal to the settings used by the original workflow when checking equivalence. The compact package owns independent copies of the required native latent tails, not views keeping the entire original tensor alive. It omits source noise masks; Apply reconstructs the next target's mask using the established VTS helpers.
 
+Prepare optionally accepts `corrected_video_context` from **VAE Decode VTS
+(Tiled + Colour Match)**. Enable `encode_corrected_context` on that decoder and
+match both nodes' `context_length`. Keep the original AV sampler output connected
+to Prepare for audio and timing. Only the video tail is replaced, in both the
+next guide and masked prefix. A disconnected input or disabled decoder flag
+keeps the original latent-tail behaviour. This adds VAE encoding cost; see
+[corrected-context controls](tiled_decode_colour_match.md#corrected-h3-continuation-context).
+
 ## Disk audio and paths
 
 Save Audio Chunk expects overlap trimming to be done upstream. It stores lossless float32 RF64 WAV chunks and linked JSON manifests in unique directories under ComfyUI's configured output directory. Relative prefixes such as `audio/chunk` are supported; absolute paths, traversal and resolved paths outside the output directory are rejected. When output is a network mount, these files are stored on that mount. Completed files are persistent outputs, not automatically deleted temporary data.

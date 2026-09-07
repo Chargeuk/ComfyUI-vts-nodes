@@ -36,6 +36,10 @@ class VTS_H3PrepareLoopContext:
                     "tooltip": "Previous audio frames to carry. Zero follows "
                                "the video context length."}),
             },
+            "optional": {
+                "corrected_video_context": ("VTS_H3_VIDEO_CONTEXT", {
+                    "tooltip": "Optional corrected tail from VAE Decode VTS (Tiled + Colour Match). Use the same context_length and source clip. Audio still comes from context_latent."}),
+            },
         }
 
     RETURN_TYPES = ("VTS_H3_CONTEXT",)
@@ -47,7 +51,8 @@ class VTS_H3PrepareLoopContext:
         "Preserves native temporal alignment without retaining the full "
         "previous latent or its noise masks.")
 
-    def execute(self, context_latent, context_length="22", audio_context_length=24):
+    def execute(self, context_latent, context_length="22", audio_context_length=24,
+                corrected_video_context=None):
         if str(context_length) not in ("22", "5", "39", "56"):
             raise ValueError("VTS H3 Prepare Loop Context context_length must be 5, 22, 39 or 56.")
         if not isinstance(audio_context_length, int) or not 0 <= audio_context_length <= 240:
@@ -55,8 +60,20 @@ class VTS_H3PrepareLoopContext:
         video = _motion._video_stream(context_latent)
         available = _motion._pixel_frames(int(video.shape[2]))
         frame_count = _motion._context_length(int(context_length), available)
-        video_guide = _motion._latent_video_tail(
-            context_latent, frame_count, video).detach()
+        if corrected_video_context is None:
+            video_guide = _motion._latent_video_tail(
+                context_latent, frame_count, video).detach()
+        else:
+            replacement = corrected_video_context
+            if (not isinstance(replacement, dict)
+                    or replacement.get("source_frames") != available
+                    or replacement.get("frame_count") != frame_count):
+                raise ValueError("Corrected video context must use the same source clip length and context_length as Prepare Loop Context.")
+            encoded = replacement.get("video")
+            expected = (1, 24, _motion._steps_for_frames(frame_count), *video.shape[3:])
+            if not isinstance(encoded, torch.Tensor) or tuple(encoded.shape) != expected:
+                raise ValueError("Corrected video context must match the source H3 resolution and context length: %s." % (expected,))
+            video_guide = encoded.detach().clone()
         audio_frames = int(audio_context_length) or frame_count
         audio_guide, audio_steps, overhang = _motion._latent_audio_tail(
             context_latent, audio_frames)

@@ -1,7 +1,9 @@
 import importlib.util
+import gc
 import sys
 import tempfile
 import unittest
+import weakref
 from pathlib import Path
 from unittest.mock import patch
 
@@ -189,7 +191,9 @@ class DecodeIntegrationTests(unittest.TestCase):
         new = NODE.VTS_VAEDecodeTiledColourMatch.INPUT_TYPES()
         self.assertEqual(base["required"], new["required"])
         self.assertIn("color_ref", new["optional"])
-        self.assertEqual(NODE.VTS_VAEDecodeTiledColourMatch.RETURN_TYPES, ("IMAGE",))
+        self.assertEqual(NODE.VTS_VAEDecodeTiledColourMatch.RETURN_TYPES,
+                         ("IMAGE", "VTS_H3_VIDEO_CONTEXT"))
+        self.assertFalse(new["optional"]["encode_corrected_context"][1]["default"])
 
     def test_nested_latent_decode_matches_base_and_forwards_tiles(self):
         video, audio = torch.zeros(1, 24, 7, 2, 2), torch.zeros(1, 32, 2, 40)
@@ -197,7 +201,8 @@ class DecodeIntegrationTests(unittest.TestCase):
         vae = FakeVAE(frames())
         node = NODE.VTS_VAEDecodeTiledColourMatch()
         expected, = NODE.VTS_VAEDecodeTiled().decode(vae, latent, return_type="Tensor")
-        output, = node.decode(vae, latent, color_ref=None, return_type="Tensor")
+        output, context = node.decode(vae, latent, color_ref=None, return_type="Tensor")
+        self.assertIsNone(context)
         self.assertTrue(torch.equal(output, expected))
         self.assertIs(vae.calls[-1][0], video)
         self.assertEqual(vae.calls[0][1], vae.calls[-1][1])
@@ -206,10 +211,11 @@ class DecodeIntegrationTests(unittest.TestCase):
         image, reference = frames(2), frames(1) * 0.8
         latent = {"samples": torch.zeros(1, 4, 4, 4)}
         node = NODE.VTS_VAEDecodeTiledColourMatch()
-        expected, = node.decode(FakeVAE(image), latent, color_ref=reference, return_type="Tensor")
+        expected, context = node.decode(FakeVAE(image), latent, color_ref=reference, return_type="Tensor")
+        self.assertIsNone(context)
         with tempfile.TemporaryDirectory() as directory:
             with CurrentNodeContext("test", "decode", 3):
-                disk, = node.decode(FakeVAE(image), latent, color_ref=reference,
+                disk, context = node.decode(FakeVAE(image), latent, color_ref=reference,
                                     return_type="DiskImage", output_dir=directory,
                                     prefix="clip", start_sequence=12, format="png", num_workers=1)
             self.assertEqual(disk.prefix, "clip_list_000003")
@@ -218,6 +224,109 @@ class DecodeIntegrationTests(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in Path(directory).iterdir()),
                              ["clip_list_000003_000012.png", "clip_list_000003_000013.png"])
             self.assertTrue(torch.allclose(disk.materialize(), expected, atol=1 / 255 + 1e-6))
+            self.assertIsNone(context)
+
+
+class CorrectedContextTests(unittest.TestCase):
+    def setUp(self):
+        self.node = NODE.VTS_VAEDecodeTiledColourMatch()
+        self.image = torch.rand(39, 32, 32, 3, generator=torch.Generator().manual_seed(4))
+        self.source = {"samples": NestedTensor((torch.zeros(1, 24, 12, 2, 2),
+                                                 torch.zeros(1, 32, 2, 65)))}
+
+    def encoder(self, frames):
+        # A view deliberately tests that the returned context owns its storage.
+        self.encoded_input = frames.clone()
+        self.input_reference = weakref.ref(frames)
+        steps = NODE._steps_for_frames(len(frames))
+        return frames.reshape(-1)[:24 * steps * 4].reshape(1, 24, steps, 2, 2)
+
+    def test_encodes_corrected_tail_only_for_each_length(self):
+        for requested, count in (("5", 5), ("22", 22), ("39", 39), ("56", 39)):
+            vae = FakeVAE(self.image)
+            vae.encode = self.encoder
+            output, context = self.node.decode(
+                vae, self.source, color_ref=self.image[:1] * 0.7,
+                return_type="Tensor", encode_corrected_context=True, context_length=requested)
+            torch.testing.assert_close(self.encoded_input, output[-count:], rtol=0, atol=0)
+            self.assertFalse(torch.equal(self.encoded_input, self.image[-count:]))
+            self.assertEqual(context["frame_count"], count)
+            self.assertEqual(context["source_frames"], 39)
+            encoded = context["video"]
+            self.assertNotEqual(encoded.untyped_storage().data_ptr(), output.untyped_storage().data_ptr())
+            self.assertEqual(encoded.untyped_storage().nbytes(), encoded.numel() * encoded.element_size())
+            self.assertFalse(encoded.requires_grad)
+            self.assertEqual(len(vae.calls), 1)
+            del output
+            gc.collect()
+            self.assertIsNone(self.input_reference())
+
+    def test_bypass_still_encodes_when_enabled(self):
+        for settings in ({"color_ref": None}, {"color_ref": object(), "overall_weight": 0},
+                         {"color_ref": object(), "color_match_weight": 0}):
+            vae = FakeVAE(self.image)
+            vae.encode = self.encoder
+            output, context = self.node.decode(vae, self.source, return_type="Tensor",
+                encode_corrected_context=True, **settings)
+            torch.testing.assert_close(output, self.image, rtol=0, atol=0)
+            torch.testing.assert_close(self.encoded_input, self.image[-22:], rtol=0, atol=0)
+            self.assertEqual(context["frame_count"], 22)
+
+    def test_full_56_frame_tail_and_single_frame_clip(self):
+        for source_steps, count in ((22, 56), (1, 1)):
+            source_frames = NODE._pixel_frames(source_steps)
+            image = self.image[:1].repeat(source_frames, 1, 1, 1)
+            source = {"samples": torch.zeros(1, 24, source_steps, 2, 2)}
+            vae = FakeVAE(image)
+            vae.encode = self.encoder
+            _, context = self.node.decode(vae, source, return_type="Tensor",
+                encode_corrected_context=True, context_length="56")
+            self.assertEqual(len(self.encoded_input), count)
+            self.assertEqual(context["frame_count"], count)
+            self.assertEqual(context["video"].shape[2], NODE._steps_for_frames(count))
+
+    def test_disk_output_does_not_read_saved_images_for_encoding(self):
+        vae = FakeVAE(self.image)
+        vae.encode = self.encoder
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(NODE.DiskImage, "materialize", side_effect=AssertionError("disk read")):
+                disk, context = self.node.decode(vae, self.source, return_type="DiskImage",
+                    output_dir=directory, prefix="context", format="png", num_workers=1,
+                    encode_corrected_context=True)
+            self.assertEqual(disk.number_of_images, 39)
+            self.assertEqual(len(list(Path(directory).glob('*.png'))), 39)
+            self.assertEqual(context["frame_count"], 22)
+
+    def test_rejects_wrong_model_batch_geometry_and_encoded_shape(self):
+        for video in (torch.zeros(1, 4, 2, 2), torch.zeros(2, 24, 12, 2, 2)):
+            with self.assertRaisesRegex(ValueError, "one H3"):
+                self.node.decode(FakeVAE(self.image), {"samples": video}, encode_corrected_context=True)
+        for image in (self.image[:-1], self.image[:, :16]):
+            with self.assertRaisesRegex(ValueError, "frame count and resolution"):
+                self.node.decode(FakeVAE(image), self.source, encode_corrected_context=True)
+        vae = FakeVAE(self.image)
+        vae.encode = lambda frames: torch.zeros(1, 24, 8, 2, 2)
+        with self.assertRaisesRegex(ValueError, "latent shape"):
+            self.node.decode(vae, self.source, encode_corrected_context=True)
+        with self.assertRaisesRegex(ValueError, "context_length"):
+            self.node.decode(vae, self.source, encode_corrected_context=True, context_length="9")
+
+    def test_corrected_tail_is_used_in_guide_and_mask_without_changing_audio(self):
+        from VTS_H3LoopContext import VTS_H3PrepareLoopContext, VTS_H3ApplyLoopContext
+        vae = FakeVAE(self.image)
+        vae.encode = self.encoder
+        _, replacement = self.node.decode(vae, self.source, return_type="Tensor",
+            encode_corrected_context=True, color_ref=self.image[:1] * 0.8)
+        prepare = VTS_H3PrepareLoopContext()
+        original, = prepare.execute(self.source)
+        corrected, = prepare.execute(self.source, corrected_video_context=replacement)
+        torch.testing.assert_close(corrected["audio"], original["audio"], rtol=0, atol=0)
+        self.assertEqual(corrected["audio_start"], original["audio_start"])
+        output, trim, masked = VTS_H3ApplyLoopContext().execute(
+            [[torch.zeros(1), {}]], self.source, corrected)
+        self.assertEqual(trim, 22)
+        torch.testing.assert_close(output[0][1]["minimax_keyframes"][-2]["latent"], replacement["video"])
+        torch.testing.assert_close(masked["samples"].tensors[0][:, :, :7], replacement["video"])
 
 
 if __name__ == "__main__":

@@ -192,6 +192,29 @@ class H3LoopContextTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "temporal cycle"):
             self.prepare.execute(av_latent(23))
 
+    def test_corrected_context_is_compact_and_preserves_audio_timing(self):
+        source = av_latent(22, 122)
+        base, = self.prepare.execute(source)
+        backing = torch.ones(1, 24, 50, 2, 2, requires_grad=True)
+        replacement = {"video": backing[:, :, :7], "frame_count": 22, "source_frames": 73}
+        corrected, = self.prepare.execute(source, corrected_video_context=replacement)
+        torch.testing.assert_close(corrected["video"], replacement["video"])
+        torch.testing.assert_close(corrected["audio"], base["audio"], rtol=0, atol=0)
+        self.assertEqual(corrected["audio_start"], base["audio_start"])
+        self.assertFalse(corrected["video"].requires_grad)
+        self.assertEqual(corrected["video"].untyped_storage().nbytes(), 1 * 24 * 7 * 2 * 2 * 4)
+        self.assertNotEqual(corrected["video"].untyped_storage().data_ptr(), backing.untyped_storage().data_ptr())
+
+    def test_rejects_mismatched_corrected_context(self):
+        source = av_latent()
+        good = {"video": torch.ones(1, 24, 7, 2, 2), "frame_count": 22, "source_frames": 73}
+        for replacement in ({}, dict(good, source_frames=56), dict(good, frame_count=5),
+                            dict(good, video=torch.ones(1, 24, 7, 4, 4)),
+                            dict(good, video=torch.ones(1, 24, 8, 2, 2)),
+                            dict(good, video=None)):
+            with self.subTest(replacement=replacement), self.assertRaisesRegex(ValueError, "Corrected video context"):
+                self.prepare.execute(source, corrected_video_context=replacement)
+
     def test_rejects_invalid_api_lengths(self):
         source = av_latent()
         for length in (None, "bad", "1", "7", "0", "999", -22, 22.5):
