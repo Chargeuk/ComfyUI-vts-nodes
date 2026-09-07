@@ -186,6 +186,46 @@ class ColourCorrectionTests(unittest.TestCase):
 
 
 class DecodeIntegrationTests(unittest.TestCase):
+    def test_both_decoder_schemas_allow_zero_overlap(self):
+        for node in (NODE.VTS_VAEDecodeTiled, NODE.VTS_VAEDecodeTiledColourMatch):
+            with self.subTest(node=node.__name__):
+                required = node.INPUT_TYPES()["required"]
+                self.assertEqual(required["overlap"][1]["min"], 0)
+                self.assertEqual(required["temporal_overlap"][1]["min"], 0)
+                self.assertEqual(required["overlap"][1]["default"], 64)
+                self.assertEqual(required["temporal_overlap"][1]["default"], 8)
+
+    def test_zero_overlap_forwarded_by_base_and_colour_decode(self):
+        latent = {"samples": torch.zeros(1, 4, 4, 4, 4)}
+        for node, extra in (
+            (NODE.VTS_VAEDecodeTiled(), {}),
+            (NODE.VTS_VAEDecodeTiledColourMatch(), {}),
+            (NODE.VTS_VAEDecodeTiledColourMatch(), {"color_ref": frames(1) * 0.8}),
+        ):
+            with self.subTest(node=type(node).__name__, correction=bool(extra)):
+                vae = FakeVAE(frames())
+                result = node.decode(vae, latent, overlap=0, temporal_overlap=0,
+                                     return_type="Tensor", **extra)
+                self.assertEqual(vae.calls[-1][1]["overlap"], 0)
+                self.assertEqual(vae.calls[-1][1]["overlap_t"], 0)
+                self.assertEqual(result[0].shape, vae.image.shape)
+                self.assertTrue(torch.isfinite(result[0]).all())
+
+    def test_positive_overlap_conversion_and_image_vae_unchanged(self):
+        node = NODE.VTS_VAEDecodeTiled()
+        latent = {"samples": torch.zeros(1, 4, 4, 4, 4)}
+        for requested, expected in ((1, 1), (4, 1), (8, 2)):
+            vae = FakeVAE(frames())
+            node.decode(vae, latent, temporal_overlap=requested, return_type="Tensor")
+            self.assertEqual(vae.calls[-1][1]["overlap"], 8)
+            self.assertEqual(vae.calls[-1][1]["overlap_t"], expected)
+        vae = FakeVAE(frames())
+        with patch.object(vae, "temporal_compression_decode", return_value=None):
+            node.decode(vae, latent, overlap=0, temporal_overlap=0, return_type="Tensor")
+        self.assertIsNone(vae.calls[-1][1]["tile_t"])
+        self.assertIsNone(vae.calls[-1][1]["overlap_t"])
+        self.assertEqual(vae.calls[-1][1]["overlap"], 0)
+
     def test_schema_preserves_decoder_inputs(self):
         base = NODE.VTS_VAEDecodeTiled.INPUT_TYPES()
         new = NODE.VTS_VAEDecodeTiledColourMatch.INPUT_TYPES()

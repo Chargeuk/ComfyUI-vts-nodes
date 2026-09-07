@@ -19,9 +19,9 @@ class VTS_VAEDecodeTiled:
                 "vae": ("VAE", ),
                 "tile_size_x": ("INT", {"default": 512, "min": 64, "max": 4096, "step": 32, "advanced": True}),
                 "tile_size_y": ("INT", {"default": 512, "min": 64, "max": 4096, "step": 32, "advanced": True}),
-                "overlap": ("INT", {"default": 64, "min": 0, "max": 4096, "step": 32, "advanced": True}),
+                "overlap": ("INT", {"default": 64, "min": 0, "max": 4096, "step": 32, "tooltip": "Requested spatial overlap. Zero requests no overlap. VAEs with internal tiling, including H3, may ignore this setting.", "advanced": True}),
                 "temporal_size": ("INT", {"default": 64, "min": 8, "max": 4096, "step": 4, "tooltip": "Only used for video VAEs: Amount of frames to decode at a time.", "advanced": True}),
-                "temporal_overlap": ("INT", {"default": 8, "min": 4, "max": 4096, "step": 4, "tooltip": "Only used for video VAEs: Amount of frames to overlap.", "advanced": True}),
+                "temporal_overlap": ("INT", {"default": 8, "min": 0, "max": 4096, "step": 4, "tooltip": "Requested video-frame overlap. Zero requests no overlap; the VAE may enforce a minimum or use internal tiling (H3 ignores this setting).", "advanced": True}),
             }
         }
         return deep_merge(input_types, get_default_image_output_types(prefix="vae_decode"))
@@ -44,7 +44,8 @@ class VTS_VAEDecodeTiled:
         temporal_compression = vae.temporal_compression_decode()
         if temporal_compression is not None:
             temporal_size = max(2, temporal_size // temporal_compression)
-            temporal_overlap = max(1, min(temporal_size // 2, temporal_overlap // temporal_compression))
+            if temporal_overlap != 0:
+                temporal_overlap = max(1, min(temporal_size // 2, temporal_overlap // temporal_compression))
         else:
             temporal_size = None
             temporal_overlap = None
