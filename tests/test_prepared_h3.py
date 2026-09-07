@@ -37,6 +37,9 @@ spec.loader.exec_module(NODE)
 def folders(tmp_path, monkeypatch):
     monkeypatch.setattr(folder_paths, "folder_names_and_paths", deepcopy(folder_paths.folder_names_and_paths))
     monkeypatch.setattr(folder_paths, "output_directory", str(tmp_path / "output"))
+    monkeypatch.setattr(folder_paths, "models_dir", str(tmp_path / "models"))
+    folder_paths.folder_names_and_paths["diffusion_models"] = (
+        [str(tmp_path / "models/unet"), str(tmp_path / "models/diffusion_models")], {".safetensors"})
     monkeypatch.setattr(folder_paths, "filename_list_cache", {})
     yield
     comfy.model_management.unload_all_models()
@@ -223,7 +226,7 @@ def test_partial_export_is_removed(tmp_path, monkeypatch):
     monkeypatch.setattr(NODE, "_write_checkpoint", failing_writer)
     with pytest.raises(OSError, match="test write failure"):
         NODE._save(model, "failure")
-    assert list((tmp_path / "output/prepared_h3").iterdir()) == []
+    assert list((tmp_path / "models/diffusion_models/prepared-h3").iterdir()) == []
 
 
 @pytest.mark.parametrize("quant_format", ["int8_tensorwise", "float8_e4m3fn"])
@@ -314,6 +317,32 @@ def test_custom_paths_require_absolute_paths():
         NODE._resolve_file("../file.safetensors", explicit=True)
     with pytest.raises(ValueError, match="absolute WSL output"):
         NODE._save(None, "valid", output_directory="../models")
+
+
+def test_default_export_appears_in_standard_diffusion_picker(tmp_path):
+    model, _ = with_vdn(tmp_path, tiny_model())
+    path = NODE.VTS_SavePreparedH3().execute(model, save_enabled=True)[0]
+    assert Path(path).parent == tmp_path / "models/diffusion_models/prepared-h3"
+    name = "prepared-h3/" + Path(path).name
+    choices = NODE.VTS_LoadPreparedH3.INPUT_TYPES()["required"]["prepared_model"][0]
+    assert choices == folder_paths.get_filename_list("diffusion_models")
+    assert name in choices
+    loaded, _ = NODE.VTS_LoadPreparedH3().execute(name)
+    assert not loaded.patches
+    assert not (tmp_path / "output").exists()
+
+
+def test_picker_uses_extra_diffusion_roots_and_rejects_unprepared_files(tmp_path):
+    extra = tmp_path / "extra_models"
+    extra.mkdir()
+    path = extra / "ordinary.safetensors"
+    save_file({"weight": torch.zeros(1)}, str(path))
+    folder_paths.add_model_folder_path("diffusion_models", str(extra))
+    choices = NODE.VTS_LoadPreparedH3.INPUT_TYPES()["required"]["prepared_model"][0]
+    assert "ordinary.safetensors" in choices
+    assert NODE._resolve_file("ordinary.safetensors") == path
+    with pytest.raises(ValueError, match="Not a VTS prepared H3 file"):
+        NODE.VTS_LoadPreparedH3().execute("ordinary.safetensors")
 
 
 @pytest.mark.parametrize("dtype", [torch.int8, torch.uint8, torch.float8_e4m3fn, torch.float32])

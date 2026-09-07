@@ -15,9 +15,10 @@ Connect the final MODEL to **Save Prepared H3**, choose a filename prefix, enabl
 patching that subsequent loads will avoid. Do not put this saver in a loop.
 
 Set `output_directory` to the absolute WSL folder you want, for example
-`/mnt/external-lan2/comfyui/models/prepared_h3`. Spaces are supported. Leave it
-blank to use the active ComfyUI **output/prepared_h3** folder, following
-`--output-directory`. Each execution creates a new uniquely named `.safetensors`
+`/mnt/external-lan2/comfyui/models/prepared-h3`. Spaces are supported. Leave it
+blank to use ComfyUI's **models/diffusion_models/prepared-h3** folder, which is
+included in the standard diffusion-model picker. This default follows ComfyUI's
+models directory, not `--output-directory`. Each execution creates a new uniquely named `.safetensors`
 there; it never overwrites the original model. It is remote only if the selected
 directory is on a remote mount. Allow space for a complete diffusion model plus VDN branches.
 An interrupted export removes its own incomplete `.partial` file when Python can
@@ -33,7 +34,11 @@ does not guess which kernel an opaque attention callable represents.
 Remove/disable the export branch. In **Load Prepared H3**, enter the full file
 path in `input_path`, including the `.safetensors` filename. This overrides the
 dropdown and works outside the default discovery folders. Alternatively, leave
-it blank, refresh the model list, and select a discovered file from the dropdown.
+it blank, refresh the model list, and select `prepared-h3/<filename>.safetensors`
+from the dropdown. The dropdown uses the same `diffusion_models` list and path
+resolver as ComfyUI's **Load Diffusion Model**, including configured extra model
+folders and subfolders. Ordinary, unprepared models appear in that shared list
+too; selecting one gives a clear error directing you to the ordinary loader.
 Replace the original loader + baked LoRA + attention chain
 with this loader. **Do not reapply the baked LoRAs or Apply VDN-H3.** The optional
 `prepared_file` socket can instead accept the saver's returned filename for an
@@ -42,8 +47,8 @@ Use either the `input_path` field or the connected `prepared_file`, not both.
 Paths are WSL/Linux paths (or `~/...`), not Windows drive-letter paths. The loader
 never downloads or copies the file to a local cache just because it is remote.
 
-The loader also discovers files in `prepared_h3` beneath configured diffusion
-model folders. Its `settings` STRING output describes the effective runtime
+Existing exports in the previous `output/prepared_h3` location are not moved;
+use their full `input_path` to keep loading them. The loader's `settings` STRING output describes the effective runtime
 configuration. CLIP, VAEs, conditioning, sampler, seed, step count and scheduler
 remain in the workflow; this file contains the diffusion model, not those models
 or the entire workflow.

@@ -27,7 +27,6 @@ import comfy.utils
 log = logging.getLogger("comfy.vts.prepared_h3")
 META = "vts_prepared_h3"
 BRANCH = "vts_vdn_branch."
-CATEGORY = "vts_prepared_h3"
 HYBRID_KEY = "vts_h3_hybrid_attention"
 
 # These are runtime controls, never adapter strengths or weight dimensions.
@@ -340,23 +339,17 @@ def _pack_branches(state, stack):
     return tensors, descriptors
 
 
-def _roots():
-    roots = [Path(folder_paths.get_output_directory()) / "prepared_h3"]
-    roots.extend(Path(path) / "prepared_h3" for path in folder_paths.get_folder_paths("diffusion_models"))
-    for path in roots:
-        folder_paths.add_model_folder_path(CATEGORY, str(path))
-    paths, extensions = folder_paths.folder_names_and_paths[CATEGORY]
-    extensions.add(".safetensors")
-    return [Path(path).resolve() for path in paths]
+def _default_output_directory():
+    return Path(folder_paths.models_dir) / "diffusion_models" / "prepared-h3"
 
 
 def _resolve_file(name, explicit=False):
-    roots = _roots()
+    roots = [Path(path).resolve() for path in folder_paths.get_folder_paths("diffusion_models")]
     path = Path(name).expanduser()
     if explicit and not path.is_absolute():
         raise ValueError("Enter an absolute WSL input file path, for example /mnt/share/prepared_h3.safetensors.")
     if not path.is_absolute():
-        resolved = folder_paths.get_full_path(CATEGORY, name)
+        resolved = folder_paths.get_full_path("diffusion_models", name)
         if resolved is None:
             raise ValueError(f"Prepared model not found: {name}")
         path = Path(resolved)
@@ -364,7 +357,7 @@ def _resolve_file(name, explicit=False):
     if path.suffix != ".safetensors":
         raise ValueError("Prepared input files must use the .safetensors extension.")
     if not explicit and not any(path.is_relative_to(root) for root in roots):
-        raise ValueError("Prepared files must be .safetensors inside a registered prepared_h3 folder.")
+        raise ValueError("Dropdown selections must be inside a registered diffusion-model folder; use input_path for other locations.")
     if not path.is_file():
         raise ValueError(f"Prepared model not found: {path.name}")
     return path
@@ -418,7 +411,7 @@ def _write_checkpoint(path, model, metadata, extra_keys):
 def _save(model, prefix, prompt=None, unique_id=None, sla_dense_backend="from workflow", output_directory=""):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}", prefix):
         raise ValueError("Use a plain filename prefix (letters, numbers, dots, underscores or hyphens).")
-    root = Path(output_directory).expanduser() if output_directory else Path(folder_paths.get_output_directory()) / "prepared_h3"
+    root = Path(output_directory).expanduser() if output_directory else _default_output_directory()
     if not root.is_absolute():
         raise ValueError("Enter an absolute WSL output directory, for example /mnt/share/prepared_h3.")
     root = root.resolve()
@@ -440,7 +433,6 @@ def _save(model, prefix, prompt=None, unique_id=None, sla_dense_backend="from wo
     finally:
         if temporary.exists():
             temporary.unlink()
-    _roots()
     log.info("[VTS Prepared H3] Saved %s", path)
     return str(path)
 
@@ -612,13 +604,13 @@ class VTS_SavePreparedH3:
     FUNCTION = "execute"
     CATEGORY = "VTS/model_patches/minimax"
     OUTPUT_NODE = True
-    DESCRIPTION = "One-time export of merged H3 weights, VDN branch weights and attention settings. Choose an output directory or leave blank for output/prepared_h3. Remove this node from the generation workflow after export."
+    DESCRIPTION = "One-time export of merged H3 weights, VDN branch weights and attention settings. Choose an output directory or leave blank for models/diffusion_models/prepared-h3. Remove this node from the generation workflow after export."
 
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
             "model": ("MODEL",), "filename_prefix": ("STRING", {"default": "prepared_h3"}),
-            "output_directory": ("STRING", {"default": "", "tooltip": "Absolute WSL directory, e.g. /mnt/external-lan2/comfyui/models/prepared_h3. Blank uses the active output/prepared_h3 folder."}),
+            "output_directory": ("STRING", {"default": "", "tooltip": "Absolute WSL directory. Blank saves in ComfyUI's models/diffusion_models/prepared-h3 folder, visible in the diffusion-model picker."}),
             "save_enabled": ("BOOLEAN", {"default": False, "tooltip": "Enable for the one-time export. Each execution writes a new, large file."}),
             "sla_dense_backend": ("STRING", {"default": "from workflow", "tooltip": "SLA only: leave from workflow, or specify the actual dense_backend if its graph input is dynamic."}),
         }, "hidden": {"prompt": "PROMPT", "unique_id": "UNIQUE_ID"}}
@@ -640,9 +632,8 @@ class VTS_LoadPreparedH3:
 
     @classmethod
     def INPUT_TYPES(cls):
-        _roots()
         return {"required": {
-            "prepared_model": (folder_paths.get_filename_list(CATEGORY) or ["(no prepared files)"],),
+            "prepared_model": (folder_paths.get_filename_list("diffusion_models") or ["(no diffusion models)"],),
             "input_path": ("STRING", {"default": "", "tooltip": "Full WSL .safetensors path, including filename. Overrides the model dropdown. Blank uses the dropdown or connected prepared_file."}),
             "compatibility": (["require matching attention code", "allow changed attention code"],),
             "weight_dtype": (["saved", "bfloat16", "float16", "float32"],),
