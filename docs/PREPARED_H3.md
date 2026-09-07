@@ -61,9 +61,31 @@ fast. Network I/O and normal model offloading can still dominate.
 
 ## Runtime overrides
 
-Without an options connection, the saved values are used. On the options node,
-`-1` and `saved` mean unchanged. **Zero is a real value**, including zero dense
-first/last steps. These settings do not change the baked weights.
+Without an options connection, the saved values are used. New options nodes start
+with the **VTS Hybrid** factory profile, displaying the original node's actual
+defaults instead of inheritance markers. Select **VDN-H3** or **H3 SLA** for those
+prepared variants. Changing the profile resets its controls and advanced JSON;
+irrelevant controls are hidden. Then edit the values you want to override.
+
+| Profile | Sparsity | Dense first/last | Minimum window/sequence |
+| --- | --- | --- | --- |
+| VTS Hybrid | 0.70 | 1 / 1 | 4096 |
+| H3 SLA | 0.80 | 0 / 0, plus explicit `dense_steps = "1"` | 12228 |
+| VDN-H3 | Not applicable | Not applicable | Not applicable |
+
+VDN branch residency, retained buffers and prefetch default to `auto`, with
+`grouped` attention. SLA also restores its original block size 32, Comfy Kitchen
+engine/backend, and other factory flags. Remaining factory controls are visible
+in `advanced_json`. Checkpoint-defined branch math and sampling settings remain
+saved unless explicitly overridden; profiles do not invent new trained weights.
+
+**Connecting a factory profile intentionally overrides the file's attention
+settings.** Select **Saved settings** to reset to inheritance markers instead.
+`-1` and `saved` explicitly inherit the file's value, including within a factory
+profile. **Zero is a real override**, including zero dense first/last steps.
+Existing workflows retain their old overrides/inheritance when opened; select a
+factory profile to opt into the new defaults. Refresh the browser after updating
+VTS so its profile-switching frontend is loaded.
 
 For example, to test all-sparse hybrid steps, set both dense-step widgets to `0`.
 To change branch memory policy on another GPU, choose `auto` for branch weights
@@ -116,6 +138,8 @@ ea33b154's gradient-enabled `LazyCastingParamPiece`, which cannot wrap INT8/UINT
 storage during dynamic-VRAM export. Weight patching, requantization and
 safetensors serialization still use native helpers; no core classes are patched.
 VDN restoration installs its trained branch without loading/applying adapters.
+The branch loader accepts native INT8 storage descriptors and keeps their
+ConvRot settings/scales; compute dtype is selected separately at inference.
 SLA/hybrid restoration reinstalls runtime attention functions from installed
 code. The original branch/adapter files are not required to load the bundle.
 

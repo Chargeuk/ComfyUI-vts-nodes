@@ -77,6 +77,32 @@ CHOICES = {
         "sage:qk_int8_pv_fp8_cuda", "sage:qk_int8_pv_fp8_cuda++"),
 }
 
+# UI defaults of Apply VDN-H3 Advanced, VTS Hybrid and PlagueKind H3 SLA.
+# Checkpoint-defined branch math and sampling settings are deliberately not reset.
+_VDN_FACTORY = {
+    "common": {"branch_weights": "auto", "retain_buffers": "auto", "prefetch": "auto", "attention_backend": "grouped"},
+    "advanced": {"vdn": {"radius": 1, "chunk": 5, "anchor_frames": "both",
+        "enable_text_state": True, "linear_enabled": True, "fast_kernels": False,
+        "compile_scan": False, "fuse_statistics": False, "verbose": False}},
+}
+FACTORY_PROFILES = {
+    "VTS Hybrid": {
+        "common": dict(_VDN_FACTORY["common"], local_sparsity=0.70, dense_first_steps=1,
+                       dense_last_steps=1, min_window_tokens=4096),
+        "advanced": dict(_VDN_FACTORY["advanced"], hybrid={"enabled": True,
+                         "dense_blocks": "", "fallback_to_exact": True, "verbose": True}),
+    },
+    "VDN-H3": _VDN_FACTORY,
+    "H3 SLA": {
+        "common": {"local_sparsity": 0.80, "dense_first_steps": 0,
+                   "dense_last_steps": 0, "min_window_tokens": 12228},
+        "advanced": {"sla": {"block_size": 32, "dense_steps": "1", "protect_audio": False,
+            "dense_backend": "comfy_kitchen", "disable_fp16_accum": True,
+            "stabilize_motion": False, "reference_protection": "Off", "tail_correction": False,
+            "use_int8_qk": True, "use_int8_pv": False, "engine": "comfy_kitchen"}},
+    },
+}
+
 
 def _json_copy(value):
     return json.loads(json.dumps(value, allow_nan=False))
@@ -121,6 +147,16 @@ def _merge_options(saved, overrides):
 
 def _apply_common(runtime, options):
     options = deepcopy(options or {})
+    saved_runtime = runtime
+    profile = options.pop("factory_profile", "Saved settings")
+    if profile != "Saved settings":
+        if profile not in FACTORY_PROFILES:
+            raise ValueError(f"Unknown factory profile: {profile}")
+        expected = "VTS Hybrid" if "hybrid" in runtime else "H3 SLA" if "sla" in runtime else "VDN-H3"
+        if profile != expected:
+            raise ValueError(f"Select the {expected} factory profile for this prepared model, or Saved settings.")
+        defaults = FACTORY_PROFILES[profile]
+        runtime = _apply_common(runtime, dict(defaults["advanced"], common=defaults["common"]))
     common = options.pop("common", {})
     target = "hybrid" if "hybrid" in runtime else "sla" if "sla" in runtime else None
     mapping = {"local_sparsity": "sparsity_ratio", "min_window_tokens": "min_seq_len"}
@@ -131,6 +167,8 @@ def _apply_common(runtime, options):
             group, field = target, mapping.get(key, key) if target == "sla" else key
         if group is None or group not in runtime:
             raise ValueError(f"{key} does not apply to this prepared attention variant.")
+        if value == -1 or value == "saved":
+            value = saved_runtime[group][field]
         if field in options.get(group, {}):
             raise ValueError(f"Set {group}.{field} in either the widget or advanced JSON, not both.")
         options.setdefault(group, {})[field] = value
@@ -459,14 +497,19 @@ def _read_manifest(handle):
 
 def _unpack_branches(path, handle, descriptor):
     from vdn_h3.spec import LazyBranchTensor
-    types = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
+    # Native LazyBranchTensor.dtype describes disk storage. INT8 branches use
+    # int8 here; resolve() separately chooses their floating-point compute dtype.
+    types = {"bfloat16": torch.bfloat16, "float16": torch.float16,
+             "float32": torch.float32, "int8": torch.int8}
     branches, used, stage_bytes = [], set(), 0
     for block, entries in enumerate(descriptor["branches"]):
         weights = {}
         for name, entry in entries.items():
             key = entry["key"]
-            if key != f"{BRANCH}{block}.{name}" or entry["dtype"] not in types:
-                raise ValueError("Invalid VDN branch tensor descriptor.")
+            if key != f"{BRANCH}{block}.{name}":
+                raise ValueError(f"VDN branch key mismatch for block {block}/{name}: {key!r}.")
+            if entry["dtype"] not in types:
+                raise ValueError(f"Unsupported VDN branch dtype {entry['dtype']!r} for {key}.")
             tensor = handle.get_tensor(key)
             if list(tensor.shape) != entry["shape"]:
                 raise ValueError(f"Branch shape mismatch: {key}")
@@ -480,6 +523,8 @@ def _unpack_branches(path, handle, descriptor):
                 scale = handle.get_tensor(scale_key)
                 used.add(scale_key)
                 stage_bytes += scale.numel() * scale.element_size()
+            elif entry["dtype"] == "int8":
+                raise ValueError(f"INT8 branch tensor is missing quantization metadata: {key}")
             elif tensor.dtype != types[entry["dtype"]]:
                 raise ValueError(f"Branch dtype mismatch: {key}")
             weights[name] = LazyBranchTensor(str(path), key, torch.Size(entry["shape"]),
@@ -652,35 +697,51 @@ class VTS_PreparedH3RuntimeOptions:
     RETURN_TYPES = ("VTS_H3_RUNTIME_OPTIONS",)
     FUNCTION = "execute"
     CATEGORY = "VTS/model_patches/minimax"
-    DESCRIPTION = "Connect to Load Prepared H3. -1/saved leaves the file's value unchanged; zero is a real override. Advanced JSON supports all documented attention and sampling runtime controls."
+    DESCRIPTION = "Connect to Load Prepared H3. Choose the matching factory profile; changing it resets controls to the original node defaults. Factory profiles override saved attention settings. Leave this node disconnected to use the file unchanged."
 
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
-            "local_sparsity": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 0.95, "step": 0.05}),
-            "dense_first_steps": ("INT", {"default": -1, "min": -1, "max": 100}),
-            "dense_last_steps": ("INT", {"default": -1, "min": -1, "max": 100}),
-            "min_window_tokens": ("INT", {"default": -1, "min": -1, "max": 131072}),
-            "branch_weights": (["saved", "auto", "stream", "cache_gpu"],),
-            "retain_buffers": (["saved", "auto", "on", "off"],),
-            "prefetch": (["saved", "auto", "on", "off"],),
-            "attention_backend": (["saved", "grouped", "flex"],),
+            "local_sparsity": ("FLOAT", {"default": 0.70, "min": -1.0, "max": 0.95, "step": 0.05}),
+            "dense_first_steps": ("INT", {"default": 1, "min": -1, "max": 100}),
+            "dense_last_steps": ("INT", {"default": 1, "min": -1, "max": 100}),
+            "min_window_tokens": ("INT", {"default": 4096, "min": -1, "max": 1000000}),
+            "branch_weights": (["saved", "auto", "stream", "cache_gpu"], {"default": "auto"}),
+            "retain_buffers": (["saved", "auto", "on", "off"], {"default": "auto"}),
+            "prefetch": (["saved", "auto", "on", "off"], {"default": "auto"}),
+            "attention_backend": (["saved", "grouped", "flex"], {"default": "grouped"}),
             "advanced_json": ("STRING", {"default": "{}", "multiline": True}),
+        }, "optional": {
+            "factory_defaults": ([*FACTORY_PROFILES, "Saved settings"], {
+                "default": "VTS Hybrid", "vts_factory_profiles": FACTORY_PROFILES,
+                "tooltip": "Choose the profile matching your prepared file. Changing it resets the controls and advanced JSON. Saved settings restores inheritance markers."}),
         }}
 
-    def execute(self, local_sparsity=-1.0, dense_first_steps=-1, dense_last_steps=-1,
-                min_window_tokens=-1, branch_weights="saved", retain_buffers="saved",
-                prefetch="saved", attention_backend="saved", advanced_json="{}"):
+    def execute(self, local_sparsity=None, dense_first_steps=None, dense_last_steps=None,
+                min_window_tokens=None, branch_weights=None, retain_buffers=None,
+                prefetch=None, attention_backend=None, advanced_json="{}", factory_defaults="Saved settings"):
+        if factory_defaults != "Saved settings" and factory_defaults not in FACTORY_PROFILES:
+            raise ValueError(f"Unknown factory profile: {factory_defaults}")
         overrides = _validate_options(json.loads(advanced_json))
+        defaults = FACTORY_PROFILES.get(factory_defaults, {}).get("common", {})
         common = {}
         for name, value in (("local_sparsity", local_sparsity), ("dense_first_steps", dense_first_steps),
                             ("dense_last_steps", dense_last_steps), ("min_window_tokens", min_window_tokens)):
-            if value != -1:
+            if factory_defaults != "Saved settings" and name not in defaults:
+                continue
+            if value is None:
+                value = defaults.get(name, -1)
+            if value != -1 or factory_defaults != "Saved settings":
                 common[name] = value
         for name, value in (("branch_weights", branch_weights), ("retain_buffers", retain_buffers),
                             ("prefetch", prefetch), ("attention_backend", attention_backend)):
-            if value != "saved":
+            if factory_defaults != "Saved settings" and name not in defaults:
+                continue
+            if value is None:
+                value = defaults.get(name, "saved")
+            if value != "saved" or factory_defaults != "Saved settings":
                 common[name] = value
+        overrides["factory_profile"] = factory_defaults
         overrides["common"] = common
         return (overrides,)
 

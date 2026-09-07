@@ -76,17 +76,14 @@ def with_vdn(tmp_path, model):
         for name, shape in shapes.items():
             tensors[f"{block}.{name}"] = torch.randn(shape).to(torch.bfloat16)
         tensors[f"{block}.beta_proj.weight"] = torch.randint(-30, 30, (2, 32), dtype=torch.int8)
-        tensors[f"{block}.scale"] = torch.tensor(0.01)
+        tensors[f"{block}.beta_proj.weight_scale"] = torch.tensor(0.01)
+        tensors[f"{block}.beta_proj.comfy_quant"] = torch.tensor(
+            list(b'{"format":"int8_tensorwise","convrot":true,"convrot_groupsize":32}'), dtype=torch.uint8)
     source = tmp_path / "original_branches.safetensors"
     save_file(tensors, str(source))
-    weights = []
-    for block in range(2):
-        values = {}
-        for name, shape in shapes.items():
-            quant = {"format": "int8_tensorwise"} if name == "beta_proj.weight" else None
-            values[name] = vdn_spec.LazyBranchTensor(str(source), f"{block}.{name}", torch.Size(shape),
-                torch.bfloat16, f"{block}.scale" if quant else None, quant)
-        weights.append(values)
+    descriptors = vdn_spec._lazy_branch_sd(str(source))
+    weights = [{name: descriptors[f"{block}.{name}"] for name in shapes} for block in range(2)]
+    assert weights[0]["beta_proj.weight"].dtype == torch.int8
     descriptor = dict(name="tiny-test", linear_head_dim=16, heads=2, head_dim=16)
     options = dict(NODE.SCHEMA["vdn"], retain_buffers="off", branch_weights="stream", short_conv=[])
     return NODE._restore_vdn(model, descriptor, weights, source.stat().st_size, options), source
@@ -130,6 +127,7 @@ def test_native_h3_round_trip_and_patch_once(tmp_path, variant):
     if state:
         quant = state.branches[0].w["beta_proj.weight"].resolve(torch.device("cpu"))
         assert quant.dtype == torch.bfloat16
+        assert quant._params.convrot and quant._params.convrot_groupsize == 32
         assert state.branches[0].w["beta_proj.weight"]._path == path
     if variant == "hybrid":
         assert saved["runtime"]["hybrid"]["dense_first_steps"] == 0
@@ -379,3 +377,84 @@ def test_unmaterialized_quantized_export(tmp_path, monkeypatch, quant_format):
     for piece, value in weight.state_dict(key).items():
         torch.testing.assert_close(value.reshape(-1).view(torch.uint8),
             expected[piece].reshape(-1).view(torch.uint8), rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("descriptor_dtype", ["int8", "bfloat16"])
+def test_branch_storage_dtype_preserves_quantization(tmp_path, descriptor_dtype):
+    from contextlib import ExitStack
+    model, _ = with_vdn(tmp_path, tiny_model())
+    _, state = NODE._capture(model)
+    path = tmp_path / "branch_only.safetensors"
+    with ExitStack() as stack:
+        tensors, descriptors = NODE._pack_branches(state, stack)
+        save_file(tensors, str(path))
+    for block in descriptors:
+        block["beta_proj.weight"]["dtype"] = descriptor_dtype
+    with safe_open(str(path), framework="pt") as handle:
+        weights, _ = NODE._unpack_branches(path, handle, {"branches": descriptors})
+    quant = weights[0]["beta_proj.weight"].resolve(torch.device("cpu"))
+    assert quant.dtype == torch.bfloat16
+    assert quant._params.convrot
+    assert quant._params.convrot_groupsize == 32
+    descriptors[0]["beta_proj.weight"]["dtype"] = "int8"
+    descriptors[0]["beta_proj.weight"].pop("quant")
+    with safe_open(str(path), framework="pt") as handle:
+        with pytest.raises(ValueError, match="missing quantization metadata"):
+            NODE._unpack_branches(path, handle, {"branches": descriptors})
+
+
+@pytest.mark.parametrize("profile,groups", [
+    ("VTS Hybrid", ["vdn", "hybrid", "sampling"]),
+    ("VDN-H3", ["vdn", "sampling"]), ("H3 SLA", ["sla", "sampling"]),
+])
+def test_factory_profiles_match_original_node_defaults(profile, groups):
+    import ast
+    from vdn_h3.nodes import ApplyVDNH3Advanced
+    saved = {group: deepcopy(NODE.SCHEMA[group]) for group in groups}
+    options = NODE.VTS_PreparedH3RuntimeOptions().execute(factory_defaults=profile)[0]
+    result = NODE._apply_common(saved, options)
+    if "vdn" in groups:
+        inputs = ApplyVDNH3Advanced.INPUT_TYPES()
+        inputs = dict(inputs["required"], **inputs["optional"])
+        fields = dict(NODE._VDN_FACTORY["common"], **NODE._VDN_FACTORY["advanced"]["vdn"])
+        names = {"radius": "window_radius", "chunk": "window_chunk",
+                 "enable_text_state": "text_state", "linear_enabled": "linear_branch"}
+        for key in fields:
+            assert result["vdn"][key] == inputs[names.get(key, key)][1]["default"]
+    if "hybrid" in groups:
+        inputs = NODE._hybrid().VTS_H3HybridAttention.INPUT_TYPES()["required"]
+        for key in NODE.SCHEMA["hybrid"]:
+            assert result["hybrid"][key] == inputs[key][1]["default"]
+    if "sla" in groups:
+        source = Path(NODE._sla().__file__).parent.parent / "sla_node.py"
+        cls = next(n for n in ast.parse(source.read_text()).body if isinstance(n, ast.ClassDef) and n.name == "H3SLAAttention")
+        execute = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "execute")
+        args = execute.args
+        defaults = {arg.arg: ast.literal_eval(value) for arg, value in zip(args.args[-len(args.defaults):], args.defaults)}
+        defaults.pop("enabled")
+        defaults["block_size"] = int(defaults["block_size"])
+        for key, value in defaults.items():
+            assert result["sla"][key] == value
+    assert result["sampling"] == saved["sampling"]
+
+
+def test_factory_overrides_and_saved_markers():
+    saved = {group: deepcopy(NODE.SCHEMA[group]) for group in ("vdn", "hybrid", "sampling")}
+    saved["hybrid"]["local_sparsity"] = 0.85
+    saved["hybrid"]["dense_last_steps"] = 4
+    saved["vdn"]["retain_buffers"] = "off"
+    options = NODE.VTS_PreparedH3RuntimeOptions().execute(factory_defaults="VTS Hybrid",
+        local_sparsity=-1, dense_first_steps=0, retain_buffers="saved",
+        advanced_json='{"hybrid":{"verbose":false}}')[0]
+    result = NODE._apply_common(saved, options)
+    assert result["hybrid"]["local_sparsity"] == 0.85
+    assert result["hybrid"]["dense_first_steps"] == 0
+    assert result["hybrid"]["dense_last_steps"] == 1
+    assert not result["hybrid"]["verbose"]
+    assert result["vdn"]["retain_buffers"] == "off"
+
+
+def test_factory_profile_mismatch_is_clear():
+    options = NODE.VTS_PreparedH3RuntimeOptions().execute(factory_defaults="VTS Hybrid")[0]
+    with pytest.raises(ValueError, match="Select the H3 SLA factory profile"):
+        NODE._apply_common({"sla": NODE.SCHEMA["sla"], "sampling": NODE.SCHEMA["sampling"]}, options)
