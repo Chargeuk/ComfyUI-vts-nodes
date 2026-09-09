@@ -2,7 +2,7 @@ import torch
 import random
 
 import comfy.samplers
-from nodes import common_ksampler
+from nodes import KSamplerAdvanced, common_ksampler
 
 
 def _clone_latent(latent):
@@ -117,6 +117,60 @@ def _merge_latent_outputs(latent_outputs):
     return merged
 
 
+def _sample_batch(model, seed, seed_per_image, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise,
+                  *, disable_noise=False, start_step=None, last_step=None, force_full_denoise=False):
+    model = _first_value(model, "model")
+    base_seed = _resolve_base_seed(seed)
+    seed_per_image = _first_value(seed_per_image, "seed_per_image")
+    steps = int(_first_value(steps, "steps"))
+    cfg = float(_first_value(cfg, "cfg"))
+    sampler_name = _first_value(sampler_name, "sampler_name")
+    scheduler = _first_value(scheduler, "scheduler")
+    denoise = float(_first_value(denoise, "denoise"))
+
+    positive_values = _normalize_conditioning_list(positive, "positive")
+    negative_values = _normalize_conditioning_list(negative, "negative")
+    latent_values = _split_latent_batches(latent_image)
+
+    output_count = max(len(positive_values), len(negative_values), len(latent_values), 1)
+    rng = random.Random(base_seed) if seed_per_image == "randomize" else None
+
+    sampled_latents = []
+    for index in range(output_count):
+        if seed_per_image == "fixed":
+            current_seed = base_seed
+        elif seed_per_image == "increment":
+            current_seed = base_seed + index
+        elif seed_per_image == "decrement":
+            current_seed = base_seed - index
+        else:
+            current_seed = rng.randint(0, 0xFFFFFFFFFFFFFFFF)
+        current_positive = _pick_with_repeat(positive_values, index)
+        current_negative = _pick_with_repeat(negative_values, index)
+        current_latent = _pick_with_repeat(latent_values, index)
+
+        sampled = common_ksampler(
+            model,
+            current_seed,
+            steps,
+            cfg,
+            sampler_name,
+            scheduler,
+            current_positive,
+            current_negative,
+            current_latent,
+            denoise=denoise,
+            disable_noise=disable_noise,
+            start_step=start_step,
+            last_step=last_step,
+            force_full_denoise=force_full_denoise,
+        )[0]
+        sampled_latents.append(sampled)
+
+    merged_latent = _merge_latent_outputs(sampled_latents)
+    return (merged_latent,)
+
+
 class VTS_KSampler:
     @classmethod
     def INPUT_TYPES(cls):
@@ -187,59 +241,47 @@ class VTS_KSampler:
     )
 
     def sample(self, model, seed, seed_per_image, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise):
-        model = _first_value(model, "model")
-        base_seed = _resolve_base_seed(seed)
-        seed_per_image = _first_value(seed_per_image, "seed_per_image")
-        steps = int(_first_value(steps, "steps"))
-        cfg = float(_first_value(cfg, "cfg"))
-        sampler_name = _first_value(sampler_name, "sampler_name")
-        scheduler = _first_value(scheduler, "scheduler")
-        denoise = float(_first_value(denoise, "denoise"))
+        return _sample_batch(model, seed, seed_per_image, steps, cfg, sampler_name, scheduler,
+                             positive, negative, latent_image, denoise)
 
-        positive_values = _normalize_conditioning_list(positive, "positive")
-        negative_values = _normalize_conditioning_list(negative, "negative")
-        latent_values = _split_latent_batches(latent_image)
 
-        output_count = max(len(positive_values), len(negative_values), len(latent_values), 1)
-        rng = random.Random(base_seed) if seed_per_image == "randomize" else None
+class VTS_KSamplerAdvanced(VTS_KSampler):
+    @classmethod
+    def INPUT_TYPES(cls):
+        inputs = KSamplerAdvanced.INPUT_TYPES()
+        vts_inputs = VTS_KSampler.INPUT_TYPES()["required"]
+        required = {}
+        for name, definition in inputs["required"].items():
+            required[name] = vts_inputs[name] if name in {"positive", "negative", "latent_image"} else definition
+            if name == "noise_seed":
+                required["seed_per_image"] = vts_inputs["seed_per_image"]
+        inputs["required"] = required
+        return inputs
 
-        sampled_latents = []
-        for index in range(output_count):
-            if seed_per_image == "fixed":
-                current_seed = base_seed
-            elif seed_per_image == "increment":
-                current_seed = base_seed + index
-            elif seed_per_image == "decrement":
-                current_seed = base_seed - index
-            else:
-                current_seed = rng.randint(0, 0xFFFFFFFFFFFFFFFF)
-            current_positive = _pick_with_repeat(positive_values, index)
-            current_negative = _pick_with_repeat(negative_values, index)
-            current_latent = _pick_with_repeat(latent_values, index)
+    DESCRIPTION = (
+        "ComfyUI's advanced sampling controls with VTS per-image seeds, conditioning lists, "
+        "and sequential latent-batch processing."
+    )
 
-            sampled = common_ksampler(
-                model,
-                current_seed,
-                steps,
-                cfg,
-                sampler_name,
-                scheduler,
-                current_positive,
-                current_negative,
-                current_latent,
-                denoise=denoise,
-            )[0]
-            sampled_latents.append(sampled)
-
-        merged_latent = _merge_latent_outputs(sampled_latents)
-        return (merged_latent,)
+    def sample(self, model, add_noise, noise_seed, seed_per_image, steps, cfg, sampler_name, scheduler,
+               positive, negative, latent_image, start_at_step, end_at_step, return_with_leftover_noise):
+        return _sample_batch(
+            model, noise_seed, seed_per_image, steps, cfg, sampler_name, scheduler,
+            positive, negative, latent_image, denoise=1.0,
+            disable_noise=_first_value(add_noise, "add_noise") == "disable",
+            start_step=int(_first_value(start_at_step, "start_at_step")),
+            last_step=int(_first_value(end_at_step, "end_at_step")),
+            force_full_denoise=_first_value(return_with_leftover_noise, "return_with_leftover_noise") != "enable",
+        )
 
 
 NODE_CLASS_MAPPINGS = {
     "VTS KSampler": VTS_KSampler,
+    "VTS KSampler (Advanced)": VTS_KSamplerAdvanced,
 }
 
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "VTS KSampler": "VTS KSampler",
+    "VTS KSampler (Advanced)": "VTS KSampler (Advanced)",
 }
