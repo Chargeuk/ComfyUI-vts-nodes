@@ -1,33 +1,47 @@
 # Merserk Neural Enhance VTS
 
-Installed in this machine's WSL ComfyUI VTS package. Search for **Merserk Neural Enhance VTS** (node ID: `VTS Merserk Enhance`).
+Search for **Merserk Neural Enhance VTS** (node ID `VTS Merserk Enhance`). Connect an IMAGE batch or VTS DiskImage. The output is an IMAGE socket carrying either a normal **Tensor** or **DiskImage**, as selected by `return_type`.
 
-Server URL: **http://192.168.1.1:7865**. The Windows Merserk server must be running. This address also opens its GUI. The server listens on this machine's Ethernet LAN address; its firewall rule permits the local `192.168.1.0/24` subnet on the Private network profile.
+## Scaling and enhancement
 
-## Use
+| Enable scaling | Enable neural rendering | Result |
+|---|---|---|
+| Off | Off | Unchanged image; no server needed. Converts storage type only if requested. |
+| On | Off | RTX VSR for enlargement; local Lanczos for reduction. |
+| Off | On | Neural enhancement at the original dimensions. |
+| On | On | DLSS enlargement and neural enhancement, or local Lanczos reduction followed by neural enhancement at 1×. |
 
-Connect a normal IMAGE batch or VTS DiskImage to `image`. Choose `return_type`:
+The direction is evaluated **after cropping**. If either dimension needs to shrink, including a resize that enlarges the other dimension, the resize uses local Lanczos. A crop with no remaining resize needs no VSR call. Local-only paths work without a running server or valid server URL.
 
-- **Tensor:** a normal ComfyUI IMAGE batch, ready for Preview Image, Save Image, or other image nodes.
-- **DiskImage:** final lossless PNGs in a separate folder for each execution. The returned object connects to VTS nodes that accept DiskImage.
+`sizing_mode = Scale to Min` shares the exact dimension helper with **VTS Images Scale To Min**:
 
-The output socket is IMAGE in both cases, following VTS's convention.
+- `smallMaxSize` and `largeMaxSize` are sorted, so entering them backwards gives the same result.
+- `scale_type = small` fits the short-side target within the long-side limit, preserving aspect ratio apart from the existing near-aspect snapping and divisibility rules.
+- `scale_type = large` uses both side sizes, oriented to the source image. This can change aspect ratio.
+- `scale_type = max` sets the longest side to the larger size and calculates the other side from the source aspect ratio.
+- `divisible_by` rounds each calculated side down to a multiple; 0 or 1 disables this rounding. A result of zero pixels raises an actionable error.
+- `crop = center` crops centrally to the target aspect ratio before resizing. `disabled` stretches when the aspect ratio changes. Neither adds borders.
 
-Set the upscale factor, neural rendering settings, and iterations. For example, factor **2** and **3 iterations** means upscale/enhance once, then enhance the previous result twice at the same resolution. Only the final result of each input frame is returned.
+For example, a 1920×1080 image with side sizes **720 and 1280** becomes **1280×720** using local Lanczos. Turn neural rendering on to enhance that smaller result. A 640×360 image with the same settings enlarges to **1280×720**, using RTX VSR with neural rendering off or DLSS with neural rendering on.
 
-DiskImage inputs are read one frame at a time. DiskImage outputs are saved one frame at a time; Tensor outputs necessarily hold the complete returned batch in RAM. `output_dir` is a path on the **ComfyUI client**, not on the Windows server. Blank uses ComfyUI's configured output directory under `merserk/render-...`. Files use `image_000000.png`, `image_000001.png`, etc. Each run gets its own directory.
+`dlss_quality` selects the DLSS working resolution for enlargement in Scale to Min mode; it does not alter the requested output dimensions. `vsr_quality` selects RTX VSR quality when neural rendering is off. All existing neural preset, style, strength, mask, and model-preset controls remain available.
 
-Transfers use PNG image data, so no shared drive or Windows/WSL path translation is required. The API uses the node's settings without changing the GUI's saved settings. Merserk can render one job at a time; a conflicting GUI render is reported as busy. Interrupting the node requests cancellation of that node's current render. An incomplete DiskImage batch is removed on failure.
+`iterations` counts neural passes. Scaling happens once; later passes enhance the preceding output at 1×. Only the final image per input is saved. Iterations and neural settings are ignored when neural rendering is off.
 
-## Add this node to another ComfyUI installation
+## Existing workflows
 
-1. Install the VTS node package there if it is not already present.
-2. Copy `py/VTS_MerserkEnhance.py` from this folder into `ComfyUI/custom_nodes/ComfyUI-vts-nodes/py/`.
-3. In that ComfyUI installation's Python environment, run `python -m pip install -r requirements.txt` using this folder's requirements file.
-4. Restart ComfyUI and refresh the browser. Use **http://192.168.1.1:7865** in the node.
+`sizing_mode = Multiplier` retains `upscaling_factor` and its original even-pixel rounding. Old API prompts that omit the new inputs keep this mode. The included browser extension selects Multiplier when loading workflows saved with the original fourteen widgets. New nodes default to Scale to Min. Refresh ComfyUI's browser after updating the package.
 
-The server already has the required `/vts_enhance` and `/vts_cancel` Gradio API endpoints installed. An unmodified upstream Merserk installation does not expose these endpoints.
+## Windows server and limits
 
-## Verification
+Use **http://192.168.1.1:7865** on this LAN. This also opens Merserk's GUI. The Windows server listens on the Ethernet LAN address, with its firewall rule allowing the local `192.168.1.0/24` subnet on the Private network profile.
 
-Live tests from WSL through the Windows server passed for all four input/output combinations, each with a two-image batch, 1.5× initial upscale, and two iterations. Inputs of 256×256 returned 384×384 images. DiskImage tests included a source sequence beginning at index 7. Unit checks covered partial-output cleanup, cancellation, timeout, and URL validation.
+The server requires the custom `/vts_enhance` and `/vts_cancel` API, including the exact-size/VSR extension. An unmodified upstream Merserk installation does not expose these endpoints. The updated API retains old neural requests and adds `operation` (`neural` or `vsr`), `target_width`, `target_height`, and `vsr_quality` (1–4). Both target dimensions must be supplied together. Neural settings and `iterations` have their existing names. Exact-size requests apply the supplied image to the full target without adding letterboxing; the node performs any requested crop before uploading.
+
+DLSS requires source and negotiated working dimensions of at least 64×64, with target longest side at most 7680 and shortest side at most 4320 (portrait also works). Higher DLSS performance modes need larger targets to keep their working dimensions above 64. RTX VSR accepts only non-shrinking dimensions and has a 16384-pixel texture limit per side; GPU memory can impose a lower practical limit. These GPU limits do not restrict local downscaling or bypass. GPU errors are reported, not silently replaced with another method.
+
+Transfers use PNG, with no shared drive or Windows/WSL path translation. RGB/RGBA channels are preserved. The API uses the node's settings without changing saved GUI settings. A conflicting GUI GPU render reports busy. Interrupts and timeouts cancel only this node's current request.
+
+DiskImage inputs and outputs are processed one frame at a time; Tensor outputs hold the complete result batch in RAM. `output_dir` belongs to the **ComfyUI client**. Blank uses `output/merserk/render-...`. An incomplete output directory is removed on failure. Bypass with the same storage type returns the original object without rewriting files or quantizing tensors.
+
+To use another ComfyUI installation, update the **whole VTS package**, including `py/vtsUtils/vts_image_sizing.py` and `web/vts_merserk.js`, install its requirements, and restart that ComfyUI installation. Point the node at the LAN server above.

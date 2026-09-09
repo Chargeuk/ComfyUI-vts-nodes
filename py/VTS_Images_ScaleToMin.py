@@ -10,9 +10,11 @@ if import_dir not in sys.path:
 
 from vtsUtils import DiskImage, transform_and_save_images, get_default_image_input_types, deep_merge, ensure_image_defaults
 
+from vts_image_sizing import ScaleToMinDimensions
+
 MAX_RESOLUTION = 16384
 
-class VTS_Images_ScaleToMin:
+class VTS_Images_ScaleToMin(ScaleToMinDimensions):
     upscale_methods = [
         "nearest-exact", "bilinear", "area", "bicubic", "lanczos",
         "rtx-vsr-low", "rtx-vsr-medium", "rtx-vsr-high", "rtx-vsr-ultra",
@@ -160,25 +162,6 @@ class VTS_Images_ScaleToMin:
     def _rtx_vsr_quality(self, upscale_method):
         return upscale_method.removeprefix("rtx-vsr-").upper()
 
-    def _center_crop_for_aspect(self, image, width, height):
-        old_height, old_width = image.shape[1], image.shape[2]
-        old_aspect = old_width / old_height
-        new_aspect = width / height
-
-        x = 0
-        y = 0
-        if old_aspect > new_aspect:
-            x = round((old_width - old_width * (new_aspect / old_aspect)) / 2)
-        elif old_aspect < new_aspect:
-            y = round((old_height - old_height * (old_aspect / new_aspect)) / 2)
-
-        if x == 0 and y == 0:
-            return image
-
-        cropped = image[:, y:old_height - y, x:old_width - x, :]
-        print(f"VTS_Images_ScaleToMin - RTX VSR center-cropped from {old_width}x{old_height} to {cropped.shape[2]}x{cropped.shape[1]}")
-        return cropped
-
     def _scale_tensor_rtx_vsr(self, image, width, height, quality):
         import torch
         import nvvfx
@@ -219,93 +202,6 @@ class VTS_Images_ScaleToMin:
 
         return out_tensor.clamp(0, 1)
 
-    def _calculate_target_dimensions(self, original_width, original_height,
-                                     smallMaxSize, largeMaxSize, divisible_by,
-                                     scale_type):
-        # Treat the values as side limits even if they were entered backwards.
-        smallMaxSize, largeMaxSize = sorted((smallMaxSize, largeMaxSize))
-
-        largest_side = max(original_height, original_width)
-        smallest_side = min(original_height, original_width)
-        aspect_ratio = largest_side / smallest_side
-
-        new_largest_side = round(smallMaxSize * aspect_ratio)
-        new_smallest_side = round(largeMaxSize / aspect_ratio)
-
-        if scale_type == "small":
-            width, height = self.getSmallDimensions(
-                original_width,
-                original_height,
-                smallMaxSize,
-                largeMaxSize,
-                new_largest_side,
-                new_smallest_side,
-            )
-            width, height = self._snap_near_aspect_dimensions(
-                original_width,
-                original_height,
-                width,
-                height,
-                smallMaxSize,
-                largeMaxSize,
-                divisible_by,
-            )
-        elif scale_type == "large":
-            width, height = self.getLargeDimensions(
-                original_width, original_height, smallMaxSize, largeMaxSize)
-        else:
-            width, height = self.getMaxDimensions(
-                original_width, original_height, smallMaxSize, largeMaxSize)
-
-        if divisible_by > 1:
-            width -= width % divisible_by
-            height -= height % divisible_by
-
-        return width, height
-
-    def _snap_near_aspect_dimensions(self, original_width, original_height,
-                                     width, height, smallMaxSize,
-                                     largeMaxSize, divisible_by):
-        if original_width < original_height:
-            target_width, target_height = smallMaxSize, largeMaxSize
-        else:
-            target_width, target_height = largeMaxSize, smallMaxSize
-
-        tolerance = max(1, divisible_by)
-        if (abs(width - target_width) <= tolerance and
-                abs(height - target_height) <= tolerance):
-            return target_width, target_height
-
-        return width, height
-
-    def getSmallDimensions(self, original_width, original_height, smallMaxSize, largeMaxSize, new_largest_side, new_smallest_side):
-        if new_largest_side <= largeMaxSize:
-            width = smallMaxSize if original_width < original_height else new_largest_side
-            height = smallMaxSize if original_height < original_width else new_largest_side
-        else:
-            width = new_smallest_side if original_width < original_height else largeMaxSize
-            height = new_smallest_side if original_height < original_width else largeMaxSize
-        return width, height
-
-    def getLargeDimensions(self, original_width, original_height, smallMaxSize, largeMaxSize):
-        if original_width < original_height:
-            width = smallMaxSize
-            height = largeMaxSize
-        else:
-            width = largeMaxSize
-            height = smallMaxSize
-        return width, height
-    
-    def getMaxDimensions(self, original_width, original_height, smallMaxSize, largeMaxSize):
-        if original_width < original_height:
-            height = largeMaxSize
-            heightRatio = height / original_height
-            width = round(original_width * heightRatio)
-        else:
-            width = largeMaxSize
-            widthRatio = width / original_width
-            height = round(original_height * widthRatio)
-        return width, height
 
 
 # A dictionary that contains all nodes you want to export with their names
