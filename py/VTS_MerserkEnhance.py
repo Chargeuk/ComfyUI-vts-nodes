@@ -1,3 +1,5 @@
+import base64
+import io
 import json
 import os
 import shutil
@@ -13,7 +15,7 @@ from urllib.parse import urlsplit
 import numpy as np
 import torch
 from PIL import Image
-from gradio_client import Client, handle_file
+from gradio_client import Client
 
 import folder_paths
 from comfy import model_management
@@ -68,7 +70,7 @@ class VTSMerserkEnhance(ScaleToMinDimensions):
     @staticmethod
     def _request(client, source, parameters, timeout_seconds, index):
         request_id = uuid.uuid4().hex
-        job = client.submit(handle_file(str(source)), json.dumps(parameters), request_id, api_name="/vts_enhance")
+        job = client.submit(source, json.dumps(parameters), request_id, api_name="/vts_enhance_memory")
         deadline = time.monotonic() + timeout_seconds
         try:
             while True:
@@ -117,88 +119,89 @@ class VTSMerserkEnhance(ScaleToMinDimensions):
                 saved_directory = Path(tempfile.mkdtemp(prefix="render-", dir=destination.resolve()))
             frames = []
             progress = ProgressBar(count)
-            with tempfile.TemporaryDirectory(prefix="vts-merserk-") as temporary:
-                client = None
-                try:
-                    for index in range(count):
-                        model_management.throw_exception_if_processing_interrupted()
-                        frame = image[index]
-                        if frame.ndim != 3 or frame.shape[-1] not in (3, 4):
-                            raise ValueError("Merserk expects RGB or RGBA images in BHWC layout.")
-                        mode = "RGBA" if frame.shape[-1] == 4 else "RGB"
-                        height, width = frame.shape[:2]
-                        target_width, target_height = width, height
-                        factor = 1.0
-                        if enable_scaling:
-                            if sizing_mode == "Scale to Min":
-                                target_width, target_height = self._calculate_target_dimensions(
-                                    width, height, smallMaxSize, largeMaxSize, divisible_by, scale_type)
-                                factor = {"Quality": 1.5, "Balanced": 1.724, "Performance": 2.0,
-                                          "Ultra Performance": 3.0}[dlss_quality]
-                            elif sizing_mode == "Multiplier":
-                                factor = float(upscaling_factor)
-                                # Match Merserk's legacy rounding to the nearest even pixel.
-                                target_width = max(2, int(width * factor / 2 + .5) * 2)
-                                target_height = max(2, int(height * factor / 2 + .5) * 2)
-                            else:
-                                raise ValueError("Unknown sizing mode.")
-                            if min(target_width, target_height) < 1:
-                                raise ValueError("Sizing produced a zero dimension. Increase the side sizes or reduce divisible_by.")
-                            if crop == "center" and (width, height) != (target_width, target_height):
-                                frame = self._center_crop_for_aspect(frame.unsqueeze(0), target_width, target_height)[0]
-                        height, width = frame.shape[:2]
-                        shrinking = target_width < width or target_height < height
-                        resizing = (target_width, target_height) != (width, height)
-                        remote = enable_neural_rendering or (resizing and not shrinking)
-                        parameters = None
+            client = None
+            try:
+                for index in range(count):
+                    model_management.throw_exception_if_processing_interrupted()
+                    frame = image[index]
+                    if frame.ndim != 3 or frame.shape[-1] not in (3, 4):
+                        raise ValueError("Merserk expects RGB or RGBA images in BHWC layout.")
+                    mode = "RGBA" if frame.shape[-1] == 4 else "RGB"
+                    height, width = frame.shape[:2]
+                    target_width, target_height = width, height
+                    factor = 1.0
+                    if enable_scaling:
+                        if sizing_mode == "Scale to Min":
+                            target_width, target_height = self._calculate_target_dimensions(
+                                width, height, smallMaxSize, largeMaxSize, divisible_by, scale_type)
+                            factor = {"Quality": 1.5, "Balanced": 1.724, "Performance": 2.0,
+                                      "Ultra Performance": 3.0}[dlss_quality]
+                        elif sizing_mode == "Multiplier":
+                            factor = float(upscaling_factor)
+                            # Match Merserk's legacy rounding to the nearest even pixel.
+                            target_width = max(2, int(width * factor / 2 + .5) * 2)
+                            target_height = max(2, int(height * factor / 2 + .5) * 2)
+                        else:
+                            raise ValueError("Unknown sizing mode.")
+                        if min(target_width, target_height) < 1:
+                            raise ValueError("Sizing produced a zero dimension. Increase the side sizes or reduce divisible_by.")
+                        if crop == "center" and (width, height) != (target_width, target_height):
+                            frame = self._center_crop_for_aspect(frame.unsqueeze(0), target_width, target_height)[0]
+                    height, width = frame.shape[:2]
+                    shrinking = target_width < width or target_height < height
+                    resizing = (target_width, target_height) != (width, height)
+                    remote = enable_neural_rendering or (resizing and not shrinking)
+                    parameters = None
+                    if remote:
+                        if enable_neural_rendering:
+                            parameters = dict(neural_parameters, operation="neural",
+                                              upscaling_factor=factor if resizing and not shrinking else 1.0)
+                        else:
+                            parameters = dict(operation="vsr", vsr_quality={"Low": 1, "Medium": 2, "High": 3, "Ultra": 4}[vsr_quality])
+                        parameters.update(target_width=target_width, target_height=target_height)
+                    if not remote and not resizing and saved_directory is None:
+                        processed_frame = frame.detach().cpu()
+                        enhanced = None
+                    else:
+                        pixels = frame.detach().cpu().float().clamp(0, 1).mul(255).round().to(torch.uint8).numpy()
+                        enhanced = Image.fromarray(pixels)
+                        del pixels
+                        if shrinking:
+                            enhanced = enhanced.resize((target_width, target_height), Image.Resampling.LANCZOS)
                         if remote:
-                            if enable_neural_rendering:
-                                parameters = dict(neural_parameters, operation="neural",
-                                                  upscaling_factor=factor if resizing and not shrinking else 1.0)
-                            else:
-                                parameters = dict(operation="vsr", vsr_quality={"Low": 1, "Medium": 2, "High": 3, "Ultra": 4}[vsr_quality])
-                            parameters.update(target_width=target_width, target_height=target_height)
-                        if not remote and not resizing and saved_directory is None:
-                            processed_frame = frame.detach().cpu()
-                            enhanced = None
-                        else:
-                            pixels = frame.detach().cpu().float().clamp(0, 1).mul(255).round().to(torch.uint8).numpy()
-                            enhanced = Image.fromarray(pixels)
-                            del pixels
-                            if shrinking:
-                                enhanced = enhanced.resize((target_width, target_height), Image.Resampling.LANCZOS)
-                            if remote:
-                                if client is None:
-                                    server_url = server_url.strip().rstrip("/")
-                                    address = urlsplit(server_url)
-                                    if address.scheme not in {"http", "https"} or not address.netloc or address.query or address.fragment:
-                                        raise ValueError("Enter the Merserk server URL, for example http://192.168.1.1:7865.")
-                                    client = Client(server_url, verbose=False, download_files=temporary,
-                                                    analytics_enabled=False, httpx_kwargs={"timeout": timeout_seconds})
-                                source = Path(temporary) / "input.png"
-                                enhanced.save(source)
-                                returned_path = self._request(client, source, parameters, timeout_seconds, index)
-                                model_management.throw_exception_if_processing_interrupted()
-                                with Image.open(returned_path) as returned:
-                                    enhanced = returned.convert(mode)
-                                Path(returned_path).unlink()
-                                if enhanced.size != (target_width, target_height):
-                                    raise ValueError("Merserk returned the wrong dimensions. Install the updated VTS API on the server.")
-                            if saved_directory is None:
-                                processed_frame = torch.from_numpy(np.array(enhanced, dtype=np.float32) / 255.0)
-                        shape = (count, target_height, target_width, len(mode))
-                        if index and shape != output_shape:
-                            raise ValueError("All returned images must have the same dimensions for an IMAGE batch.")
-                        output_shape = shape
-                        if saved_directory is not None:
-                            enhanced.save(saved_directory / f"image_{index:06d}.png")
-                        else:
-                            frames.append(processed_frame)
-                        del frame, enhanced
-                        progress.update(1)
-                finally:
-                    if client is not None:
-                        client.close()
+                            if client is None:
+                                server_url = server_url.strip().rstrip("/")
+                                address = urlsplit(server_url)
+                                if address.scheme not in {"http", "https"} or not address.netloc or address.query or address.fragment:
+                                    raise ValueError("Enter the Merserk server URL, for example http://192.168.1.1:7865.")
+                                client = Client(server_url, verbose=False, download_files=False,
+                                                analytics_enabled=False, httpx_kwargs={"timeout": timeout_seconds})
+                            with io.BytesIO() as buffer:
+                                enhanced.save(buffer, format="PNG")
+                                encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+                            returned_png = self._request(client, encoded, parameters, timeout_seconds, index)
+                            del encoded
+                            model_management.throw_exception_if_processing_interrupted()
+                            with Image.open(io.BytesIO(base64.b64decode(returned_png, validate=True))) as returned:
+                                enhanced = returned.convert(mode)
+                            del returned_png
+                            if enhanced.size != (target_width, target_height):
+                                raise ValueError("Merserk returned the wrong dimensions. Install the updated VTS API on the server.")
+                        if saved_directory is None:
+                            processed_frame = torch.from_numpy(np.array(enhanced, dtype=np.float32) / 255.0)
+                    shape = (count, target_height, target_width, len(mode))
+                    if index and shape != output_shape:
+                        raise ValueError("All returned images must have the same dimensions for an IMAGE batch.")
+                    output_shape = shape
+                    if saved_directory is not None:
+                        enhanced.save(saved_directory / f"image_{index:06d}.png")
+                    else:
+                        frames.append(processed_frame)
+                    del frame, enhanced
+                    progress.update(1)
+            finally:
+                if client is not None:
+                    client.close()
             if saved_directory is not None:
                 output = DiskImage(prefix="image", start_sequence=0, number_of_images=count,
                                    output_dir=str(saved_directory), format="png", image=None)

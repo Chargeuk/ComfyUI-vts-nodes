@@ -1,3 +1,5 @@
+import base64
+import io
 import importlib.util
 import json
 import sys
@@ -28,13 +30,14 @@ class Job:
 class RecordingClient:
     calls = []
     def __init__(self, url, **kwargs):
-        self.directory = Path(kwargs['download_files'])
+        assert kwargs['download_files'] is False
     def submit(self, source, parameters, request_id, api_name):
+        assert api_name == '/vts_enhance_memory'
         params = json.loads(parameters)
-        with Image.open(source['path']) as image:
+        with Image.open(io.BytesIO(base64.b64decode(source))) as image, io.BytesIO() as buffer:
             self.calls.append((image.copy(), params))
-            image.resize((params['target_width'], params['target_height'])).save(self.directory / 'result.png')
-        return Job(str(self.directory / 'result.png'))
+            image.resize((params['target_width'], params['target_height'])).save(buffer, format='PNG')
+            return Job(base64.b64encode(buffer.getvalue()).decode('ascii'))
     def close(self):
         pass
 
