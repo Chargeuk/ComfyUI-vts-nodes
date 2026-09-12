@@ -9,3 +9,5 @@ kornia>=0.7.1
 soundfile>=0.13.1
 
 gradio_client>=1.13.3
+
+websockets>=15.0.1

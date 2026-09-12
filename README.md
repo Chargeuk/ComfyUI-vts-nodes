@@ -35,3 +35,11 @@ explicit pixel column. It has the same `width`, `height`, `seam_width`, and
 in-strip `feather` controls as a centred panorama seam mask, plus
 `strip_center_x`, measured from the left edge. A strip that extends beyond the
 canvas is clipped while retaining its original feather profile.
+
+## Merserk frame interpolation
+
+**VTS Merserk Frame Interpolate** sends IMAGE or DiskImage sequences to a Windows
+Merserk server using lossless PNG streaming. It uploads each original once and
+downloads only intermediate frames, with 2x, approximate 3x, 4x and 8x options.
+See [Merserk frame interpolation](docs/MERSERK_INTERPOLATION.md) for setup,
+timing, storage choices and the required server endpoint.
