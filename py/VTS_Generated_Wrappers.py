@@ -35,9 +35,9 @@ _MAX_COMBO_OPTIONS = 128
 _MAX_OUTPUT_COUNT = 8
 _REGISTRATION_ATTEMPTS = 120
 _REGISTRATION_DELAY_SECONDS = 0.5
-_SAFE_SHARED_CONFIG_KEYS = {"tooltip", "lazy", "advanced"}
+_SAFE_SHARED_CONFIG_KEYS = {"tooltip", "lazy", "advanced", "forceInput"}
 _SAFE_COMBO_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default"}
-_SAFE_INT_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default", "min", "max", "step"}
+_SAFE_INT_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default", "min", "max", "step", "control_after_generate"}
 _SAFE_FLOAT_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default", "min", "max", "step", "round"}
 _SAFE_STRING_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default", "multiline", "placeholder", "dynamicPrompts"}
 _SAFE_V3_IO_TYPES = {
@@ -194,6 +194,7 @@ def _is_safe_shared_config(config):
         _is_string_or_none(config.get("tooltip"))
         and _is_bool_or_none(config.get("lazy"))
         and _is_bool_or_none(config.get("advanced"))
+        and _is_bool_or_none(config.get("forceInput"))
     )
 
 
@@ -209,6 +210,8 @@ def _is_safe_combo_spec(raw_type, config):
 
 def _is_safe_int_spec(config):
     return (
+        _is_bool_or_none(config.get("control_after_generate"))
+        and
         _has_only_known_keys(config, _SAFE_INT_CONFIG_KEYS)
         and _is_safe_shared_config(config)
         and _is_number_or_none(config.get("default"))

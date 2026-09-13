@@ -38,6 +38,11 @@ class LegacyContextTests(unittest.TestCase):
         self.assertEqual(result, {"ui": {"text": ["42"]}, "result": ("42",)})
         self.assertIs(ContextNode.calls[-1][1], context)
         self.assertEqual(ContextNode.calls[-1][3], {"option_15": 7})
+    def test_seed_controls_and_forced_inputs_remain_eligible(self):
+        self.assertTrue(MODULE._is_safe_legacy_spec(("INT", {"default": 0, "control_after_generate": True})))
+        self.assertTrue(MODULE._is_safe_legacy_spec(("INT", {"forceInput": True})))
+        self.assertFalse(MODULE._is_safe_legacy_spec(("INT", {"control_after_generate": object()})))
+
     def test_unknown_hidden_types_stay_excluded(self):
         with mock.patch.object(ContextNode, "INPUT_TYPES", return_value={
                 "required": {"images": ("IMAGE",)}, "hidden": {"token": "AUTH_TOKEN"}}):
