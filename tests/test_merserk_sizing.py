@@ -81,7 +81,7 @@ class MerserkSizingTests(unittest.TestCase):
             result = self.run_node(enable_scaling=False, iterations=3)
         params = RecordingClient.calls[0][1]
         self.assertEqual((params['target_width'], params['target_height']), (241, 121))
-        self.assertEqual(params['upscaling_factor'], 1)
+        self.assertNotIn('upscaling_factor', params)
         self.assertEqual(params['iterations'], 3)
         self.assertEqual(result.shape, self.image.shape)
 
@@ -90,7 +90,7 @@ class MerserkSizingTests(unittest.TestCase):
             self.run_node(smallMaxSize=80, largeMaxSize=160, iterations=2)
         source, params = RecordingClient.calls[0]
         self.assertEqual(source.size, (160, 80))
-        self.assertEqual(params['upscaling_factor'], 1)
+        self.assertNotIn('upscaling_factor', params)
         self.assertEqual(params['iterations'], 2)
 
     def test_center_crop_happens_before_direction_choice(self):
@@ -101,11 +101,13 @@ class MerserkSizingTests(unittest.TestCase):
         self.assertEqual(source.size, (120, 120))
         self.assertEqual(params['operation'], 'vsr')
 
-    def test_mixed_axis_resize_without_crop_is_local(self):
-        with patch.object(module, 'Client', side_effect=AssertionError('network')):
+    def test_mixed_axis_resize_shrinks_locally_and_enlarges_with_vsr(self):
+        with patch.object(module, 'Client', RecordingClient):
             result = self.run_node(smallMaxSize=180, largeMaxSize=180, crop='disabled',
-                                   scale_type='large', enable_neural_rendering=False, server_url='offline')
+                                   scale_type='large', enable_neural_rendering=False)
         self.assertEqual(tuple(result.shape), (1, 180, 180, 3))
+        self.assertEqual(RecordingClient.calls[0][0].size, (180,120))
+        self.assertEqual(RecordingClient.calls[0][1]['operation'], 'vsr')
 
     def test_no_size_change_does_not_contact_server(self):
         with patch.object(module, 'Client', side_effect=AssertionError('network')):
@@ -116,13 +118,33 @@ class MerserkSizingTests(unittest.TestCase):
         with patch.object(module, 'Client', RecordingClient):
             result = self.run_node(smallMaxSize=333, largeMaxSize=181, divisible_by=1, scale_type='large')
         self.assertEqual(tuple(result.shape), (1, 181, 333, 3))
-        self.assertEqual(RecordingClient.calls[0][1]['upscaling_factor'], 1.5)
+        self.assertEqual(RecordingClient.calls[0][1]['vsr_quality'], 4)
 
     def test_old_api_prompt_uses_multiplier(self):
         with patch.object(module, 'Client', RecordingClient):
             result = self.node.enhance(self.image, upscaling_factor='2')[0]
         self.assertEqual(tuple(result.shape), (1, 240, 480, 3))
-        self.assertEqual(RecordingClient.calls[0][1]['upscaling_factor'], 2)
+        self.assertNotIn('upscaling_factor', RecordingClient.calls[0][1])
+
+    def test_neural_controls_and_both_loops_are_sent_in_one_request(self):
+        with patch.object(module, 'Client', RecordingClient):
+            self.run_node(iterations=3, nr_passes=2, vsr_quality='High', nr_color_strength=.7,
+                          tone_preservation=.4, face_skin_protection=.2, grain_preservation=.3)
+        self.assertEqual(len(RecordingClient.calls), 1)
+        source, params = RecordingClient.calls[0]
+        self.assertEqual(source.size, (240,120))
+        for key, value in dict(iterations=3, nr_passes=2, vsr_quality=3, nr_color_strength=.7,
+                               tone_preservation=.4, face_skin_protection=.2, grain_preservation=.3).items():
+            self.assertEqual(params[key],value)
+        self.assertEqual(params['operation'],'neural')
+        self.assertFalse(set(params) & {'nr_preset','dlss_model_preset','dlss_quality','backend'})
+
+    def test_node_only_exposes_supported_controls(self):
+        inputs = self.node.INPUT_TYPES()
+        widgets = inputs['required'] | inputs['optional']
+        self.assertFalse(set(widgets) & {'nr_preset','dlss_model_preset','dlss_quality','backend','mask_feather'})
+        self.assertEqual(widgets['nr_passes'][1]['max'],4)
+        self.assertEqual(widgets['iterations'][1]['default'],1)
 
     def test_local_disk_output_saves_only_final_image(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(module, 'Client', side_effect=AssertionError('network')):
