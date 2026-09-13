@@ -32,17 +32,17 @@ class VTSMerserkFrameInterpolate:
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
-            "images": ("IMAGE", {"tooltip": "Ordered IMAGE batch or VTS DiskImage sequence. At least two frames for interpolation."}),
-            "server_url": ("STRING", {"default": "http://192.168.1.1:7865", "tooltip": "Merserk server with the VTS interpolation streaming API installed."}),
-            "multiplier": ([2, 3, 4, 8], {"default": 2, "tooltip": "2/4/8 use evenly spaced interpolation. 3x selects 37.5% and 62.5% positions, approximating one-third and two-thirds."}),
-            "return_type": (["Input", "Tensor", "DiskImage"], {"default": "Input", "tooltip": "Input preserves the storage type. Tensor holds the final batch in memory. DiskImage writes final frames on this ComfyUI client."}),
+            "images": ("IMAGE", {"tooltip": "Ordered IMAGE batch or VTS DiskImage sequence. All frames must have the same dimensions and RGB/RGBA channels. At least two frames are needed to interpolate; a single frame is passed through or converted to the requested storage type."}),
+            "server_url": ("STRING", {"default": "http://192.168.1.1:7865", "tooltip": "Address of the Windows Merserk server with the VTS interpolation streaming API, for example http://192.168.1.1:7865. Frames use losslessly compressed PNG transport; no shared drive is needed."}),
+            "multiplier": ([2, 3, 4, 8], {"default": 2, "tooltip": "2x adds 1 frame between originals; 4x adds 3; 8x adds 7. 3x adds 2 at 37.5% and 62.5%, not exact thirds, and costs roughly as much as 8x. Output count = (input count - 1) x multiplier + 1. Set the downstream video FPS to source FPS x multiplier to keep the same duration. Higher cascades can accumulate artifacts."}),
+            "return_type": (["Input", "Tensor", "DiskImage"], {"default": "Input", "tooltip": "Input keeps the input storage type. Tensor allocates the complete output IMAGE batch in RAM. DiskImage writes final frames incrementally on this ComfyUI machine and is more memory-efficient for long clips. Originals are reused locally; only generated frames are downloaded."}),
         }, "optional": {
-            "output_dir": ("STRING", {"default": "", "tooltip": "DiskImage only. Blank uses output/merserk_interpolate. Each run gets a separate folder."}),
-            "prefix": ("STRING", {"default": "interpolated"}),
-            "start_sequence": ("INT", {"default": 0, "min": 0}),
-            "format": (["png", "webp"], {"default": "png", "tooltip": "DiskImage format; both choices are lossless. Network transport is always PNG."}),
-            "compression_level": ("INT", {"default": 1, "min": 0, "max": 9, "tooltip": "DiskImage PNG compression; every level is lossless. Network PNGs use fast level 1."}),
-            "timeout_seconds": ("INT", {"default": 600, "min": 1, "tooltip": "Maximum wait for server startup or one input frame's results."}),
+            "output_dir": ("STRING", {"default": "", "tooltip": "DiskImage only: output folder on this ComfyUI machine, not Merserk. Blank uses ComfyUI output/merserk_interpolate. Each run creates a separate subfolder. Ignored for Tensor output."}),
+            "prefix": ("STRING", {"default": "interpolated", "tooltip": "DiskImage only: filename prefix, not a folder. For example, prefix=interpolated and start_sequence=0 produces interpolated_000000.png, interpolated_000001.png, and so on. Ignored for Tensor output."}),
+            "start_sequence": ("INT", {"default": 0, "min": 0, "tooltip": "DiskImage only: number used for the first saved filename. 100 starts at interpolated_000100.png with the default prefix. Changes filenames only; it does not skip input frames or change timing."}),
+            "format": (["png", "webp"], {"default": "png", "tooltip": "DiskImage only: PNG or lossless WebP for saved frames. Both preserve the encoded 8-bit pixels; neither preserves arbitrary float/HDR values. WebP file size and encoding time differ from PNG. Network transport remains PNG regardless of this setting."}),
+            "compression_level": ("INT", {"default": 1, "min": 0, "max": 9, "tooltip": "DiskImage PNG only: 0 uses no compression and 9 requests the most compression. Higher levels generally make smaller files but take longer; pixel quality is identical at every level. Ignored for WebP and Tensor output. Network PNGs use level 1."}),
+            "timeout_seconds": ("INT", {"default": 600, "min": 1, "tooltip": "Maximum wait for the server-ready response or one input frame's results, not the whole clip. Increase for large frames or 3x/8x interpolation. A timeout closes the stream and cancels its processing. Connection establishment is capped at 30 seconds."}),
         }}
 
     RETURN_TYPES = ("IMAGE",)
