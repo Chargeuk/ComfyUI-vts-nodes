@@ -19,9 +19,11 @@ class Socket:
     instances=[]
     bad_index=False
     error_after=None
+    recovery_failures=0
     def __init__(self,*args,**kwargs):
         self.messages=Queue(); self.frames=[]; self.closed=False; self.header=None
         self.instances.append(self)
+        self.fail_recovery = len(self.instances) <= self.recovery_failures
     def __enter__(self): return self
     def __exit__(self,*args): self.close()
     def close(self):
@@ -49,6 +51,8 @@ class Socket:
         if len(self.data)==self.header['bytes']:
             with Image.open(io.BytesIO(self.data)) as image:
                 self.frames.append(image.copy())
+                if self.fail_recovery and len(self.frames)==2:
+                    self.messages.put(json.dumps(dict(type='error',message='worker died',code='NEURAL_WORKER_RESTARTED'))); return
                 if self.error_after is not None and len(self.frames)>self.error_after:
                     self.messages.put(json.dumps(dict(type='error',message='GPU test failure'))); return
                 with image.resize((self.setup['target_width'],self.setup['target_height'])) as result,io.BytesIO() as buffer:
@@ -60,7 +64,7 @@ class Socket:
 
 class TemporalNodeTests(unittest.TestCase):
     def setUp(self):
-        Socket.instances=[]; Socket.bad_index=False; Socket.error_after=None
+        Socket.instances=[]; Socket.bad_index=False; Socket.error_after=None; Socket.recovery_failures=0
         self.node=module.VTSMerserkTemporalEnhance()
         self.images=torch.rand(3,96,128,4)
         self.images[...,3]=180/255
@@ -69,6 +73,25 @@ class TemporalNodeTests(unittest.TestCase):
         params=dict(enable_scaling=False,nr_passes=2,shimmer_suppression=.6)
         params.update(kwargs)
         return self.node.enhance(self.images,**params)[0]
+    def test_worker_failure_replays_all_inputs_and_keeps_only_final_disk_outputs(self):
+        Socket.recovery_failures=1
+        with tempfile.TemporaryDirectory() as directory:
+            result=self.run_node(return_type='DiskImage',output_dir=directory)
+            self.assertEqual(len(Socket.instances),2)
+            self.assertEqual(len(Socket.instances[-1].frames),3)
+            self.assertEqual(len(list(Path(directory).iterdir())),1)
+            self.assertEqual(len(list(Path(result.output_dir).glob('*.png'))),3)
+            for i,frame in enumerate(Socket.instances[-1].frames):
+                np.testing.assert_array_equal(np.asarray(frame),self.images[i].mul(255).round().numpy().astype(np.uint8))
+
+    def test_second_worker_failure_stops_retrying_and_cleans_output(self):
+        Socket.recovery_failures=2
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(module.MerserkWorkerRestarted):
+                self.run_node(return_type='DiskImage',output_dir=directory)
+            self.assertEqual(len(Socket.instances),2)
+            self.assertEqual(list(Path(directory).iterdir()),[])
+
     def test_one_stream_ordered_rgb_alpha_both_loop_scope_and_memory(self):
         original=Image.Image.save
         def memory_only(image,target,*args,**kwargs):

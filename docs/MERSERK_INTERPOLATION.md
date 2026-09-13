@@ -63,5 +63,13 @@ count and fractional interpolation positions. Each input has a numbered `frame`
 header with PNG byte length, followed by binary chunks; the client finishes with
 `end`. Replies are `generated` headers plus PNG chunks, local `repeat` references,
 `frame_done`, then `done` after GPU cleanup. Failures return `error` and close the
-connection. One GPU job runs at a time; a busy server rejects another request
-without cancelling its current job.
+connection. One GPU job runs at a time; other requests wait in the shared FIFO
+queue without cancelling its current job.
+
+## Concurrent requests
+
+Merserk queues GPU work from GUI and VTS clients in arrival order. Updated streaming
+nodes accept periodic queue status messages, so waiting behind another render does
+not exhaust the per-frame timeout. A disconnected queued client leaves the queue
+without cancelling the active job. Rendering and silent-server timeouts still apply.
+Older streaming clients can also wait, up to their existing readiness timeout.

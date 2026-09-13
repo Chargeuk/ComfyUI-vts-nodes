@@ -29,6 +29,10 @@ from vts_image_sizing import ScaleToMinDimensions
 CHUNK_BYTES = 256 * 1024
 
 
+class MerserkWorkerRestarted(RuntimeError):
+    pass
+
+
 class VTSMerserkTemporalEnhance(ScaleToMinDimensions):
     @classmethod
     def INPUT_TYPES(cls):
@@ -51,7 +55,7 @@ class VTSMerserkTemporalEnhance(ScaleToMinDimensions):
             "grain_preservation": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip": "How strongly to preserve fine source grain/noise through the final blend. 0 adds no extra grain preservation; 1 gives maximum preservation. Higher values can retain a film-like texture, but can also retain unwanted source noise."}),
             "shimmer_suppression": ("FLOAT", {"default": 0.7, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip": "Stabilize model-created detail using motion between successive frames. 0 disables the extra shimmer filter; 1 requests strongest stabilization. Higher values can reduce flicker but may smear detail if motion is estimated poorly. Neural history still uses scene-cut resets. Ignored when neural rendering is disabled."}),
             "output_dir": ("STRING", {"default": "", "tooltip": "Used only for DiskImage output. Folder on this ComfyUI machine, not the Merserk server. Blank uses ComfyUI output/merserk_temporal. Each run creates its own subfolder containing only the final lossless PNG images."}),
-            "timeout_seconds": ("INT", {"default": 600, "min": 1, "tooltip": "Maximum wait for server readiness or one enhanced frame, not the entire sequence. Increase for large frames or high NR Passes. A timeout closes this stream and cancels its GPU job. Connection setup is capped at 30 seconds."}),
+            "timeout_seconds": ("INT", {"default": 600, "min": 1, "tooltip": "Maximum wait for a server response or one enhanced frame. Queue status messages keep the readiness wait alive while other jobs finish; the limit still applies during rendering. Increase for large frames or high NR Passes. A timeout closes this stream and cancels its GPU job. Connection setup is capped at 30 seconds."}),
         }, "optional": {
             "enable_scaling": ("BOOLEAN", {"default": True, "tooltip": "Enable resizing using the sizing controls below. Enlargement uses RTX VSR once; reduction uses local Lanczos before enhancement. Off preserves the input dimensions and ignores sizing/crop controls. Neural enhancement can still run."}),
             "enable_neural_rendering": ("BOOLEAN", {"default": True, "tooltip": "Apply temporally consistent Neuroframe enhancement after any resizing. Off skips all neural controls and NR Passes, but scaling can still run. Turn both this and Enable Scaling off to pass images through, converting storage type only if requested."}),
@@ -91,10 +95,34 @@ class VTSMerserkTemporalEnhance(ScaleToMinDimensions):
         if not isinstance(value, dict):
             raise ValueError("Invalid Merserk sequence message.")
         if value.get("type") == "error":
+            if value.get("code") == "NEURAL_WORKER_RESTARTED":
+                raise MerserkWorkerRestarted(value.get("message", "Neural worker restarted"))
             raise RuntimeError("Merserk: " + value.get("message", "sequence failed"))
         return value
 
-    def enhance(self, images, server_url="http://192.168.1.1:7865", return_type="Input",
+    @classmethod
+    def _ready(cls, socket, timeout_seconds):
+        # Queue heartbeats extend the readiness wait, never a rendering timeout.
+        while True:
+            message = cls._message(socket, time.monotonic() + timeout_seconds)
+            if message.get("type") != "queued":
+                return message
+            position = message.get("position")
+            if isinstance(position, bool) or not isinstance(position, int) or position < 1:
+                raise ValueError("Invalid Merserk queue status.")
+
+    def enhance(self, *args, **kwargs):
+        for attempt in range(2):
+            try:
+                return self._enhance_once(*args, **kwargs)
+            except MerserkWorkerRestarted:
+                if attempt:
+                    raise
+                model_management.throw_exception_if_processing_interrupted()
+                # The failed attempt cleans its own partial output. Replay every
+                # original frame so VSR, scene detection and NR history agree.
+
+    def _enhance_once(self, images, server_url="http://192.168.1.1:7865", return_type="Input",
                 upscaling_factor=1.0, nr_passes=1, nr_style="Default", nr_intensity=1.0,
                 local_tone_strength=1.0, local_structure_strength=1.0, skin_structure_strength=-1.0,
                 automatic_mask=False, nr_color_strength=1.0, tone_preservation=0.0,
@@ -195,12 +223,12 @@ class VTSMerserkTemporalEnhance(ScaleToMinDimensions):
                 with connect(url, open_timeout=min(30, timeout_seconds), close_timeout=2,
                              max_size=CHUNK_BYTES + 1024, max_queue=2, compression=None, proxy=None) as socket, \
                      ThreadPoolExecutor(max_workers=1, thread_name_prefix='vts-temporal-upload') as loader:
-                    setup = dict(version=1, width=upload_size[0], height=upload_size[1], target_width=tw,
+                    setup = dict(version=1, queue_status=True, width=upload_size[0], height=upload_size[1], target_width=tw,
                         target_height=th, channels=channels, frame_count=count, enable_neural_rendering=enable_neural_rendering,
                         vsr_quality={'Low':1,'Medium':2,'High':3,'Ultra':4}[vsr_quality],
                         parameters=parameters, timeout_seconds=timeout_seconds)
                     socket.send(json.dumps(setup))
-                    ready = self._message(socket, time.monotonic() + timeout_seconds)
+                    ready = self._ready(socket, timeout_seconds)
                     if any(ready.get(k) != v for k,v in dict(type='ready',version=1,output_count=count,
                             width=tw,height=th,channels=channels,chunk_bytes=CHUNK_BYTES).items()):
                         raise ValueError("Merserk does not support the expected temporal enhancement protocol.")

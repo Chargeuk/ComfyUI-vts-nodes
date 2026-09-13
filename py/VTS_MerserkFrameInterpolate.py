@@ -42,7 +42,7 @@ class VTSMerserkFrameInterpolate:
             "start_sequence": ("INT", {"default": 0, "min": 0, "tooltip": "DiskImage only: number used for the first saved filename. 100 starts at interpolated_000100.png with the default prefix. Changes filenames only; it does not skip input frames or change timing."}),
             "format": (["png", "webp"], {"default": "png", "tooltip": "DiskImage only: PNG or lossless WebP for saved frames. Both preserve the encoded 8-bit pixels; neither preserves arbitrary float/HDR values. WebP file size and encoding time differ from PNG. Network transport remains PNG regardless of this setting."}),
             "compression_level": ("INT", {"default": 1, "min": 0, "max": 9, "tooltip": "DiskImage PNG only: 0 uses no compression and 9 requests the most compression. Higher levels generally make smaller files but take longer; pixel quality is identical at every level. Ignored for WebP and Tensor output. Network PNGs use level 1."}),
-            "timeout_seconds": ("INT", {"default": 600, "min": 1, "tooltip": "Maximum wait for the server-ready response or one input frame's results, not the whole clip. Increase for large frames or 3x/8x interpolation. A timeout closes the stream and cancels its processing. Connection establishment is capped at 30 seconds."}),
+            "timeout_seconds": ("INT", {"default": 600, "min": 1, "tooltip": "Maximum wait for a server response or one input frame's results. Queue status messages keep the readiness wait alive while other jobs finish; the limit still applies during rendering. Increase for large frames or 3x/8x interpolation. A timeout closes the stream and cancels its processing. Connection establishment is capped at 30 seconds."}),
         }}
 
     RETURN_TYPES = ("IMAGE",)
@@ -81,6 +81,17 @@ class VTSMerserkFrameInterpolate:
         with Image.fromarray(pixels) as image, io.BytesIO() as buffer:
             image.save(buffer, format="PNG", compress_level=1)
             return frame, buffer.getvalue()
+
+    @classmethod
+    def _ready(cls, socket, timeout_seconds):
+        # Queue heartbeats extend the readiness wait, never a rendering timeout.
+        while True:
+            message = cls._message(socket, time.monotonic() + timeout_seconds)
+            if message.get("type") != "queued":
+                return message
+            position = message.get("position")
+            if isinstance(position, bool) or not isinstance(position, int) or position < 1:
+                raise ValueError("Invalid Merserk queue status.")
 
     def interpolate(self, images, server_url="http://192.168.1.1:7865", multiplier=2,
                     return_type="Input", output_dir="", prefix="interpolated", start_sequence=0,
@@ -145,8 +156,8 @@ class VTSMerserkFrameInterpolate:
                 with connect(url, open_timeout=min(30, timeout_seconds), close_timeout=2,
                              max_size=CHUNK_BYTES + 1024, max_queue=2, compression=None, proxy=None) as socket, \
                      ThreadPoolExecutor(max_workers=1, thread_name_prefix="vts-interpolation-input") as loader:
-                    socket.send(json.dumps(dict(version=1, width=width, height=height, frame_count=count, multiplier=multiplier, timeout_seconds=timeout_seconds)))
-                    ready = self._message(socket, time.monotonic() + timeout_seconds)
+                    socket.send(json.dumps(dict(version=1, queue_status=True, width=width, height=height, frame_count=count, multiplier=multiplier, timeout_seconds=timeout_seconds)))
+                    ready = self._ready(socket, timeout_seconds)
                     if ready.get("type") != "ready" or ready.get("output_count") != output_count:
                         raise ValueError("Merserk does not support the expected interpolation protocol.")
                     frames = Queue(maxsize=2)

@@ -59,7 +59,7 @@ type returns the original object without quantization.
 
 The timeout applies to server readiness or one output frame, not the whole
 sequence. Connection setup is capped at 30 seconds. Interruption/disconnect cancels
-this request; another busy GPU request is reported rather than interrupted.
+this request; queued requests wait for their turn without interrupting another render.
 
 Pure local reduction and bypass work offline when neural rendering is disabled.
 A single frame can be enhanced. Frames must share dimensions and channel count.
@@ -71,3 +71,20 @@ The implementation reuses Merserk's existing motion estimation and stabilization
 It does not promise perfect temporal consistency, and does not add a new learned
 optical-flow model. The host frame path uses DIS flow for final enhancement
 stabilization; it is not a GPU video decode/encode pipeline.
+
+## Concurrent requests
+
+Merserk queues GPU work from GUI and VTS clients in arrival order. Updated streaming
+nodes accept periodic queue status messages, so waiting behind another render does
+not exhaust the per-frame timeout. A disconnected queued client leaves the queue
+without cancelling the active job. Rendering and silent-server timeouts still apply.
+Older streaming clients can also wait, up to their existing readiness timeout.
+
+## Native worker recovery
+
+If Merserk reports a fatal neural worker failure, this node reconnects and replays
+the complete original sequence once. This rebuilds VSR, scene detection and neural
+history instead of continuing with missing history. Partial DiskImage output from
+the failed attempt is removed; only a complete result is returned. A second worker
+failure is reported without another retry. Cancellation and unrelated errors are
+not retried. Merserk keeps its web server and queue alive during worker recovery.
