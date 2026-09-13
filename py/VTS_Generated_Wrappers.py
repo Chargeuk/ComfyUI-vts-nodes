@@ -27,6 +27,20 @@ _EXCLUDED_CUSTOM_NODE_PACKAGES = {
 _HANDWRITTEN_WRAPPER_IDS = {
     "VTSWrapper_ComfyUI_H3_Motion_Context_MiniMaxH3MotionContext",
 }
+_WAN_PACKAGE_PREFIX_ALIASES = {
+    "ComfyUI-WanVideoWrapper": "VTSComfyUI-WanVideoWrapper",
+    "VTSComfyUI-WanVideoWrapper": "ComfyUI-WanVideoWrapper",
+}
+
+
+def _dual_wan_package_alias(package_name):
+    alias = _WAN_PACKAGE_PREFIX_ALIASES.get(package_name)
+    if alias is None:
+        return None
+    custom_nodes_root = Path(__file__).resolve().parents[2]
+    if all((custom_nodes_root / folder).is_dir() for folder in _WAN_PACKAGE_PREFIX_ALIASES):
+        return alias
+    return None
 
 # Upstream nodes can add controls without invalidating existing VTS workflows.
 _MAX_INPUT_COUNT = 32
@@ -1022,6 +1036,17 @@ def _build_generated_mappings():
             continue
         node_class_mappings[wrapper_node_id] = wrapper_cls
         display_name_mappings[wrapper_node_id] = wrapper_display_name
+
+        # When both the upstream and inherited Wan packs coexist, import
+        # order can change which package path inspect.getfile() reports. Keep
+        # wrapper IDs for both folder prefixes so saved workflows are stable.
+        alias_package = _dual_wan_package_alias(spec["package"])
+        if alias_package is not None:
+            alias_node_id = _sanitize_identifier(
+                f"VTSWrapper_{alias_package}_{spec['node_name']}"
+            )
+            node_class_mappings.setdefault(alias_node_id, wrapper_cls)
+            display_name_mappings.setdefault(alias_node_id, wrapper_display_name)
 
     return node_class_mappings, display_name_mappings
 
