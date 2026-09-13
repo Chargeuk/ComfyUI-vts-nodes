@@ -1,10 +1,10 @@
+import asyncio
 import copy
 import inspect
 import logging
 import os
 import re
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -12,6 +12,7 @@ import torch
 from comfy import model_management
 from comfy_api.latest import io
 import nodes as core_nodes
+from server import PromptServer
 
 import_dir = os.path.join(os.path.dirname(__file__), "vtsUtils")
 if import_dir not in sys.path:
@@ -1018,7 +1019,7 @@ def _build_generated_mappings():
     return node_class_mappings, display_name_mappings
 
 
-def _register_generated_wrappers_late():
+async def _register_generated_wrappers_late():
     registered_ids = set()
     last_change_time = time.monotonic()
 
@@ -1027,7 +1028,7 @@ def _register_generated_wrappers_late():
             node_class_mappings, display_name_mappings = _build_generated_mappings()
         except Exception:
             logging.exception("VTS generated wrapper registration pass failed; retrying.")
-            time.sleep(_REGISTRATION_DELAY_SECONDS)
+            await asyncio.sleep(_REGISTRATION_DELAY_SECONDS)
             continue
         pending_ids = [node_id for node_id in node_class_mappings if node_id not in registered_ids]
 
@@ -1045,7 +1046,7 @@ def _register_generated_wrappers_late():
             print(f"[VTS Generated Wrappers] registration settled with {len(registered_ids)} wrappers.")
             return
 
-        time.sleep(_REGISTRATION_DELAY_SECONDS)
+        await asyncio.sleep(_REGISTRATION_DELAY_SECONDS)
 
     if registered_ids:
         print(f"[VTS Generated Wrappers] registration window ended with {len(registered_ids)} wrappers.")
@@ -1055,4 +1056,9 @@ def _register_generated_wrappers_late():
 
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
-threading.Thread(target=_register_generated_wrappers_late, daemon=True).start()
+# Registry publication must share the server loop with /object_info iteration.
+_registration_loop = getattr(getattr(PromptServer, "instance", None), "loop", None)
+if _registration_loop is None or _registration_loop.is_closed():
+    logging.warning("VTS generated wrappers need an available ComfyUI server loop; registration skipped.")
+else:
+    _registration_loop.create_task(_register_generated_wrappers_late())
