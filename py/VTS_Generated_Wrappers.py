@@ -28,7 +28,9 @@ _HANDWRITTEN_WRAPPER_IDS = {
     "VTSWrapper_ComfyUI_H3_Motion_Context_MiniMaxH3MotionContext",
 }
 
-_MAX_INPUT_COUNT = 12
+# Upstream nodes can add controls without invalidating existing VTS workflows.
+_MAX_INPUT_COUNT = 32
+_SAFE_LEGACY_HIDDEN_TYPES = {"PROMPT", "EXTRA_PNGINFO", "UNIQUE_ID", "DYNPROMPT"}
 _MAX_COMBO_OPTIONS = 128
 _MAX_OUTPUT_COUNT = 8
 _REGISTRATION_ATTEMPTS = 120
@@ -561,13 +563,15 @@ def _build_legacy_wrapper_spec(node_name, node_cls, display_name_mappings):
     required_inputs = input_config.get("required", {})
     optional_inputs = input_config.get("optional", {})
     hidden_inputs = input_config.get("hidden", {})
-    if hidden_inputs:
+    if not all(isinstance(value, str) and value in _SAFE_LEGACY_HIDDEN_TYPES
+               for value in hidden_inputs.values()):
         return None
     if len(required_inputs) + len(optional_inputs) > _MAX_INPUT_COUNT:
         return None
 
     image_input_names = []
-    all_input_names = []
+    # Pass engine-supplied context through unchanged, including object identity.
+    all_input_names = list(hidden_inputs)
     safe = True
     for group_inputs in (required_inputs, optional_inputs):
         for input_name, legacy_spec in group_inputs.items():
@@ -754,6 +758,8 @@ def _process_image_outputs(spec, outputs, resolved_return_type, prefix, start_se
 
 
 def _normalize_node_result(result):
+    if isinstance(result, dict) and "result" in result:
+        return tuple(result["result"])
     if hasattr(result, "args") and isinstance(getattr(result, "args", None), tuple):
         return tuple(result.args)
     if isinstance(result, tuple):
@@ -762,6 +768,8 @@ def _normalize_node_result(result):
 
 
 def _restore_v3_node_output(original_result, processed_outputs):
+    if isinstance(original_result, dict):
+        return {**original_result, "result": tuple(processed_outputs)}
     if not isinstance(original_result, io.NodeOutput):
         return tuple(processed_outputs)
     return io.NodeOutput(
@@ -833,7 +841,7 @@ def _execute_wrapped_node(spec, kwargs):
         result = node_function(**node_kwargs)
 
         if not spec["has_image_output"]:
-            if spec["schema_style"] == "v3_dynamic":
+            if spec["schema_style"] == "v3_dynamic" or isinstance(result, dict):
                 return result
             result = _normalize_node_result(result)
             return result
@@ -843,9 +851,7 @@ def _execute_wrapped_node(spec, kwargs):
 
         resolved_return_type = _resolve_return_type(spec, image_controls["vts_return_type"], kwargs)
         if resolved_return_type == "Tensor":
-            if spec["schema_style"] == "v3_dynamic":
-                return _restore_v3_node_output(original_result, result)
-            return result
+            return _restore_v3_node_output(original_result, result)
 
         processed = _process_image_outputs(
             spec,
@@ -859,9 +865,7 @@ def _execute_wrapped_node(spec, kwargs):
             image_controls["vts_compression_level"],
             image_controls["vts_quality"],
         )
-        if spec["schema_style"] == "v3_dynamic":
-            return _restore_v3_node_output(original_result, processed)
-        return processed
+        return _restore_v3_node_output(original_result, processed)
     finally:
         for materialized in materialized_inputs:
             del materialized
