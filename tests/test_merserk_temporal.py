@@ -38,14 +38,17 @@ class Socket:
         if self.closed: raise RuntimeError('closed')
         if isinstance(data,str):
             value=json.loads(data)
-            if value.get('version')==1:
+            if value.get('version') in (1,2):
                 self.setup=value
-                self.messages.put(json.dumps(dict(type='ready',version=1,chunk_bytes=module.CHUNK_BYTES,
-                    output_count=value['frame_count'],width=value['target_width'],height=value['target_height'],channels=value['channels'])))
+                self.multiplier=value.get('interpolation_multiplier',1)
+                self.output_count=(value['frame_count']-1)*self.multiplier+1
+                self.sent=0
+                self.messages.put(json.dumps(dict(type='ready',version=value['version'],chunk_bytes=module.CHUNK_BYTES,
+                    output_count=self.output_count,width=value['target_width'],height=value['target_height'],channels=value['channels'])))
             elif value.get('type')=='frame':
                 self.header=value; self.data=bytearray()
             elif value.get('type')=='end':
-                self.messages.put(json.dumps(dict(type='done',stats={'frames':len(self.frames)})))
+                self.messages.put(json.dumps(dict(type='done',stats={'frames':len(self.frames),'output_frames':self.sent})))
             return
         self.data.extend(data)
         if len(self.data)==self.header['bytes']:
@@ -57,9 +60,14 @@ class Socket:
                     self.messages.put(json.dumps(dict(type='error',message='GPU test failure'))); return
                 with image.resize((self.setup['target_width'],self.setup['target_height'])) as result,io.BytesIO() as buffer:
                     result.save(buffer,format='PNG'); payload=buffer.getvalue()
-            self.messages.put(json.dumps(dict(type='enhanced',index=99 if self.bad_index else self.header['index'],bytes=len(payload))))
-            for offset in range(0,len(payload),module.CHUNK_BYTES):
-                self.messages.put(payload[offset:offset+module.CHUNK_BYTES])
+            for _ in range(1 if self.header['index']==0 else self.multiplier):
+                self.messages.put(json.dumps(dict(type='enhanced',index=99 if self.bad_index else self.sent,bytes=len(payload))))
+                for offset in range(0,len(payload),module.CHUNK_BYTES):
+                    self.messages.put(payload[offset:offset+module.CHUNK_BYTES])
+                self.sent+=1
+            if self.setup['version']==2:
+                self.messages.put(json.dumps(dict(type='frame_done',index=self.header['index'])))
+
 
 
 class TemporalNodeTests(unittest.TestCase):
@@ -138,6 +146,83 @@ class TemporalNodeTests(unittest.TestCase):
                 with self.assertRaises((RuntimeError,ValueError)):
                     self.run_node(return_type='DiskImage',output_dir=directory)
                 self.assertFalse(list(Path(directory).iterdir()))
+    def test_combined_interpolation_uploads_each_source_once_and_counts_outputs(self):
+        for multiplier in (2,3,4,8):
+            result=self.run_node(enable_frame_interpolation=True,interpolation_multiplier=multiplier)
+            self.assertEqual(tuple(result.shape),(2*multiplier+1,96,128,4))
+            connection=Socket.instances[-1]
+            self.assertEqual(len(connection.frames),3)
+            self.assertEqual(connection.setup['version'],2)
+            self.assertEqual(connection.setup['interpolation_multiplier'],multiplier)
+
+    def test_interpolation_only_and_downscale_still_contact_server(self):
+        result=self.run_node(enable_frame_interpolation=True,enable_neural_rendering=False,
+            enable_scaling=True,sizing_mode='Multiplier',upscaling_factor=.5)
+        self.assertEqual(tuple(result.shape),(5,48,64,4))
+        self.assertEqual(Socket.instances[-1].setup['parameters'],{})
+        self.assertEqual(Socket.instances[-1].frames[0].size,(64,48))
+
+    def test_single_frame_skips_interpolation_and_disabled_options_are_ignored(self):
+        self.images=self.images[:1]
+        self.assertIs(self.run_node(enable_frame_interpolation=True,enable_neural_rendering=False),self.images)
+        self.assertFalse(Socket.instances)
+        self.run_node(interpolation_multiplier=99)
+        self.assertEqual(Socket.instances[-1].setup['version'],1)
+
+    def test_combined_recovery_keeps_only_complete_lossless_webp_output(self):
+        Socket.recovery_failures=1
+        with tempfile.TemporaryDirectory() as directory:
+            result=self.run_node(enable_frame_interpolation=True,interpolation_multiplier=4,
+                return_type='DiskImage',output_dir=directory,format='webp',prefix='enhanced',start_sequence=100)
+            self.assertEqual(len(Socket.instances),2)
+            self.assertEqual(len(result),9)
+            self.assertEqual(len(list(Path(directory).iterdir())),1)
+            self.assertTrue((Path(result.output_dir)/'enhanced_000100.webp').is_file())
+            self.assertEqual(len(list(Path(result.output_dir).glob('*.webp'))),9)
+            np.testing.assert_allclose(result[0].numpy(), self.images[0].mul(255).round().numpy()/255,atol=1e-7)
+
+    def test_output_names_and_formats_cannot_escape_output_folder(self):
+        for options in (dict(prefix='../escape'),dict(prefix='a/b'),dict(prefix='a\\b'),dict(format='../png')):
+            with tempfile.TemporaryDirectory() as directory:
+                with self.assertRaises(ValueError):
+                    self.run_node(return_type='DiskImage',output_dir=directory,**options)
+                self.assertFalse(list(Path(directory).iterdir()))
+
+    def test_jpeg_disk_output_quality_rgb_metadata_and_png_transport(self):
+        self.images=torch.zeros(3,96,128,4)
+        self.images[...,0]=1  # Transparent red should become white in JPEG.
+        original=Image.Image.save
+        qualities=[]
+        def observe(image,target,*args,**kwargs):
+            if isinstance(target,Path) and target.suffix=='.jpg':
+                qualities.append(kwargs.get('quality'))
+            else:
+                self.assertEqual(kwargs.get('format'),'PNG')
+            return original(image,target,*args,**kwargs)
+        with tempfile.TemporaryDirectory() as directory,patch.object(Image.Image,'save',observe):
+            result=self.run_node(enable_frame_interpolation=True,return_type='DiskImage',
+                output_dir=directory,format='jpg',quality=87)
+            self.assertEqual(result.shape,(5,96,128,3))
+            self.assertEqual(tuple(result[0].shape),(96,128,3))
+            self.assertTrue(torch.all(result[0]>.99))
+            self.assertEqual(qualities,[87]*5)
+            for path in Path(result.output_dir).glob('*.jpg'):
+                with Image.open(path) as image:
+                    self.assertEqual((image.format,image.mode),('JPEG','RGB'))
+            self.assertEqual(Socket.instances[-1].frames[0].mode,'RGBA')
+            self.assertNotIn('quality',Socket.instances[-1].setup)
+
+    def test_jpeg_format_converts_disk_input_even_without_rendering(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source=self.run_node(return_type='DiskImage',output_dir=directory)
+            with patch.object(module,'connect',side_effect=AssertionError('network')):
+                result=self.node.enhance(source,enable_scaling=False,enable_neural_rendering=False,
+                    return_type='DiskImage',output_dir=directory,format='jpg')[0]
+            self.assertIsNot(result,source)
+            self.assertEqual(result.format,'jpg')
+            self.assertEqual(result.shape[-1],3)
+            self.assertEqual(len(list(Path(result.output_dir).glob('*.jpg'))),3)
+
     def test_input_controls_have_tooltips_without_outer_iterations_or_hdr(self):
         schema=self.node.INPUT_TYPES(); fields=schema['required']|schema['optional']
         self.assertNotIn('iterations',fields)

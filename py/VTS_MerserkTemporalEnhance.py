@@ -38,11 +38,11 @@ class VTSMerserkTemporalEnhance(ScaleToMinDimensions):
     def INPUT_TYPES(cls):
         strength = {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05}
         return {"required": {
-            "images": ("IMAGE", {"tooltip": "Ordered RGB/RGBA IMAGE batch or VTS DiskImage sequence with matching dimensions. Merserk preserves neural history between frames and resets it at scene cuts. Frame count/order are unchanged. Transport preserves 8-bit pixels, not HDR or arbitrary floating-point values."}),
-            "server_url": ("STRING", {"default": "http://192.168.1.1:7865", "tooltip": "Address of your Windows Merserk server, for example http://192.168.1.1:7865. Required for neural enhancement or enlargement; local downscaling and bypass work without it."}),
+            "images": ("IMAGE", {"tooltip": "Ordered RGB/RGBA IMAGE batch or VTS DiskImage sequence with matching dimensions. Merserk preserves neural history between frames and resets it at scene cuts. Original frame order is preserved; optional interpolation inserts extra frames between them. Transport preserves 8-bit pixels, not HDR or arbitrary floating-point values."}),
+            "server_url": ("STRING", {"default": "http://192.168.1.1:7865", "tooltip": "Address of your Windows Merserk server, for example http://192.168.1.1:7865. Required for neural enhancement, enlargement or frame interpolation; local downscaling and bypass work without it."}),
             "return_type": (["Input", "Tensor", "DiskImage"], {"default": "Input", "tooltip": "Input keeps the input storage type. Tensor returns a normal IMAGE batch held in RAM. DiskImage saves only the final images on this ComfyUI machine and returns their file references, which is more memory-efficient for large batches."}),
             "upscaling_factor": ("FLOAT", {"default": 1.0, "min": 0.01, "max": 16384.0, "step": 0.05, "tooltip": "Used only when scaling is enabled and sizing_mode is Multiplier. Multiplies width and height: 2 doubles each side, 1 keeps the size, and 0.5 halves each side. Dimensions are rounded to even pixels. Enlargement uses RTX VSR; reduction uses Lanczos."}),
-            "nr_passes": ("INT", {"default": 1, "min": 1, "max": 4, "tooltip": "Native Merserk neural passes per frame. More passes can strengthen enhancement and cost more processing time; more is not always better. Temporal history is retained across successive frames. There is no outer iteration loop."}),
+            "nr_passes": ("INT", {"default": 1, "min": 1, "max": 4, "tooltip": "Native Merserk neural passes per source frame, before interpolation. Generated frames are not neurally processed again. More passes can strengthen enhancement and cost more processing time; more is not always better. Temporal history is retained across successive frames. There is no outer iteration loop."}),
             "nr_style": (["Default", "Natural", "Cinematic"], {"tooltip": "Overall look requested from the neural model. Default uses its standard style; Natural aims for a more restrained look; Cinematic aims for a more stylized look. The visible difference depends on the image and model. Ignored when neural rendering is disabled."}),
             "nr_intensity": ("FLOAT", dict(strength, tooltip="Overall neural enhancement strength. Lower values reduce the requested effect; 1 is the standard setting. Higher values request a stronger effect, but the model may limit the response, so 2 is not guaranteed to look twice as strong. Use enable_neural_rendering to bypass enhancement completely.")),
             "local_tone_strength": ("FLOAT", dict(strength, tooltip="Strength of local tone changes: how the model adjusts brightness and contrast within parts of the image. Lower values request less tonal change; higher values can reshape lighting and contrast more strongly. 1 is the standard setting. Tone Preservation can bring the final tone back toward the source.")),
@@ -54,11 +54,11 @@ class VTSMerserkTemporalEnhance(ScaleToMinDimensions):
             "face_skin_protection": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip": "Reduce neural changes in detected face/skin regions to keep them closer to the original. 0 adds no extra protection; 1 gives the strongest protection. This limits the final effect on faces, whereas Skin Structure Strength controls the requested skin reconstruction."}),
             "grain_preservation": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip": "How strongly to preserve fine source grain/noise through the final blend. 0 adds no extra grain preservation; 1 gives maximum preservation. Higher values can retain a film-like texture, but can also retain unwanted source noise."}),
             "shimmer_suppression": ("FLOAT", {"default": 0.7, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip": "Stabilize model-created detail using motion between successive frames. 0 disables the extra shimmer filter; 1 requests strongest stabilization. Higher values can reduce flicker but may smear detail if motion is estimated poorly. Neural history still uses scene-cut resets. Ignored when neural rendering is disabled."}),
-            "output_dir": ("STRING", {"default": "", "tooltip": "Used only for DiskImage output. Folder on this ComfyUI machine, not the Merserk server. Blank uses ComfyUI output/merserk_temporal. Each run creates its own subfolder containing only the final lossless PNG images."}),
+            "output_dir": ("STRING", {"default": "", "tooltip": "Used only for DiskImage output. Folder on this ComfyUI machine, not the Merserk server. Blank uses ComfyUI output/merserk_temporal. Each run creates its own subfolder containing only the final images in the selected disk format."}),
             "timeout_seconds": ("INT", {"default": 600, "min": 1, "tooltip": "Maximum wait for a server response or one enhanced frame. Queue status messages keep the readiness wait alive while other jobs finish; the limit still applies during rendering. Increase for large frames or high NR Passes. A timeout closes this stream and cancels its GPU job. Connection setup is capped at 30 seconds."}),
         }, "optional": {
             "enable_scaling": ("BOOLEAN", {"default": True, "tooltip": "Enable resizing using the sizing controls below. Enlargement uses RTX VSR once; reduction uses local Lanczos before enhancement. Off preserves the input dimensions and ignores sizing/crop controls. Neural enhancement can still run."}),
-            "enable_neural_rendering": ("BOOLEAN", {"default": True, "tooltip": "Apply temporally consistent Neuroframe enhancement after any resizing. Off skips all neural controls and NR Passes, but scaling can still run. Turn both this and Enable Scaling off to pass images through, converting storage type only if requested."}),
+            "enable_neural_rendering": ("BOOLEAN", {"default": True, "tooltip": "Apply temporally consistent Neuroframe enhancement after any resizing. Off skips all neural controls and NR Passes, but scaling can still run. With scaling and interpolation also off, images pass through, converting storage type only if requested."}),
             "sizing_mode": (["Scale to Min", "Multiplier"], {"default": "Scale to Min", "tooltip": "Scale to Min uses the two side sizes, scale_type and divisible_by rules from VTS Scale To Min. Multiplier uses upscaling_factor to resize both sides proportionally. Used only when Enable Scaling is on."}),
             "smallMaxSize": ("INT", {"default": 512, "min": 0, "max": 16384, "step": 1, "tooltip": "Smaller side target/limit in pixels for Scale to Min mode. Together with largeMaxSize and scale_type it determines output dimensions. The two values are sorted automatically, so entering them backwards is fine. For a 16:9 landscape image, 720 and 1280 typically give 1280 x 720."}),
             "largeMaxSize": ("INT", {"default": 512, "min": 0, "max": 16384, "step": 1, "tooltip": "Larger side target/limit in pixels for Scale to Min mode. The two side values are sorted automatically, so this may be entered smaller than smallMaxSize. Its exact role depends on scale_type; max uses this larger value as the longest output side."}),
@@ -66,13 +66,20 @@ class VTSMerserkTemporalEnhance(ScaleToMinDimensions):
             "crop": (["disabled", "center"], {"default": "disabled", "tooltip": "When scaling, center removes image edges to match the target aspect ratio before resizing. Disabled keeps all content but stretches it if the target aspect ratio differs. For a wide image resized to a square, center cuts off the left/right edges; disabled squeezes the width. No borders are added."}),
             "scale_type": (["small", "large", "max"], {"default": "small", "tooltip": "Scale to Min only. small fits the image within the short/long side limits, largely preserving aspect ratio. large uses both side sizes as the output dimensions, which may change aspect ratio. max sets the longest side to the larger limit and calculates the other proportionally. Divisibility rounding applies afterwards."}),
             "vsr_quality": (["Low", "Medium", "High", "Ultra"], {"default": "Ultra", "tooltip": "RTX VSR quality for enlargement, whether or not neural enhancement follows. Low is lighter; Ultra requests the highest quality and may take longer. This changes upscaling quality, not output dimensions or neural pass counts. Ignored when no enlargement is needed."}),
+            "enable_frame_interpolation": ("BOOLEAN", {"default": False, "tooltip": "Insert intermediate frames after resizing and temporal enhancement, inside the same Merserk stream. Each source is uploaded once. Off preserves the original frame count. A single input frame needs no interpolation."}),
+            "interpolation_multiplier": ([2, 3, 4, 8], {"default": 2, "tooltip": "2x adds 1 frame per pair; 4x adds 3; 8x adds 7. 3x adds 2 at 37.5% and 62.5%, not exact thirds, and costs roughly as much as 8x. Output count = (input count - 1) x multiplier + 1. Set downstream video FPS to source FPS x multiplier for the intended playback rate. Scene cuts repeat nearby enhanced originals. Ignored when interpolation is off."}),
+            "format": (["png", "webp", "jpg"], {"default": "png", "tooltip": "DiskImage output only: PNG, lossless WebP or JPEG. JPEG uses Quality and composites transparency onto white, matching other VTS nodes. Network transport always uses lossless PNG."}),
+            "compression_level": ("INT", {"default": 1, "min": 0, "max": 9, "tooltip": "DiskImage PNG only: 0 is uncompressed; 9 gives smaller files but takes longer. Pixel quality is identical. Ignored for WebP, JPEG and Tensor output; network PNG uses fast compression level 1."}),
+            "prefix": ("STRING", {"default": "frame", "tooltip": "DiskImage output only: filename prefix, not a folder. The default produces frame_000000.png, frame_000001.png, and so on."}),
+            "start_sequence": ("INT", {"default": 0, "min": 0, "tooltip": "DiskImage output only: first filename number. Changes filenames only, without skipping frames or changing interpolation timing."}),
+            "quality": ("INT", {"default": 95, "min": 1, "max": 100, "tooltip": "DiskImage JPEG only: 1-100, default 95. Higher values retain more detail and usually make larger files; JPEG is lossy even at 100. Ignored for PNG, lossless WebP and Tensor output. Does not change network PNG transport."}),
         }}
 
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("images",)
     FUNCTION = "enhance"
     CATEGORY = "VTS/video"
-    DESCRIPTION = "Temporal neural enhancement of ordered images with optional RTX VSR scaling. Persistent server sessions, lossless PNG transport, unchanged frame count, and bounded streaming buffers. No outer iterations, video files or HDR."
+    DESCRIPTION = "Temporal neural enhancement of ordered images with optional RTX VSR scaling and DLSS frame interpolation. One server stream, lossless PNG transport and bounded streaming buffers. No outer iterations, video files or HDR."
 
     @staticmethod
     def _receive(socket, deadline):
@@ -129,7 +136,9 @@ class VTSMerserkTemporalEnhance(ScaleToMinDimensions):
                 face_skin_protection=0.0, grain_preservation=0.0, shimmer_suppression=.7,
                 output_dir="", timeout_seconds=600, enable_scaling=True, enable_neural_rendering=True,
                 sizing_mode="Scale to Min", smallMaxSize=512, largeMaxSize=512, divisible_by=2,
-                crop="disabled", scale_type="small", vsr_quality="Ultra"):
+                crop="disabled", scale_type="small", vsr_quality="Ultra",
+                enable_frame_interpolation=False, interpolation_multiplier=2,
+                format="png", compression_level=1, prefix="frame", start_sequence=0, quality=95):
         if return_type == "Input":
             return_type = "DiskImage" if isinstance(images, DiskImage) else "Tensor"
         if return_type not in {"Tensor", "DiskImage"}:
@@ -137,6 +146,21 @@ class VTSMerserkTemporalEnhance(ScaleToMinDimensions):
         if len(images.shape) != 4 or images.shape[-1] not in (3, 4) or len(images) < 1:
             raise ValueError("Expected a non-empty, equally sized RGB/RGBA image sequence.")
         count, height, width, channels = images.shape
+        if not isinstance(enable_frame_interpolation, bool):
+            raise ValueError("Enable Frame Interpolation must be a boolean.")
+        if enable_frame_interpolation and (isinstance(interpolation_multiplier, bool)
+                or not isinstance(interpolation_multiplier, int) or interpolation_multiplier not in (2, 3, 4, 8)):
+            raise ValueError("Choose a 2x, 3x, 4x or 8x interpolation multiplier.")
+        interpolate = enable_frame_interpolation and count > 1
+        multiplier = interpolation_multiplier if interpolate else 1
+        output_count = (count - 1) * multiplier + 1
+        if return_type == "DiskImage":
+            if format not in {"png", "webp", "jpg"}:
+                raise ValueError("DiskImage format must be png, webp or jpg.")
+            if not prefix or prefix in {".", ".."} or any(c in prefix for c in '/\\:'):
+                raise ValueError("Prefix must be a filename, not a path.")
+            if not isinstance(start_sequence, int) or start_sequence < 0:
+                raise ValueError("Start sequence must be a non-negative integer.")
         original_shape = (height, width, channels)
         tw, th = width, height
         if enable_scaling:
@@ -153,15 +177,15 @@ class VTSMerserkTemporalEnhance(ScaleToMinDimensions):
                 raise ValueError("Sizing produced a zero dimension. Increase the side sizes or reduce divisible_by.")
             if crop not in {"disabled", "center"}:
                 raise ValueError("Crop must be disabled or center.")
-        if not enable_neural_rendering and (tw, th) == (width, height):
-            if (return_type == "Tensor" and isinstance(images, torch.Tensor)) or (return_type == "DiskImage" and isinstance(images, DiskImage)):
+        if not enable_neural_rendering and not interpolate and (tw, th) == (width, height):
+            if (return_type == "Tensor" and isinstance(images, torch.Tensor)) or (return_type == "DiskImage" and isinstance(images, DiskImage) and images.format == format):
                 return (images,)
         first = images[0]
         sample = self._center_crop_for_aspect(first.unsqueeze(0), tw, th)[0] if enable_scaling and crop == "center" else first
         ch, cw = sample.shape[:2]
         upload_size = (min(cw, tw), min(ch, th))
         del sample
-        remote = enable_neural_rendering or upload_size != (tw, th)
+        remote = enable_neural_rendering or interpolate or upload_size != (tw, th)
         parameters = dict(nr_passes=nr_passes, nr_style=nr_style, nr_intensity=nr_intensity,
             local_tone_strength=local_tone_strength, local_structure_strength=local_structure_strength,
             skin_structure_strength=skin_structure_strength, automatic_mask=automatic_mask,
@@ -182,8 +206,8 @@ class VTSMerserkTemporalEnhance(ScaleToMinDimensions):
                 saved_directory = Path(tempfile.mkdtemp(prefix="sequence-", dir=destination.resolve()))
                 output = None
             else:
-                output = torch.empty((count, th, tw, channels), dtype=torch.float32, device="cpu")
-            progress = ProgressBar(count)
+                output = torch.empty((output_count, th, tw, channels), dtype=torch.float32, device="cpu")
+            progress = ProgressBar(output_count)
 
             def prepare(index):
                 model_management.throw_exception_if_processing_interrupted()
@@ -205,7 +229,18 @@ class VTSMerserkTemporalEnhance(ScaleToMinDimensions):
                 if image.size != (tw, th):
                     raise ValueError("Merserk returned incorrect frame dimensions.")
                 if saved_directory is not None:
-                    image.save(saved_directory / f"frame_{index:06d}.png", compress_level=1)
+                    path = saved_directory / f"{prefix}_{index + start_sequence:06d}.{format}"
+                    if format == "jpg":
+                        with Image.new("RGB", image.size, "white") as jpeg:
+                            if image.mode == "RGBA":
+                                with image.getchannel("A") as alpha:
+                                    jpeg.paste(image, mask=alpha)
+                            else:
+                                jpeg.paste(image)
+                            jpeg.save(path, quality=quality, subsampling=0)
+                    else:
+                        save_options = {"compress_level": compression_level} if format == "png" else {"lossless": True, "exact": True}
+                        image.save(path, **save_options)
                 else:
                     output[index].copy_(torch.from_numpy(np.array(image, dtype=np.float32) / 255))
                 progress.update(1)
@@ -223,13 +258,15 @@ class VTSMerserkTemporalEnhance(ScaleToMinDimensions):
                 with connect(url, open_timeout=min(30, timeout_seconds), close_timeout=2,
                              max_size=CHUNK_BYTES + 1024, max_queue=2, compression=None, proxy=None) as socket, \
                      ThreadPoolExecutor(max_workers=1, thread_name_prefix='vts-temporal-upload') as loader:
-                    setup = dict(version=1, queue_status=True, width=upload_size[0], height=upload_size[1], target_width=tw,
+                    setup = dict(version=2 if interpolate else 1, queue_status=True, width=upload_size[0], height=upload_size[1], target_width=tw,
                         target_height=th, channels=channels, frame_count=count, enable_neural_rendering=enable_neural_rendering,
                         vsr_quality={'Low':1,'Medium':2,'High':3,'Ultra':4}[vsr_quality],
                         parameters=parameters, timeout_seconds=timeout_seconds)
+                    if interpolate:
+                        setup.update(enable_frame_interpolation=True, interpolation_multiplier=multiplier)
                     socket.send(json.dumps(setup))
                     ready = self._ready(socket, timeout_seconds)
-                    if any(ready.get(k) != v for k,v in dict(type='ready',version=1,output_count=count,
+                    if any(ready.get(k) != v for k,v in dict(type='ready',version=setup['version'],output_count=output_count,
                             width=tw,height=th,channels=channels,chunk_bytes=CHUNK_BYTES).items()):
                         raise ValueError("Merserk does not support the expected temporal enhancement protocol.")
                     credits = threading.Semaphore(2)
@@ -256,40 +293,49 @@ class VTSMerserkTemporalEnhance(ScaleToMinDimensions):
 
                     sending = loader.submit(upload)
                     try:
-                        for index in range(count):
-                            deadline = time.monotonic() + timeout_seconds
-                            if sending.done() and sending.exception() is not None:
-                                raise sending.exception()
-                            header = self._message(socket, deadline)
-                            if header.get('type') != 'enhanced' or header.get('index') != index:
-                                raise ValueError("Merserk returned frames out of order.")
-                            size = header.get('bytes')
-                            if isinstance(size,bool) or not isinstance(size,int) or not 0 < size <= tw * th * 8 + 1024 * 1024:
-                                raise ValueError("Invalid returned PNG length.")
-                            data = bytearray()
-                            while len(data) < size:
-                                chunk = self._receive(socket,deadline)
-                                if not isinstance(chunk,bytes) or not chunk or len(chunk)>CHUNK_BYTES or len(data)+len(chunk)>size:
-                                    raise ValueError("Invalid returned PNG chunk.")
-                                data.extend(chunk)
-                            with Image.open(io.BytesIO(data)) as image:
-                                if image.format != 'PNG' or image.mode != ('RGBA' if channels==4 else 'RGB'):
-                                    raise ValueError("Expected an 8-bit PNG with matching channels.")
-                                emit(index,image)
-                            del data
+                        index = 0
+                        for source_index in range(count):
+                            for _ in range(1 if source_index == 0 else multiplier):
+                                deadline = time.monotonic() + timeout_seconds
+                                if sending.done() and sending.exception() is not None:
+                                    raise sending.exception()
+                                header = self._message(socket, deadline)
+                                if header.get('type') != 'enhanced' or header.get('index') != index:
+                                    raise ValueError("Merserk returned frames out of order.")
+                                size = header.get('bytes')
+                                if isinstance(size,bool) or not isinstance(size,int) or not 0 < size <= tw * th * 8 + 1024 * 1024:
+                                    raise ValueError("Invalid returned PNG length.")
+                                data = bytearray()
+                                while len(data) < size:
+                                    chunk = self._receive(socket,deadline)
+                                    if not isinstance(chunk,bytes) or not chunk or len(chunk)>CHUNK_BYTES or len(data)+len(chunk)>size:
+                                        raise ValueError("Invalid returned PNG chunk.")
+                                    data.extend(chunk)
+                                with Image.open(io.BytesIO(data)) as image:
+                                    if image.format != 'PNG' or image.mode != ('RGBA' if channels==4 else 'RGB'):
+                                        raise ValueError("Expected an 8-bit PNG with matching channels.")
+                                    emit(index,image)
+                                del data
+                                index += 1
+                            if interpolate:
+                                frame_done = self._message(socket, time.monotonic() + timeout_seconds)
+                                if frame_done != dict(type='frame_done', index=source_index):
+                                    raise ValueError("Merserk returned an invalid interpolation interval.")
                             credits.release()
                         sending.result()
                         done = self._message(socket,time.monotonic()+timeout_seconds)
                         if done.get('type') != 'done' or done.get('stats',{}).get('frames') != count:
                             raise ValueError("Merserk did not complete the full sequence.")
+                        if interpolate and done.get('stats', {}).get('output_frames') != output_count:
+                            raise ValueError("Merserk did not complete all interpolated frames.")
                     finally:
                         stopped.set()
                         socket.close()
                         sending.cancel()
             if saved_directory is not None:
-                output = DiskImage(prefix='frame',start_sequence=0,number_of_images=count,
-                    output_dir=str(saved_directory),format='png',image=None)
-                output.shape, output.dtype, output.ndim = (count,th,tw,channels),torch.float32,4
+                output = DiskImage(prefix=prefix,start_sequence=start_sequence,number_of_images=output_count,
+                    output_dir=str(saved_directory),format=format,image=None)
+                output.shape, output.dtype, output.ndim = (output_count,th,tw,3 if format == "jpg" else channels),torch.float32,4
             success = True
             return (output,)
         finally:
