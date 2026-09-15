@@ -10,9 +10,19 @@ if import_dir not in sys.path:
     sys.path.append(import_dir)
 
 from VTS_VAEDecodeTiled import VTS_VAEDecodeTiled
-from VTS_MiniMaxH3MotionContext import _context_length, _pixel_frames, _steps_for_frames
+from VTS_MiniMaxH3MotionContext import _context_length, _pixel_frames, _resize, _steps_for_frames
+from VTS_MerserkTemporalEnhance import VTSMerserkTemporalEnhance
 from vtsUtils import DiskImage, ensure_image_output_defaults, resolve_list_mapped_output_identity, save_images
 from vts_color_correction import METHODS, MODES, correct_images
+
+
+def _merserk_inputs():
+    # Reuse the standalone node's processing controls and tooltips. Output storage
+    # belongs to the decoder so context encoding precedes any lossy disk save.
+    excluded = {"images", "return_type", "output_dir", "format", "compression_level",
+                "quality", "prefix", "start_sequence"}
+    return {name: spec for group in VTSMerserkTemporalEnhance.INPUT_TYPES().values()
+            for name, spec in group.items() if name not in excluded}
 
 
 class VTS_VAEDecodeTiledColourMatch(VTS_VAEDecodeTiled):
@@ -34,9 +44,15 @@ class VTS_VAEDecodeTiledColourMatch(VTS_VAEDecodeTiled):
             "lut_resolution": ([17, 33, 65], {"default": 33, "advanced": True, "tooltip": "RGB lookup-table resolution. Higher values approximate the fitted transforms more accurately, especially near black."}),
         }
         inputs["optional"].update({
-            "encode_corrected_context": ("BOOLEAN", {"default": False, "tooltip": "H3 only: encode the final corrected frames for the next loop. Adds VAE encoding work. Off returns no replacement context."}),
+            "encode_corrected_context": ("BOOLEAN", {"default": False, "tooltip": "H3 only: encode a tail for the next loop, before disk compression. Use Merserk For Context selects whether enhancement affects this tail. Frames automatically return to the source latent resolution. Adds VAE encoding work; off returns no replacement context."}),
             "context_length": (["22", "5", "39", "56"], {"default": "22", "tooltip": "Must match Prepare Loop Context. Only this many tail frames are encoded; short clips use the largest valid H3 length available."}),
         })
+        inputs["optional"].update({
+            "use_merserk_for_context": ("BOOLEAN", {"default": False, "tooltip": "Requires Encode Corrected Context. Off encodes colour-corrected frames before Merserk. On uses the Merserk result when Enable Merserk is on, automatically resized to the original latent dimensions. The main image output always includes enabled Merserk processing."}),
+            "context_frame_selection": (["Original", "Interpolated"], {"default": "Original", "tooltip": "Only used when the context includes Merserk and frame interpolation is enabled. Original selects enhanced source frames at the original cadence. Interpolated selects consecutive frames from the denser output tail. H3 still conditions at its fixed 24 FPS: this is not higher-FPS conditioning and can slow apparent continuation motion or affect audio alignment. Context Length is unchanged."}),
+            "enable_merserk": ("BOOLEAN", {"default": False, "tooltip": "Run Merserk Temporal Enhance after the full sequence is decoded and colour corrected. Scaling, neural rendering and interpolation have separate switches below. Off preserves the existing decoder behavior. Uses lossless 8-bit PNG transport; final files use this decoder's output settings."}),
+        })
+        inputs["optional"].update({"merserk_" + name: spec for name, spec in _merserk_inputs().items()})
         return inputs
 
     RETURN_TYPES = ("IMAGE", "VTS_H3_VIDEO_CONTEXT")
@@ -44,10 +60,13 @@ class VTS_VAEDecodeTiledColourMatch(VTS_VAEDecodeTiled):
     DESCRIPTION = (
         "Tiled VAE decode with optional reference colour correction. Uses weighted "
         "colour matching, reference white balance, brightness and contrast, in that "
-        "order. Corrects before saving. No reference or zero overall weight gives "
-        "the original decode. GPU Lab follows KJNodes' Lab statistics approach; "
+        "order. Corrects before saving. No reference or zero overall weight bypasses "
+        "colour correction. GPU Lab follows KJNodes' Lab statistics approach; "
         "reference tone controls adapt Donut-style operations. Optionally encode "
-        "the corrected H3 tail for Prepare Loop Context; original audio stays unchanged.")
+        "the corrected H3 tail for Prepare Loop Context; original audio stays unchanged. "
+        "Optional Merserk scaling, temporal enhancement and interpolation run after "
+        "colour correction. Context can include or exclude Merserk, with automatic "
+        "resizing back to the original latent resolution before encoding.")
 
     def decode(self, vae, samples, tile_size_x=512, tile_size_y=512, overlap=64,
                temporal_size=64, temporal_overlap=8, color_ref=None,
@@ -56,14 +75,17 @@ class VTS_VAEDecodeTiledColourMatch(VTS_VAEDecodeTiled):
                brightness_weight=0.0, contrast_weight=0.0,
                calculation_mode="fixed_per_clip", smoothing=0.9, overall_weight=1.0,
                analysis_size=128, lut_resolution=33, encode_corrected_context=False,
-               context_length="22", **kwargs):
+               context_length="22", enable_merserk=False, use_merserk_for_context=False,
+               context_frame_selection="Original", **kwargs):
+        merserk_options = {name: kwargs.pop("merserk_" + name)
+                           for name in _merserk_inputs() if "merserk_" + name in kwargs}
         kwargs = ensure_image_output_defaults(kwargs)
         decode_args = dict(tile_size_x=tile_size_x, tile_size_y=tile_size_y,
                            overlap=overlap, temporal_size=temporal_size,
                            temporal_overlap=temporal_overlap)
         bypass_correction = color_ref is None or overall_weight == 0 or not any(
             (color_match_weight, white_balance_weight, brightness_weight, contrast_weight))
-        if bypass_correction and not encode_corrected_context:
+        if bypass_correction and not encode_corrected_context and not enable_merserk:
             return (*super().decode(vae, samples, **decode_args, **kwargs), None)
 
         if encode_corrected_context:
@@ -76,6 +98,10 @@ class VTS_VAEDecodeTiledColourMatch(VTS_VAEDecodeTiled):
                 raise ValueError("Corrected context encoding requires one H3 video latent [1,24,T,H,W].")
             source_frames = _pixel_frames(int(video.shape[2]))
             frame_count = _context_length(int(context_length), source_frames)
+
+        include_merserk_context = encode_corrected_context and enable_merserk and use_merserk_for_context
+        if include_merserk_context and context_frame_selection not in ("Original", "Interpolated"):
+            raise ValueError("Context frame selection must be Original or Interpolated.")
 
         tensor_options = dict(kwargs, return_type="Tensor")
         images, = super().decode(vae, samples, **decode_args, **tensor_options)
@@ -91,16 +117,34 @@ class VTS_VAEDecodeTiledColourMatch(VTS_VAEDecodeTiled):
                 images[index].copy_(frame)
 
         context = None
+        context_images = None
         if encode_corrected_context:
             if images.shape != (source_frames, video.shape[3] * 16, video.shape[4] * 16, 3):
                 raise ValueError("Corrected H3 frames must match the source latent's frame count and resolution.")
-            encoded = vae.encode(images[-frame_count:])
+            if not include_merserk_context:
+                # Own just the needed tail so a remote result can release the decode.
+                context_images = images[-frame_count:].clone()
+
+        if enable_merserk:
+            model_management.throw_exception_if_processing_interrupted()
+            images, = VTSMerserkTemporalEnhance().enhance(images, return_type="Tensor", **merserk_options)
+
+        if encode_corrected_context:
+            if include_merserk_context:
+                stride = (merserk_options.get("interpolation_multiplier", 2)
+                          if merserk_options.get("enable_frame_interpolation", False)
+                          and context_frame_selection == "Original" else 1)
+                context_images = images[::stride][-frame_count:].clone()
+                if context_images.shape[1:3] != (video.shape[3] * 16, video.shape[4] * 16):
+                    context_images = _resize(context_images, video.shape[4] * 16, video.shape[3] * 16)
+            model_management.throw_exception_if_processing_interrupted()
+            encoded = vae.encode(context_images)
             expected = (1, 24, _steps_for_frames(frame_count), *video.shape[3:])
             if not isinstance(encoded, torch.Tensor) or tuple(encoded.shape) != expected:
                 raise ValueError("Corrected H3 VAE encoding must produce latent shape %s." % (expected,))
             context = {"video": encoded.detach().clone(), "frame_count": frame_count,
                        "source_frames": source_frames}
-            del encoded, video
+            del encoded, video, context_images
 
         if kwargs["return_type"] == "Tensor":
             return images, context

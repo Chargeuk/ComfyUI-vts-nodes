@@ -4,17 +4,18 @@ A separate decoder with the same tiled VAE inputs, Tensor/DiskImage outputs,
 output paths, numbering and list suffixes as **VAE Decode VTS (Tiled)**.
 Connect an optional `color_ref` to correct decoded frames before saving.
 No reference, zero overall weight, or all component weights at zero bypasses
-correction. Audio and input latents are not modified.
+correction. Optional Merserk processing runs after colour correction. Audio and
+input latents are not modified.
 
 ## Corrected H3 continuation context
 
 `encode_corrected_context` defaults to **false**, preserving the existing image
-output and doing no extra encoding. The new second output,
+output and doing no extra encoding. The second output,
 `corrected_video_context`, is `None` when disabled. Existing image links stay on
-output 0. Restart ComfyUI and refresh the frontend to load the new sockets.
+output 0.
 
-Enable it to encode only the final `context_length` corrected frames directly
-from the decoded image tensor, before disk compression. Lengths are 5, 22
+Enable it to encode only the final `context_length` selected frames directly
+from the in-memory image tensor, before disk compression. Lengths are 5, 22
 (default), 39 or 56 frames; shorter clips use the largest valid length available
 (including one frame). It requires a single H3 video and its matching video VAE.
 It uses the VAE's normal encode method and memory management, independently of
@@ -29,13 +30,94 @@ resolutions; it cannot identify unrelated clips with identical shapes.
 Apply Loop Context uses the corrected video for both its guide and masked prefix.
 Repeat this wiring for the initial clip and for the loop body as applicable.
 
-The normal Tensor/DiskImage output is unchanged. No saved images are read back,
+Context selection does not change the main Tensor/DiskImage output. No saved images are read back,
 and the new output owns only the small encoded tail, not the full images or
 original AV latent. If colour correction is bypassed while encoding is enabled,
-the tail is still re-encoded, using the unchanged decoded images. Disconnecting
+the tail is still re-encoded. With Merserk excluded from context it uses the
+unchanged decoded images; with Merserk included it uses the processed result. Disconnecting
 the new output alone does not disable encoding: turn its flag off as well.
 Use a stable colour reference to avoid repeatedly compounding a grade. Compare
 several continuations for colour, detail and motion before relying on this path.
+
+## Optional Merserk processing
+
+`enable_merserk` defaults to **false**, preserving existing workflows. When on,
+the order is:
+
+1. Decode the entire sequence using the existing tiled VAE settings.
+2. Apply the enabled colour correction.
+3. Run the existing **VTS Merserk Temporal Enhance** processing: resize, neural
+   enhancement, then optional interpolation.
+4. Encode the selected continuation tail if requested, then save/return the
+   final image sequence.
+
+The `merserk_` controls reuse the standalone temporal node's settings, defaults
+and tooltips, including server URL/timeout, independent scaling/neural/
+interpolation switches, Scale to Min or Multiplier sizing, native neural passes,
+style, tone/skin/detail controls and shimmer suppression. There are no outer
+iterations. Scale to Min accepts reversed side limits, enlargement uses RTX VSR,
+and reduction uses local Lanczos. The master switch overrides every Merserk
+setting. Local reduction and a complete bypass do not require a server.
+
+The decoder's existing `return_type`, path, prefix, numbering, image format,
+compression and quality controls apply to the final output only. Merserk receives
+and returns lossless 8-bit PNG images; floating-point decoded values are
+clamped/quantized to 8 bits for this processing, so this is not HDR or lossless
+floating-point transport. JPEG is available for final disk output independently
+of transport. No intermediate images are saved by this integration.
+
+Interpolation supports 2x, 3x, 4x and 8x, producing `(N - 1) * multiplier + 1`
+frames. For example, 5 input frames at 2x produce 9 output frames. 3x uses the
+existing approximate positions at 37.5% and 62.5%, not exact thirds. A single
+frame remains one frame. Set the downstream video output FPS separately to
+source FPS times the multiplier; this node returns images, not a video file.
+
+### Which frames enter the continuation context?
+
+`encode_corrected_context` still controls whether encoding happens at all.
+`use_merserk_for_context` defaults to **false**:
+
+- **Off:** encode the colour-corrected tail before Merserk. Main image output
+  still includes all enabled Merserk operations.
+- **On:** encode the Merserk result when `enable_merserk` is on. If the master
+  switch is off, use the usual colour-corrected frames.
+
+With Merserk included and interpolation enabled, `context_frame_selection`
+chooses the tail's cadence:
+
+- **Original** (default): select enhanced source frames, skipping inserted
+  frames. With 2x interpolation these are output indices 0, 2, 4, and so on.
+- **Interpolated:** use consecutive frames from the end of the expanded output,
+  including inserted frames. A five-frame context covers a shorter period of
+  source motion than five original-cadence frames.
+
+Both choices keep the existing `context_length` rules, capped by the original
+clip's available H3 length, and preserve compatibility with Prepare Loop Context.
+Selected frames automatically resize back to the source latent's width and
+height using Lanczos before VAE encoding. There is no resize toggle: the
+replacement latent must match the source geometry. This does not undo any crop
+already applied by Merserk; it restores dimensions, not removed image content.
+The main output retains its processed resolution and expanded frame count.
+
+**H3 context still uses its fixed 24 FPS timebase.** Interpolated selection does
+not enable true 48/72/96/192 FPS conditioning. A denser tail represents less
+motion per conditioned frame and can slow apparent continuation motion or
+misalign that motion with the unchanged original audio. Original selection is
+the default for preserving the source cadence. Neither option changes source
+audio, H3 timing metadata, or the downstream video writer's FPS.
+
+The context is encoded directly from selected in-memory frames before any final
+JPEG/WebP/PNG save. Saved files are never read back for encoding. Network errors
+or cancellation propagate through the existing Merserk client instead of silently
+returning an unenhanced result. Its queue, worker-recovery retry and cancellation
+behavior are shared with the standalone node.
+
+This first integration is sequential: Merserk starts after decoding and colour
+correction finish. It reuses the client's bounded network buffers, but retains
+full input and processed image batches during processing, even for DiskImage
+output. Interpolation and enlargement can substantially increase RAM use. Only
+the selected context tail is retained separately; returned context latents own
+their storage independently of the full clip.
 
 ## Controls
 

@@ -369,5 +369,179 @@ class CorrectedContextTests(unittest.TestCase):
         torch.testing.assert_close(masked["samples"].tensors[0][:, :, :7], replacement["video"])
 
 
+
+class MerserkDecodeTests(unittest.TestCase):
+    def setUp(self):
+        self.node = NODE.VTS_VAEDecodeTiledColourMatch()
+        # Five H3 source frames, with a different constant value per frame.
+        self.image = torch.arange(5, dtype=torch.float32).view(5, 1, 1, 1).expand(5, 32, 32, 3).clone() / 10
+        self.source = {"samples": torch.zeros(1, 24, 2, 2, 2)}
+        self.vae = FakeVAE(self.image)
+        self.vae.encode = self.encoder
+        self.events = []
+
+    def encoder(self, images):
+        self.events.append("encode")
+        self.encoded_input = images.clone()
+        self.input_reference = weakref.ref(images)
+        steps = NODE._steps_for_frames(len(images))
+        return images.reshape(-1)[:24 * steps * 4].reshape(1, 24, steps, 2, 2)
+
+    def enhance(self, images, **options):
+        self.events.append("enhance")
+        self.sent = images.clone()
+        self.options = options
+        result = images * 0.5 + 0.25
+        if options.get("enable_frame_interpolation", False) and len(result) > 1:
+            multiplier = options.get("interpolation_multiplier", 2)
+            expanded = []
+            for first, second in zip(result[:-1], result[1:]):
+                expanded.extend(torch.lerp(first, second, i / multiplier) for i in range(multiplier))
+            result = torch.stack([*expanded, result[-1]])
+        # Deliberately change both dimensions/aspect ratio to exercise context resize.
+        self.enhanced = result.repeat_interleave(2, dim=1).repeat_interleave(3, dim=2)
+        return (self.enhanced,)
+
+    def test_schema_reuses_all_processing_controls_and_no_disk_or_outer_controls(self):
+        schema = self.node.INPUT_TYPES()["optional"]
+        excluded = {"images", "return_type", "output_dir", "format", "compression_level",
+                    "quality", "prefix", "start_sequence"}
+        expected = {"merserk_" + name: spec
+                    for group in NODE.VTSMerserkTemporalEnhance.INPUT_TYPES().values()
+                    for name, spec in group.items() if name not in excluded}
+        actual = {name: spec for name, spec in schema.items() if name.startswith("merserk_")}
+        self.assertEqual(actual, expected)
+        self.assertFalse(schema["enable_merserk"][1]["default"])
+        self.assertFalse(schema["use_merserk_for_context"][1]["default"])
+        self.assertEqual(schema["context_frame_selection"][1]["default"], "Original")
+        self.assertNotIn("merserk_iterations", actual)
+
+    def test_master_off_preserves_images_and_context_and_ignores_merserk_settings(self):
+        with patch.object(NODE.VTSMerserkTemporalEnhance, "enhance", side_effect=AssertionError("remote call")):
+            for encode in (False, True):
+                output, context = self.node.decode(self.vae, self.source, return_type="Tensor",
+                    encode_corrected_context=encode, use_merserk_for_context=True,
+                    context_frame_selection="ignored", merserk_enable_frame_interpolation=True,
+                    merserk_interpolation_multiplier=999, merserk_server_url="invalid")
+                torch.testing.assert_close(output, self.image, rtol=0, atol=0)
+                if encode:
+                    torch.testing.assert_close(self.encoded_input, self.image, rtol=0, atol=0)
+                else:
+                    self.assertIsNone(context)
+
+    def test_colour_correction_precedes_merserk_and_all_controls_are_forwarded(self):
+        ref = torch.full_like(self.image[:1], 0.3)
+        corrected, _ = self.node.decode(self.vae, self.source, color_ref=ref, return_type="Tensor")
+        options = {name: spec[1].get("default", spec[0][0] if isinstance(spec[0], list) else None)
+                   for name, spec in NODE._merserk_inputs().items()}
+        options.update(server_url="http://test:7865", nr_passes=3, skin_structure_strength=1.5,
+                       automatic_mask=True, enable_frame_interpolation=True, interpolation_multiplier=4)
+        with patch.object(NODE.VTSMerserkTemporalEnhance, "enhance", side_effect=self.enhance):
+            output, context = self.node.decode(self.vae, self.source, color_ref=ref,
+                enable_merserk=True, return_type="Tensor",
+                **{"merserk_" + name: value for name, value in options.items()})
+        torch.testing.assert_close(self.sent, corrected, rtol=0, atol=0)
+        self.assertFalse(torch.equal(self.sent, self.image))
+        self.assertEqual(self.options, dict(options, return_type="Tensor"))
+        self.assertEqual(tuple(output.shape), (17, 64, 96, 3))
+        self.assertIsNone(context)
+
+    def test_context_can_exclude_merserk_even_when_output_is_scaled_and_interpolated(self):
+        with patch.object(NODE.VTSMerserkTemporalEnhance, "enhance", side_effect=self.enhance):
+            output, context = self.node.decode(self.vae, self.source, return_type="Tensor",
+                enable_merserk=True, encode_corrected_context=True,
+                merserk_enable_frame_interpolation=True, merserk_interpolation_multiplier=4,
+                context_frame_selection="Interpolated")
+        torch.testing.assert_close(self.encoded_input, self.image, rtol=0, atol=0)
+        self.assertEqual(tuple(output.shape), (17, 64, 96, 3))
+        self.assertEqual(context["source_frames"], 5)
+        self.assertEqual(context["frame_count"], 5)
+        self.assertEqual(self.events, ["enhance", "encode"])
+
+    def test_context_original_vs_interpolated_tail_and_automatic_resize(self):
+        for multiplier in (2, 3, 4, 8):
+            for selection in ("Original", "Interpolated"):
+                with self.subTest(multiplier=multiplier, selection=selection):
+                    with patch.object(NODE.VTSMerserkTemporalEnhance, "enhance", side_effect=self.enhance):
+                        output, context = self.node.decode(self.vae, self.source, return_type="Tensor",
+                            enable_merserk=True, encode_corrected_context=True, use_merserk_for_context=True,
+                            context_frame_selection=selection, merserk_enable_frame_interpolation=True,
+                            merserk_interpolation_multiplier=multiplier)
+                    stride = multiplier if selection == "Original" else 1
+                    # Each mock frame is spatially constant, so resizing must retain its value.
+                    values = output[::stride][-5:, :1, :1]
+                    torch.testing.assert_close(self.encoded_input, values.expand(5, 32, 32, 3), atol=1/255, rtol=0)
+                    self.assertEqual(context["video"].shape, (1, 24, 2, 2, 2))
+                    self.assertEqual(context["source_frames"], 5)
+                    self.assertEqual(len(output), 4 * multiplier + 1)
+                    gc.collect()
+                    self.assertIsNone(self.input_reference())
+                    encoded = context["video"]
+                    self.assertEqual(encoded.untyped_storage().nbytes(), encoded.numel() * encoded.element_size())
+
+    def test_single_frame_and_disabled_interpolation(self):
+        for count, steps in ((1, 1), (5, 2)):
+            for interpolate in (False, True):
+                for selection in ("Original", "Interpolated"):
+                    with patch.object(NODE.VTSMerserkTemporalEnhance, "enhance", side_effect=self.enhance):
+                        output, context = self.node.decode(FakeVAEWithEncode(self.image[:count], self.encoder),
+                            {"samples": torch.zeros(1, 24, steps, 2, 2)}, return_type="Tensor",
+                            enable_merserk=True, encode_corrected_context=True, use_merserk_for_context=True,
+                            context_frame_selection=selection, merserk_enable_frame_interpolation=interpolate)
+                    self.assertEqual(len(self.encoded_input), count)
+                    self.assertEqual(context["frame_count"], count)
+                    if not interpolate or count == 1:
+                        torch.testing.assert_close(self.encoded_input, self.image[:count] * 0.5 + 0.25, atol=1/255, rtol=0)
+
+    def test_jpeg_is_saved_only_after_context_encode_without_readback(self):
+        real_save = NODE.save_images
+        def save(**kwargs):
+            self.events.append("save")
+            return real_save(**kwargs)
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(NODE.VTSMerserkTemporalEnhance, "enhance", side_effect=self.enhance), \
+                 patch.object(NODE.DiskImage, "materialize", side_effect=AssertionError("disk read")), \
+                 patch.object(NODE, "save_images", side_effect=save), \
+                 CurrentNodeContext("test", "decode", 2):
+                disk, context = self.node.decode(self.vae, self.source, return_type="DiskImage",
+                    enable_merserk=True, encode_corrected_context=True, use_merserk_for_context=True,
+                    merserk_enable_frame_interpolation=True, output_dir=directory,
+                    prefix="enhanced", start_sequence=12, format="jpg", quality=20, num_workers=1)
+            self.assertEqual(self.events, ["enhance", "encode", "save"])
+            self.assertEqual(len(list(Path(directory).glob("*.jpg"))), 9)
+            self.assertTrue((Path(directory) / "enhanced_list_000002_000020.jpg").exists())
+            self.assertEqual(disk.number_of_images, 9)
+            torch.testing.assert_close(self.encoded_input, self.image * 0.5 + 0.25, atol=1/255, rtol=0)
+            self.assertEqual(context["frame_count"], 5)
+
+    def test_failures_and_cancellation_propagate_without_saving_or_encoding(self):
+        for error in (RuntimeError("server unavailable"), NODE.model_management.InterruptProcessingException()):
+            with patch.object(NODE.VTSMerserkTemporalEnhance, "enhance", side_effect=error), \
+                 patch.object(NODE, "save_images") as save:
+                with self.assertRaises(type(error)):
+                    self.node.decode(self.vae, self.source, enable_merserk=True,
+                        encode_corrected_context=True, use_merserk_for_context=True, return_type="DiskImage")
+                save.assert_not_called()
+                self.assertEqual(self.events, [])
+
+    def test_real_client_local_resize_and_bypass_need_no_server(self):
+        with patch("VTS_MerserkTemporalEnhance.connect", side_effect=AssertionError("network")):
+            output, context = self.node.decode(self.vae, self.source, enable_merserk=True,
+                merserk_enable_scaling=False, merserk_enable_neural_rendering=False, return_type="Tensor")
+            torch.testing.assert_close(output, self.image, rtol=0, atol=0)
+            output, context = self.node.decode(self.vae, self.source, enable_merserk=True,
+                merserk_enable_neural_rendering=False, merserk_sizing_mode="Multiplier",
+                merserk_upscaling_factor=0.5, return_type="Tensor", encode_corrected_context=True,
+                use_merserk_for_context=True)
+        self.assertEqual(output.shape, (5, 16, 16, 3))
+        self.assertEqual(self.encoded_input.shape, (5, 32, 32, 3))
+        self.assertEqual(context["video"].shape, (1, 24, 2, 2, 2))
+
+
+class FakeVAEWithEncode(FakeVAE):
+    def __init__(self, image, encoder):
+        super().__init__(image)
+        self.encode = encoder
+
 if __name__ == "__main__":
     unittest.main()
