@@ -104,6 +104,15 @@ def _append_audit(path: str, event: dict) -> None:
         os.fsync(stream.fileno())
 
 
+
+import sys
+
+_vts_utils = os.path.join(os.path.dirname(__file__), 'vtsUtils')
+if _vts_utils not in sys.path:
+    sys.path.append(_vts_utils)
+from vts_latent_nodes import disk_latent_node
+
+@disk_latent_node(inputs=('latent',), outputs=(0,), prefix='VTS Save Reference Latent (Disk)')
 class VTSSaveReferenceLatent:
     @classmethod
     def INPUT_TYPES(cls):
@@ -212,6 +221,7 @@ class VTSSaveReferenceLatent:
         return (latent, str(destination), json.dumps(report, indent=2, sort_keys=True))
 
 
+@disk_latent_node(inputs=(), outputs=(0,), prefix='VTS Load Reference Latent (Disk)')
 class VTSLoadReferenceLatent:
     @classmethod
     def INPUT_TYPES(cls):
@@ -331,6 +341,7 @@ def _qwen_vae_image(image: torch.Tensor) -> torch.Tensor:
     return comfy.utils.common_upscale(samples, width, height, "area", "disabled").movedim(1, -1)[:, :, :, :3]
 
 
+@disk_latent_node(inputs=('fixed_reference_latent', 'previous_reference_latent'), outputs=(2,), prefix='VTS Qwen Image Edit (Cached Reference Latents)')
 class VTSQwenImageEditCachedReferences:
     """Build positive/negative Qwen conditioning with disk-loaded ref latents.
 

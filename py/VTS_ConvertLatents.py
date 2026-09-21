@@ -2,6 +2,16 @@ import torch
 import json
 import numpy as np
 
+
+import os
+import sys
+
+_vts_utils = os.path.join(os.path.dirname(__file__), 'vtsUtils')
+if _vts_utils not in sys.path:
+    sys.path.append(_vts_utils)
+from vts_latent_nodes import disk_latent_node
+
+@disk_latent_node(inputs=('source_latent', 'reference_source', 'reference_target'), outputs=(0,), prefix='VTS Convert Latents')
 class VTS_ConvertLatents:
     """
     A node that converts latents from one sampler format to another using 

@@ -13,6 +13,8 @@ import_dir = os.path.join(os.path.dirname(__file__), "vtsUtils")
 if import_dir not in sys.path:
     sys.path.append(import_dir)
 
+from vts_disk_latent import materialize_latents
+
 from vtsUtils import DiskImage, default_output_dir, resolve_list_mapped_output_identity, save_images, vtsImageTypes
 
 
@@ -494,10 +496,11 @@ def _resolve_requested_return_type(spec, kwargs, requested_return_type):
     return "Tensor"
 
 
-def _execute_wrapped_node(spec, requested_return_type, prefix, start_sequence, output_dir, format, num_workers, compression_level, quality, kwargs):
+def _execute_wrapped_node(spec, requested_return_type, prefix, start_sequence, output_dir, format, num_workers, compression_level, quality, kwargs, latent_device_policy="Original", latent_device="cpu"):
     resolved_return_type = _resolve_requested_return_type(spec, kwargs, requested_return_type)
     node_kwargs = {}
     materialized_inputs = []
+    latent_memo = {}
 
     for input_name in spec["all_input_names"]:
         if input_name == _DYNAMIC_ANCHOR_INPUT:
@@ -507,7 +510,7 @@ def _execute_wrapped_node(spec, requested_return_type, prefix, start_sequence, o
         if wrapped_key not in kwargs:
             continue
 
-        value = kwargs[wrapped_key]
+        value = materialize_latents(kwargs[wrapped_key], latent_device_policy, latent_device, latent_memo)
         if input_name in spec["image_input_names"] and isinstance(value, DiskImage):
             value = value.materialize()
             materialized_inputs.append(value)
@@ -621,6 +624,8 @@ class VTS_Generic_Image_Wrapper(io.ComfyNode):
                 "and the single image output can optionally be written back to disk as a DiskImage."
             ),
             inputs=[
+                io.Combo.Input("latent_device_policy", options=["Original", "CPU", "Specified"], default="Original", optional=True),
+                io.String.Input("latent_device", default="cpu", optional=True),
                 io.Combo.Input(
                     "category_filter",
                     options=category_options,
@@ -688,6 +693,8 @@ class VTS_Generic_Image_Wrapper(io.ComfyNode):
         num_workers,
         compression_level,
         quality,
+        latent_device_policy="Original",
+        latent_device="cpu",
     ) -> io.NodeOutput:
         specs, option_keys, _, _ = cls._get_specs()
         selected_key = wrapped_node.get("wrapped_node")
@@ -712,7 +719,7 @@ class VTS_Generic_Image_Wrapper(io.ComfyNode):
             num_workers,
             compression_level,
             quality,
-            flat_kwargs,
+            flat_kwargs, latent_device_policy, latent_device,
         ))
 
 
@@ -755,6 +762,10 @@ class VTS_Generic_Image_Wrapper_V2:
         _, option_keys, category_options, package_options, catalog = cls._get_specs()
         wrapped_node_options = list(option_keys.keys()) if option_keys else [_NO_SUPPORTED_KEY]
         return {
+            "optional": {
+                "latent_device_policy": (["Original", "CPU", "Specified"], {"default": "Original"}),
+                "latent_device": ("STRING", {"default": "cpu"}),
+            },
             "required": {
                 "vts_category_filter": (
                     category_options,
@@ -813,6 +824,8 @@ class VTS_Generic_Image_Wrapper_V2:
         num_workers,
         compression_level,
         quality,
+        latent_device_policy="Original",
+        latent_device="cpu",
         **kwargs,
     ):
         specs, option_keys, _, _, _ = self._get_specs()
@@ -833,7 +846,7 @@ class VTS_Generic_Image_Wrapper_V2:
             num_workers,
             compression_level,
             quality,
-            kwargs,
+            kwargs, latent_device_policy, latent_device,
         )
 
 

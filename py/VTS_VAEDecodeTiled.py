@@ -10,6 +10,14 @@ if import_dir not in sys.path:
 from vtsUtils import DiskImage, ensure_image_output_defaults, get_default_image_output_types, resolve_list_mapped_output_identity, save_images, deep_merge
 
 
+
+
+_vts_utils = os.path.join(os.path.dirname(__file__), 'vtsUtils')
+if _vts_utils not in sys.path:
+    sys.path.append(_vts_utils)
+from vts_latent_nodes import disk_latent_node
+
+@disk_latent_node(inputs=('samples',), outputs=(), prefix='VAE Decode VTS (Tiled)')
 class VTS_VAEDecodeTiled:
     @classmethod
     def INPUT_TYPES(s):

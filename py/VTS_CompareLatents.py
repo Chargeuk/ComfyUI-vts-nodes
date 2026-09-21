@@ -2,6 +2,16 @@ import torch
 import json
 import numpy as np
 
+
+import os
+import sys
+
+_vts_utils = os.path.join(os.path.dirname(__file__), 'vtsUtils')
+if _vts_utils not in sys.path:
+    sys.path.append(_vts_utils)
+from vts_latent_nodes import disk_latent_node
+
+@disk_latent_node(inputs=('samples_1', 'samples_2'), outputs=(), prefix='VTS Compare Latents')
 class VTS_CompareLatents:
     """
     A node that compares two latent dictionaries and their tensor data,

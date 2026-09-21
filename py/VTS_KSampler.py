@@ -171,6 +171,16 @@ def _sample_batch(model, seed, seed_per_image, steps, cfg, sampler_name, schedul
     return (merged_latent,)
 
 
+
+import os
+import sys
+
+_vts_utils = os.path.join(os.path.dirname(__file__), 'vtsUtils')
+if _vts_utils not in sys.path:
+    sys.path.append(_vts_utils)
+from vts_latent_nodes import disk_latent_node
+
+@disk_latent_node(inputs=('latent_image',), outputs=(0,), prefix='VTS KSampler')
 class VTS_KSampler:
     @classmethod
     def INPUT_TYPES(cls):
@@ -245,6 +255,7 @@ class VTS_KSampler:
                              positive, negative, latent_image, denoise)
 
 
+@disk_latent_node(inputs=('latent_image',), outputs=(0,), prefix='VTS KSampler (Advanced)')
 class VTS_KSamplerAdvanced(VTS_KSampler):
     @classmethod
     def INPUT_TYPES(cls):

@@ -57,6 +57,16 @@ def _normalized_noise_mask(latent, target_batch_size):
     return mask
 
 
+
+import os
+import sys
+
+_vts_utils = os.path.join(os.path.dirname(__file__), 'vtsUtils')
+if _vts_utils not in sys.path:
+    sys.path.append(_vts_utils)
+from vts_latent_nodes import disk_latent_node
+
+@disk_latent_node(inputs=('latents',), outputs=(0,), prefix='Latent List To Batch VTS')
 class VTS_Latent_List_To_Batch:
     @classmethod
     def INPUT_TYPES(cls):
@@ -138,6 +148,7 @@ class VTS_Latent_List_To_Batch:
         return (result,)
 
 
+@disk_latent_node(inputs=('latent',), outputs=(0,), prefix='Latent Batch To List VTS')
 class VTS_Latent_Batch_To_List:
     @classmethod
     def INPUT_TYPES(cls):

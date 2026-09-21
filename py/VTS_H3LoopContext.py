@@ -17,6 +17,14 @@ if _motion is None:
     _spec.loader.exec_module(_motion)
 
 
+
+
+_vts_utils = os.path.join(os.path.dirname(__file__), 'vtsUtils')
+if _vts_utils not in sys.path:
+    sys.path.append(_vts_utils)
+from vts_latent_nodes import disk_latent_node
+
+@disk_latent_node(inputs=('context_latent',), outputs=(), prefix='VTS H3 Prepare Loop Context')
 class VTS_H3PrepareLoopContext:
     EXPERIMENTAL = True
 
@@ -88,6 +96,7 @@ class VTS_H3PrepareLoopContext:
         },)
 
 
+@disk_latent_node(inputs=('latent',), outputs=(2,), prefix='VTS H3 Apply Loop Context')
 class VTS_H3ApplyLoopContext:
     EXPERIMENTAL = True
 

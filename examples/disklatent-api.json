@@ -1,0 +1,70 @@
+{
+  "1": {
+    "class_type": "VTSWrapper_builtins_EmptyLatentImage",
+    "inputs": {
+      "width": 64,
+      "height": 64,
+      "batch_size": 2,
+      "vts_latent_return_type": "DiskLatent"
+    }
+  },
+  "2": {
+    "class_type": "VTS Latent Batch To List",
+    "inputs": {
+      "latent": [
+        "1",
+        0
+      ],
+      "latent_return_type": "Input"
+    }
+  },
+  "3": {
+    "class_type": "VTS Latent List To Batch",
+    "inputs": {
+      "latents": [
+        "2",
+        0
+      ],
+      "latent_return_type": "DiskLatent"
+    }
+  },
+  "4": {
+    "class_type": "VTSWrapper_comfy_extras_LatentMultiply",
+    "inputs": {
+      "samples": [
+        "3",
+        0
+      ],
+      "multiplier": 2.0,
+      "vts_latent_return_type": "Input"
+    }
+  },
+  "5": {
+    "class_type": "VTS Inspect Latent",
+    "inputs": {
+      "latent": [
+        "4",
+        0
+      ]
+    }
+  },
+  "6": {
+    "class_type": "VTS Materialize Latent",
+    "inputs": {
+      "latent": [
+        "4",
+        0
+      ],
+      "latent_device_policy": "CPU"
+    }
+  },
+  "7": {
+    "class_type": "VTS Inspect Latent",
+    "inputs": {
+      "latent": [
+        "6",
+        0
+      ]
+    }
+  }
+}

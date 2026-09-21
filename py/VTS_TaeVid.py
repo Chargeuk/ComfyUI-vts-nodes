@@ -36,8 +36,8 @@ class VTS_TAEVideoNodeBase:
     def INPUT_TYPES(cls) -> dict:
         return {
             "required": {
-                "latent_type": (("wan21", "wan22", "hunyuanvideo", "mochi"),),
-                "dtype": (("float32", "float16", "bfloat16"), {"default": "float16"}, {"tooltip": "The data type of the input tensor. Use the type that the TVAE was trained with. Most Tiny VAEs are trained using float16, so it's usually the best."}),
+                "latent_type": (("wan21", "wan22", "hunyuanvideo", "mochi"), {"tooltip": "Video model latent format. Choose the family matching your latents and Tiny VAE: Wan 2.1, Wan 2.2, HunyuanVideo or Mochi."}),
+                "dtype": (("float32", "float16", "bfloat16"), {"default": "float16", "tooltip": "Tensor precision for the Tiny VAE. Use a precision supported by your Tiny VAE; float16 is the default. This is separate from lossless DiskLatent file compression."}),
                 "parallel_mode": (
                     "BOOLEAN",
                     {
@@ -199,6 +199,14 @@ class VTS_TAEVideoNodeBase:
         raise NotImplementedError
 
 
+
+
+_vts_utils = os.path.join(os.path.dirname(__file__), 'vtsUtils')
+if _vts_utils not in sys.path:
+    sys.path.append(_vts_utils)
+from vts_latent_nodes import disk_latent_node
+
+@disk_latent_node(inputs=('latent',), outputs=(), prefix='VTS TAE Video Decode')
 class VTS_TAEVideoDecode(VTS_TAEVideoNodeBase):
     RETURN_TYPES = ("IMAGE",)
     CATEGORY = "latent"
@@ -278,6 +286,7 @@ class VTS_TAEVideoDecode(VTS_TAEVideoNodeBase):
         return img
 
 
+@disk_latent_node(inputs=(), outputs=(0,), prefix='VTS TAE Video Encode')
 class VTS_TAEVideoEncode(VTS_TAEVideoNodeBase):
     RETURN_TYPES = ("LATENT",)
     CATEGORY = "latent"

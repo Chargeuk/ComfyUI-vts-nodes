@@ -25,6 +25,14 @@ def _merserk_inputs():
             for name, spec in group.items() if name not in excluded}
 
 
+
+
+_vts_utils = os.path.join(os.path.dirname(__file__), 'vtsUtils')
+if _vts_utils not in sys.path:
+    sys.path.append(_vts_utils)
+from vts_latent_nodes import disk_latent_node
+
+@disk_latent_node(inputs=('samples',), outputs=(), prefix='VAE Decode VTS (Tiled + Colour Match)')
 class VTS_VAEDecodeTiledColourMatch(VTS_VAEDecodeTiled):
     @classmethod
     def INPUT_TYPES(cls):

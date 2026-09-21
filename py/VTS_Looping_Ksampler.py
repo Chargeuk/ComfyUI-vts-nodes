@@ -33,6 +33,16 @@ def common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, 
     # out["samples"] = samples
     # return (out, )
 
+
+import os
+import sys
+
+_vts_utils = os.path.join(os.path.dirname(__file__), 'vtsUtils')
+if _vts_utils not in sys.path:
+    sys.path.append(_vts_utils)
+from vts_latent_nodes import disk_latent_node
+
+@disk_latent_node(inputs=('latent_image',), outputs=(0,), prefix='Looping K Sampler')
 class VTSLoopingKSampler:
     @classmethod
     def INPUT_TYPES(s):

@@ -309,6 +309,14 @@ def _masked_latent_prefix(latent, video_prefix):
     return output
 
 
+
+
+_vts_utils = os.path.join(os.path.dirname(__file__), 'vtsUtils')
+if _vts_utils not in sys.path:
+    sys.path.append(_vts_utils)
+from vts_latent_nodes import disk_latent_node
+
+@disk_latent_node(inputs=('latent', 'context_latent'), outputs=(2,), prefix='VTS MiniMax H3 Motion Context (Native)')
 class VTS_MiniMaxH3MotionContext:
     @classmethod
     def INPUT_TYPES(cls):

@@ -58,6 +58,14 @@ _UPSTREAM_ICLORA_MODULE = _load_upstream_iclora_module()
 _UPSTREAM_GUIDE_CLASS = _UPSTREAM_ICLORA_MODULE.LTXAddVideoICLoRAGuide
 
 
+
+
+_vts_utils = os.path.join(os.path.dirname(__file__), 'vtsUtils')
+if _vts_utils not in sys.path:
+    sys.path.append(_vts_utils)
+from vts_latent_nodes import disk_latent_node
+
+@disk_latent_node(inputs=('latent',), outputs=(2,), prefix='VTS Add Video IC-LoRA Guide')
 class VTS_LTXAddVideoICLoRAGuide(_UPSTREAM_GUIDE_CLASS):
     @classmethod
     def define_schema(cls):

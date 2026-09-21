@@ -24,3 +24,8 @@ if init():
 
 WEB_DIRECTORY = "./web"
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
+
+# Describe sockets and storage controls without changing node execution.
+from vts_tooltips import document_node
+for _node_cls in set(NODE_CLASS_MAPPINGS.values()):
+    document_node(_node_cls, disk_latent=bool(getattr(_node_cls, "VTS_DISK_LATENT_SUPPORT", None)))

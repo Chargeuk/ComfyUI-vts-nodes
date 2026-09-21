@@ -216,6 +216,14 @@ def _latent_streams(latent):
     return streams
 
 
+
+
+_vts_utils = os.path.join(os.path.dirname(__file__), 'vtsUtils')
+if _vts_utils not in sys.path:
+    sys.path.append(_vts_utils)
+from vts_latent_nodes import disk_latent_node
+
+@disk_latent_node(inputs=(), outputs=(1,), prefix='VTS MiniMax H3 Masked-Video Conditioning')
 class VTSMiniMaxH3MaskedVideoConditioning(io.ComfyNode):
     @classmethod
     def define_schema(cls):

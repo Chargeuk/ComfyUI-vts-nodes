@@ -18,6 +18,10 @@ import_dir = os.path.join(os.path.dirname(__file__), "vtsUtils")
 if import_dir not in sys.path:
     sys.path.append(import_dir)
 
+from vts_disk_latent import latent_controls, latent_output_mode, materialize_latents, take_latent_controls
+from vts_tooltips import document_node
+from vts_latent_nodes import transform_latent_result, v3_latent_controls
+
 from vtsUtils import DiskImage, default_output_dir, resolve_list_mapped_output_identity, save_images, vtsImageTypes
 
 
@@ -353,14 +357,18 @@ def _is_safe_v3_autogrow_input(input_obj):
     return _is_safe_v3_input(nested_input)
 
 
-def _v3_input_contains_image(input_obj):
+def _v3_input_contains_type(input_obj, expected_type):
     io_type = _resolve_io_type(input_obj)
-    if io_type == "IMAGE":
+    if io_type == expected_type:
         return True
     if io_type != "COMFY_AUTOGROW_V3":
         return False
     template = getattr(input_obj, "template", None)
-    return _v3_input_contains_image(getattr(template, "input", None))
+    return _v3_input_contains_type(getattr(template, "input", None), expected_type)
+
+
+def _v3_input_contains_image(input_obj):
+    return _v3_input_contains_type(input_obj, "IMAGE")
 
 
 def _is_safe_v3_input(input_obj):
@@ -532,9 +540,17 @@ def _build_common_spec(
     return_names,
     function_name,
     schema_style,
+    latent_input_names=None,
 ):
     image_output_indexes = [index for index, output_type in enumerate(return_types) if output_type == "IMAGE"]
-    if not image_input_names and not image_output_indexes:
+    if latent_input_names is None:
+        latent_input_names = [name for group in ("required", "optional")
+                              for name, config in input_config.get(group, {}).items()
+                              if isinstance(config, (tuple, list)) and config and config[0] == "LATENT"]
+    latent_output_indexes = [i for i, kind in enumerate(return_types) if kind == "LATENT"]
+    if not image_input_names and not image_output_indexes and not latent_input_names and not latent_output_indexes:
+        return None
+    if any(name.startswith("vts_latent_") for name in all_input_names):
         return None
 
     return {
@@ -547,6 +563,8 @@ def _build_common_spec(
         "schema_style": schema_style,
         "input_config": copy.deepcopy(input_config),
         "all_input_names": list(all_input_names),
+        "latent_input_names": tuple(latent_input_names),
+        "latent_output_indexes": latent_output_indexes,
         "image_input_names": set(image_input_names),
         "image_input_count": len(image_input_names),
         "first_image_input_name": image_input_names[0] if image_input_names else None,
@@ -647,6 +665,7 @@ def _build_v3_wrapper_spec(node_name, node_cls, display_name_mappings):
 
     input_config = {"required": {}, "optional": {}}
     image_input_names = []
+    latent_input_names = []
     all_input_names = []
     has_dynamic_inputs = False
     for input_obj in inputs:
@@ -660,6 +679,8 @@ def _build_v3_wrapper_spec(node_name, node_cls, display_name_mappings):
             legacy_spec = _convert_v3_input_to_legacy_spec(input_obj)
             group_name = "optional" if getattr(input_obj, "optional", False) else "required"
             input_config[group_name][input_name] = legacy_spec
+        if _v3_input_contains_type(input_obj, "LATENT"):
+            latent_input_names.append(input_name)
         if _v3_input_contains_image(input_obj):
             image_input_names.append(input_name)
         all_input_names.append(input_name)
@@ -695,6 +716,7 @@ def _build_v3_wrapper_spec(node_name, node_cls, display_name_mappings):
         return_names=_resolve_v3_return_names(outputs),
         function_name="execute",
         schema_style="v3_dynamic" if has_dynamic_inputs else "v3",
+        latent_input_names=latent_input_names,
     )
 
 
@@ -833,61 +855,57 @@ def _materialize_nested_images(value, materialized_inputs):
     return value
 
 
+def _latent_control_specs(spec, display_name=None):
+    return latent_controls(display_name or f"VTS {spec['display_name']} Wrapper",
+                           has_input=bool(spec["latent_input_names"]),
+                           has_output=bool(spec["latent_output_indexes"]),
+                           control_prefix="vts_latent_", match_input=len(spec["latent_input_names"]) == 1)
+
+
 def _execute_wrapped_node(spec, kwargs):
+    kwargs = dict(kwargs)
+    controls = take_latent_controls(kwargs, _latent_control_specs(spec), "vts_latent_")
+    latent_inputs = [kwargs.get(name) for name in spec["latent_input_names"]]
+    mode = latent_output_mode(controls, latent_inputs) if spec["latent_output_indexes"] else "Tensor"
     image_controls = {}
     if spec["has_image_output"]:
-        for key in _OUTPUT_CONTROL_SPECS_SINGLE_INPUT.keys():
-            image_controls[key] = kwargs.pop(key)
+        defaults = (_OUTPUT_CONTROL_SPECS_SINGLE_INPUT if spec["image_input_count"] == 1
+                    else _OUTPUT_CONTROL_SPECS_MULTI_OR_NONE)
+        for key, config in defaults.items():
+            image_controls[key] = kwargs.pop(key, config[1]["default"])
 
     node_kwargs = {}
     materialized_inputs = []
-
+    latent_memo = {}
     for input_name in spec["all_input_names"]:
         if input_name not in kwargs:
             continue
-
         value = kwargs[input_name]
         if input_name in spec["image_input_names"]:
             value = _materialize_nested_images(value, materialized_inputs)
+        if input_name in spec["latent_input_names"]:
+            value = materialize_latents(value, controls.get("device_policy", "Original"),
+                                       controls.get("device", "cpu"), latent_memo)
         node_kwargs[input_name] = value
 
     node_instance = spec["class"]()
     node_function = getattr(node_instance, spec["function_name"])
-
-    try:
-        result = node_function(**node_kwargs)
-
-        if not spec["has_image_output"]:
-            if spec["schema_style"] == "v3_dynamic" or isinstance(result, dict):
-                return result
-            result = _normalize_node_result(result)
-            return result
-
-        original_result = result
-        result = _normalize_node_result(result)
-
-        resolved_return_type = _resolve_return_type(spec, image_controls["vts_return_type"], kwargs)
-        if resolved_return_type == "Tensor":
-            return _restore_v3_node_output(original_result, result)
-
-        processed = _process_image_outputs(
-            spec,
-            result,
-            resolved_return_type,
-            image_controls["vts_prefix"],
-            image_controls["vts_start_sequence"],
-            image_controls["vts_output_dir"],
-            image_controls["vts_format"],
-            image_controls["vts_num_workers"],
-            image_controls["vts_compression_level"],
-            image_controls["vts_quality"],
-        )
-        return _restore_v3_node_output(original_result, processed)
-    finally:
-        for materialized in materialized_inputs:
-            del materialized
-        if materialized_inputs:
-            model_management.soft_empty_cache()
+    result = node_function(**node_kwargs)
+    if spec["has_image_output"]:
+        resolved = _resolve_return_type(spec, image_controls["vts_return_type"], kwargs)
+        if resolved != "Tensor":
+            processed = _process_image_outputs(
+                spec, _normalize_node_result(result), resolved,
+                image_controls["vts_prefix"], image_controls["vts_start_sequence"],
+                image_controls["vts_output_dir"], image_controls["vts_format"],
+                image_controls["vts_num_workers"], image_controls["vts_compression_level"],
+                image_controls["vts_quality"],
+            )
+            result = _restore_v3_node_output(result, processed)
+    result = transform_latent_result(result, spec["latent_output_indexes"], spec["return_names"], controls, mode)
+    if spec["schema_style"] == "v3_dynamic" or isinstance(result, (dict, io.NodeOutput)):
+        return result
+    return _normalize_node_result(result)
 
 
 def _build_wrapper_specs():
@@ -929,6 +947,7 @@ def _build_input_types(spec, wrapper_display_name):
             },
         )
 
+    input_types["optional"].update(_latent_control_specs(spec, wrapper_display_name))
     return input_types
 
 
@@ -940,7 +959,7 @@ def _v3_output_control_inputs(spec, wrapper_display_name):
     )
     return_type_default = "Input" if spec["image_input_count"] == 1 else "Tensor"
     return [
-        io.Combo.Input("vts_return_type", options=return_type_options, default=return_type_default),
+        io.Combo.Input("vts_return_type", options=return_type_options, default=return_type_default, tooltip="Tensor returns pixels in memory; DiskImage saves files; Input matches the single image input."),
         io.String.Input(
             "vts_prefix",
             default=re.sub(r"\s+", "_", wrapper_display_name.strip()),
@@ -961,18 +980,19 @@ def _create_v3_dynamic_wrapper_class(spec, wrapper_display_name):
     wrapper_category = f"VTS/wrappers/{spec['category']}"
     wrapper_description = (
         f"VTS-generated wrapper around {spec['display_name']} from {spec['package']}. "
-        "IMAGE inputs, including supported Autogrow IMAGE inputs, accept tensors or DiskImages."
+        "IMAGE and LATENT inputs, including supported Autogrow inputs, accept native or VTS disk-backed values."
     )
 
     @classmethod
     def define_schema(cls):
-        schema = spec["class"].define_schema()
+        schema = copy.deepcopy(spec["class"].define_schema())
         schema.node_id = wrapper_node_id
         schema.display_name = wrapper_display_name
         schema.category = wrapper_category
         schema.description = wrapper_description
         if spec["has_image_output"]:
             schema.inputs.extend(_v3_output_control_inputs(spec, wrapper_display_name))
+        schema.inputs.extend(v3_latent_controls(_latent_control_specs(spec, wrapper_display_name)))
         return schema
 
     @classmethod
@@ -984,7 +1004,7 @@ def _create_v3_dynamic_wrapper_class(spec, wrapper_display_name):
         "execute": execute,
         "RELATIVE_PYTHON_MODULE": "custom_nodes.ComfyUI-vts-nodes",
     }
-    return type(wrapper_node_id, (io.ComfyNode,), attrs)
+    return document_node(type(wrapper_node_id, (io.ComfyNode,), attrs), disk_latent=True, disk_image=True)
 
 
 def _create_wrapper_class(spec):
@@ -999,7 +1019,7 @@ def _create_wrapper_class(spec):
     category = f"VTS/wrappers/{spec['category']}"
     description = (
         f"VTS-generated wrapper around {spec['display_name']} from {spec['package']}. "
-        "IMAGE inputs accept tensors or DiskImages."
+        "IMAGE inputs accept tensors or DiskImages. LATENT inputs accept native latents or DiskLatents."
     )
     if spec["has_image_output"]:
         description += " IMAGE outputs can be returned as tensors or written to disk as DiskImages."
@@ -1015,14 +1035,30 @@ def _create_wrapper_class(spec):
         "INPUT_TYPES": INPUT_TYPES,
         "RETURN_TYPES": spec["return_types"],
         "RETURN_NAMES": spec["return_names"],
+        "OUTPUT_TOOLTIPS": getattr(spec["class"], "OUTPUT_TOOLTIPS", ()),
         "FUNCTION": "execute",
         "CATEGORY": category,
         "DESCRIPTION": description,
         "execute": execute,
+        "OUTPUT_NODE": getattr(spec["class"], "OUTPUT_NODE", False),
     }
 
+    # File loaders must retain their source fingerprint when the path is unchanged.
+    if callable(getattr(spec["class"], "IS_CHANGED", None)):
+        source_changed = spec["class"].IS_CHANGED
+        parameters = inspect.signature(source_changed).parameters
+        accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values())
+
+        def is_changed(**kwargs):
+            return source_changed(**{key: value for key, value in kwargs.items()
+                                     if key in parameters or (accepts_kwargs and key in spec["all_input_names"])})
+
+        attrs["IS_CHANGED"] = staticmethod(is_changed)
+    if callable(getattr(spec["class"], "VALIDATE_INPUTS", None)):
+        attrs["VALIDATE_INPUTS"] = staticmethod(spec["class"].VALIDATE_INPUTS)
+
     class_name = _sanitize_identifier(f"VTSWrapper_{spec['package']}_{spec['node_name']}")
-    return type(class_name, (), attrs), wrapper_display_name
+    return document_node(type(class_name, (), attrs), disk_latent=True, disk_image=True), wrapper_display_name
 
 
 def _build_generated_mappings():

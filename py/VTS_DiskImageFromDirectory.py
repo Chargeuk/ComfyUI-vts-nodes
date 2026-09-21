@@ -86,26 +86,27 @@ class VTSDiskImageFromDirectory:
             "required": {
                 "vts_input_dir": (
                     "STRING",
-                    {"default": default_output_dir, "multiline": False},
+                    {"default": default_output_dir, "multiline": False, "tooltip": "Folder containing existing image sequence files. Files are referenced without copying."},
                 ),
                 "vts_prefix": (
                     "STRING",
-                    {"default": "image", "multiline": False},
+                    {"default": "image", "multiline": False, "tooltip": "Existing filename prefix, for example image for image_000000.png."},
                 ),
                 "vts_start_sequence": (
                     "INT",
-                    {"default": 0, "min": 0, "step": 1},
+                    {"default": 0, "min": 0, "step": 1, "tooltip": "First sequence number to include. Reading stops at the first missing file."},
                 ),
                 "vts_end_sequence": (
                     "INT",
-                    {"default": -1, "min": -1, "step": 1},
+                    {"default": -1, "min": -1, "step": 1, "tooltip": "Last sequence number to include; -1 scans until the first missing file."},
                 ),
-                "vts_format": (vtsImageTypes, {"default": "png"}),
+                "vts_format": (vtsImageTypes, {"default": "png", "tooltip": "File extension of the existing image sequence. Does not convert the files."}),
             }
         }
 
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("image",)
+    OUTPUT_TOOLTIPS = ("DiskImage reference to the existing contiguous sequence. Pixels remain on disk until needed.",)
     FUNCTION = "create_disk_image"
     CATEGORY = "VTS/image"
     DESCRIPTION = (
