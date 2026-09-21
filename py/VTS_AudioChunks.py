@@ -203,12 +203,19 @@ class VTSSaveAudioChunk:
 
 
 class VTSAssembleAudioChunks:
+    @staticmethod
+    def DISK_AUDIO_EXECUTE(bound, controls):
+        from vts_disk_audio import DiskAudio
+        arguments = bound.arguments
+        path, _ = assemble_audio_chunks(arguments["chunks"], arguments.get("filename_prefix", "audio/assembled"), False)
+        return path, DiskAudio.from_file(path)
+
     EXPERIMENTAL = True
 
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {"chunks": (MANIFEST_TYPE,), "filename_prefix": ("STRING", {"default": "audio/assembled"}),
-                             "return_audio": ("BOOLEAN", {"default": False, "tooltip": "Loads the entire final waveform into CPU RAM when enabled. The tensor shares this buffer; file-only mode returns no AUDIO tensor."})}}
+                             "return_audio": ("BOOLEAN", {"default": False, "tooltip": "Loads the entire final waveform into CPU RAM when enabled. The tensor shares this buffer; file-only mode returns no AUDIO tensor. Selecting audio_return_type=DiskAudio overrides this switch and returns a disk reference without loading the full waveform."})}}
 
     RETURN_TYPES = ("STRING", "AUDIO")
     RETURN_NAMES = ("audio_path", "audio")

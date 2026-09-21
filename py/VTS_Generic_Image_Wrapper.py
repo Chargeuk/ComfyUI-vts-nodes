@@ -14,6 +14,7 @@ if import_dir not in sys.path:
     sys.path.append(import_dir)
 
 from vts_disk_latent import materialize_latents
+from vts_disk_audio import materialize_audio
 
 from vtsUtils import DiskImage, default_output_dir, resolve_list_mapped_output_identity, save_images, vtsImageTypes
 
@@ -510,7 +511,7 @@ def _execute_wrapped_node(spec, requested_return_type, prefix, start_sequence, o
         if wrapped_key not in kwargs:
             continue
 
-        value = materialize_latents(kwargs[wrapped_key], latent_device_policy, latent_device, latent_memo)
+        value = materialize_latents(materialize_audio(kwargs[wrapped_key]), latent_device_policy, latent_device, latent_memo)
         if input_name in spec["image_input_names"] and isinstance(value, DiskImage):
             value = value.materialize()
             materialized_inputs.append(value)

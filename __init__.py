@@ -29,3 +29,7 @@ __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 from vts_tooltips import document_node
 for _node_cls in set(NODE_CLASS_MAPPINGS.values()):
     document_node(_node_cls, disk_latent=bool(getattr(_node_cls, "VTS_DISK_LATENT_SUPPORT", None)))
+
+from vts_audio_nodes import disk_audio_node
+for _node_name, _node_cls in NODE_CLASS_MAPPINGS.items():
+    disk_audio_node(_node_cls, prefix=_node_name)

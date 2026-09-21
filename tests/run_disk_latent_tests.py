@@ -13,7 +13,7 @@ import comfy.model_management
 sys.argv = ["disk-latent-tests"]
 
 patterns = (
-    "test_disk_latent*.py", "test_generated_wrappers*.py", "test_ksampler.py",
+    "test_disk_audio*.py", "test_disk_latent*.py", "test_generated_wrappers*.py", "test_ksampler.py",
     "test_qwen_reference_latent_cache.py", "test_h3_loop_context.py",
     "test_h3_motion_context.py", "test_minimax_h3_masked_video_conditioning.py",
     "test_tiled_decode_colour_match.py",

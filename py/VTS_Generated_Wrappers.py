@@ -20,6 +20,7 @@ if import_dir not in sys.path:
 
 from vts_disk_latent import latent_controls, latent_output_mode, materialize_latents, take_latent_controls
 from vts_tooltips import document_node
+from vts_audio_nodes import disk_audio_node
 from vts_latent_nodes import transform_latent_result, v3_latent_controls
 
 from vtsUtils import DiskImage, default_output_dir, resolve_list_mapped_output_identity, save_images, vtsImageTypes
@@ -541,14 +542,19 @@ def _build_common_spec(
     function_name,
     schema_style,
     latent_input_names=None,
+    audio_input_names=None,
 ):
     image_output_indexes = [index for index, output_type in enumerate(return_types) if output_type == "IMAGE"]
     if latent_input_names is None:
         latent_input_names = [name for group in ("required", "optional")
                               for name, config in input_config.get(group, {}).items()
                               if isinstance(config, (tuple, list)) and config and config[0] == "LATENT"]
+    if audio_input_names is None:
+        audio_input_names = [name for group in ("required", "optional")
+                             for name, config in input_config.get(group, {}).items() if config[0] == "AUDIO"]
+    audio_output_indexes = [i for i, kind in enumerate(return_types) if kind == "AUDIO"]
     latent_output_indexes = [i for i, kind in enumerate(return_types) if kind == "LATENT"]
-    if not image_input_names and not image_output_indexes and not latent_input_names and not latent_output_indexes:
+    if not image_input_names and not image_output_indexes and not latent_input_names and not latent_output_indexes and not audio_input_names and not audio_output_indexes:
         return None
     if any(name.startswith("vts_latent_") for name in all_input_names):
         return None
@@ -654,7 +660,7 @@ def _build_v3_wrapper_spec(node_name, node_cls, display_name_mappings):
     hidden_inputs = getattr(schema, "hidden", None)
     if not isinstance(inputs, list) or not isinstance(outputs, list):
         return None
-    if hidden_inputs not in (None, []):
+    if hidden_inputs not in (None, []) and not any(_v3_input_contains_type(item, "AUDIO") for item in inputs):
         return None
     if getattr(schema, "is_input_list", None) not in (False, None):
         return None
@@ -666,8 +672,9 @@ def _build_v3_wrapper_spec(node_name, node_cls, display_name_mappings):
     input_config = {"required": {}, "optional": {}}
     image_input_names = []
     latent_input_names = []
+    audio_input_names = []
     all_input_names = []
-    has_dynamic_inputs = False
+    has_dynamic_inputs = bool(hidden_inputs)
     for input_obj in inputs:
         if not _is_safe_v3_input(input_obj):
             return None
@@ -679,6 +686,8 @@ def _build_v3_wrapper_spec(node_name, node_cls, display_name_mappings):
             legacy_spec = _convert_v3_input_to_legacy_spec(input_obj)
             group_name = "optional" if getattr(input_obj, "optional", False) else "required"
             input_config[group_name][input_name] = legacy_spec
+        if _v3_input_contains_type(input_obj, "AUDIO"):
+            audio_input_names.append(input_name)
         if _v3_input_contains_type(input_obj, "LATENT"):
             latent_input_names.append(input_name)
         if _v3_input_contains_image(input_obj):
@@ -717,6 +726,7 @@ def _build_v3_wrapper_spec(node_name, node_cls, display_name_mappings):
         function_name="execute",
         schema_style="v3_dynamic" if has_dynamic_inputs else "v3",
         latent_input_names=latent_input_names,
+        audio_input_names=audio_input_names,
     )
 
 
@@ -862,7 +872,7 @@ def _latent_control_specs(spec, display_name=None):
                            control_prefix="vts_latent_", match_input=len(spec["latent_input_names"]) == 1)
 
 
-def _execute_wrapped_node(spec, kwargs):
+def _execute_wrapped_node(spec, kwargs, execution_cls=None):
     kwargs = dict(kwargs)
     controls = take_latent_controls(kwargs, _latent_control_specs(spec), "vts_latent_")
     latent_inputs = [kwargs.get(name) for name in spec["latent_input_names"]]
@@ -888,9 +898,12 @@ def _execute_wrapped_node(spec, kwargs):
                                        controls.get("device", "cpu"), latent_memo)
         node_kwargs[input_name] = value
 
-    node_instance = spec["class"]()
-    node_function = getattr(node_instance, spec["function_name"])
-    result = node_function(**node_kwargs)
+    if execution_cls is not None:
+        result = spec["class"].execute.__func__(execution_cls, **node_kwargs)
+    else:
+        node_instance = spec["class"]()
+        node_function = getattr(node_instance, spec["function_name"])
+        result = node_function(**node_kwargs)
     if spec["has_image_output"]:
         resolved = _resolve_return_type(spec, image_controls["vts_return_type"], kwargs)
         if resolved != "Tensor":
@@ -997,14 +1010,23 @@ def _create_v3_dynamic_wrapper_class(spec, wrapper_display_name):
 
     @classmethod
     def execute(cls, **kwargs):
-        return _execute_wrapped_node(spec, kwargs)
+        return _execute_wrapped_node(spec, kwargs, execution_cls=cls)
 
     attrs = {
         "define_schema": define_schema,
         "execute": execute,
         "RELATIVE_PYTHON_MODULE": "custom_nodes.ComfyUI-vts-nodes",
     }
-    return document_node(type(wrapper_node_id, (io.ComfyNode,), attrs), disk_latent=True, disk_image=True)
+    wrapper = document_node(type(wrapper_node_id, (spec["class"],), attrs), disk_latent=True, disk_image=True)
+    return _add_audio_support(wrapper, spec, wrapper_display_name)
+
+
+def _add_audio_support(wrapper, spec, display_name):
+    # Native VHS audio controls already flow through the image/latent wrapper.
+    if getattr(spec["class"], "VTS_DISK_AUDIO_SUPPORT", False):
+        wrapper.VTS_DISK_AUDIO_SUPPORT = spec["class"].VTS_DISK_AUDIO_SUPPORT
+        return wrapper
+    return disk_audio_node(wrapper, prefix=display_name, control_prefix="vts_audio_")
 
 
 def _create_wrapper_class(spec):
@@ -1058,7 +1080,8 @@ def _create_wrapper_class(spec):
         attrs["VALIDATE_INPUTS"] = staticmethod(spec["class"].VALIDATE_INPUTS)
 
     class_name = _sanitize_identifier(f"VTSWrapper_{spec['package']}_{spec['node_name']}")
-    return document_node(type(class_name, (), attrs), disk_latent=True, disk_image=True), wrapper_display_name
+    wrapper = document_node(type(class_name, (), attrs), disk_latent=True, disk_image=True)
+    return _add_audio_support(wrapper, spec, wrapper_display_name), wrapper_display_name
 
 
 def _build_generated_mappings():
