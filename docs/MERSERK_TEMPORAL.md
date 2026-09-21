@@ -36,9 +36,11 @@ source frames if you want to keep or increase their resolution.
 ## Storage and network
 
 `return_type=Input` follows the input's storage type. Tensor allocates the entire
-output IMAGE batch in RAM. DiskImage writes only final PNG, lossless WebP or JPEG frames, one at a time,
+output IMAGE batch in RAM. DiskImage writes only final PNG, WebP or JPEG frames
 in a new subfolder of `output_dir` on the ComfyUI client. Blank uses
 `output/merserk_temporal`. An incomplete folder is removed on failure.
+Disk writers are synchronous with `num_workers=0` or bounded parallel writers
+with 1-16 workers (default 1). Frame processing and output order stay fixed.
 
 Use the Merserk LAN URL, currently **http://192.168.1.1:7865**. The server needs the
 new `/vts/enhance_sequence` WebSocket route. Existing image and interpolation APIs
@@ -112,13 +114,15 @@ re-uploading them. Only final enhanced originals and generated frames are return
 The server needs the updated version-2 `/vts/enhance_sequence` protocol. With
 interpolation off, the existing version-1 protocol is used.
 
-DiskImage controls **format**, **compression_level**, **prefix** and
-**start_sequence** control PNG/lossless WebP/JPEG output, PNG compression from 0
-to 9, filename prefix and starting file number. **quality** controls JPEG quality
-from 1 to 100 (default 95). JPEG composites transparency onto white and returns
-three-channel RGB DiskImages, matching other VTS nodes. They apply
-to the final sequence whether interpolation is enabled or disabled. Tensor output
-ignores these controls. Network transport always remains PNG.
+DiskImage **format** selects PNG, WebP or JPEG. **compression_level** controls
+PNG compression from 0 to 9 and WebP encoder method from 0 to 6 (higher values
+use 6). **prefix** and **start_sequence** control filenames and numbering.
+**quality** sets JPEG or lossy WebP quality from 1 to 100 (default 95); 101
+selects lossless WebP and JPEG uses 100. **webp_lossless** defaults to on,
+so WebP remains lossless unless switched off; quality 101 always stays lossless.
+JPEG composites transparency onto white and returns three-channel RGB DiskImages.
+These controls apply whether interpolation is enabled or disabled. Tensor output
+ignores them. Network transport always remains PNG.
 
 The combined pipeline retains both enhancement and interpolation GPU sessions,
 so it can use more peak VRAM than separate stages. It keeps the existing motion

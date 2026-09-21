@@ -223,6 +223,46 @@ class TemporalNodeTests(unittest.TestCase):
             self.assertEqual(result.shape[-1],3)
             self.assertEqual(len(list(Path(result.output_dir).glob('*.jpg'))),3)
 
+    def test_disk_codecs_numbering_and_lossless_transport(self):
+        for fmt,quality,workers in [('jpg',70,0),('jpg',101,2),('png',95,2),('webp',80,1),('webp',101,2)]:
+            with self.subTest(format=fmt,quality=quality), tempfile.TemporaryDirectory() as directory:
+                disk=self.run_node(return_type='DiskImage',output_dir=directory,format=fmt,
+                    quality=quality,num_workers=workers,compression_level=9,prefix='enhanced',start_sequence=42,
+                    webp_lossless=not (fmt=='webp' and quality<101))
+                self.assertEqual(disk.format,fmt)
+                self.assertEqual(disk.start_sequence,42)
+                self.assertEqual(sorted(p.name for p in Path(disk.output_dir).iterdir()),
+                    [f'enhanced_{i:06d}.{fmt}' for i in range(42,45)])
+                self.assertEqual(tuple(disk[0].shape),(96,128,3 if fmt=='jpg' else 4))
+                for i,frame in enumerate(Socket.instances[-1].frames):
+                    np.testing.assert_array_equal(np.array(frame),self.images[i].mul(255).round().byte().numpy())
+                if fmt=='png' or (fmt=='webp' and quality==101):
+                    np.testing.assert_array_equal(disk[0].mul(255).round().byte().numpy(),
+                        self.images[0].mul(255).round().byte().numpy())
+    def test_explicit_disk_output_converts_existing_disk_even_when_bypassed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            disk=self.run_node(return_type='DiskImage',output_dir=directory)
+            with patch.object(module,'connect',side_effect=AssertionError('network')):
+                converted=self.node.enhance(disk,enable_scaling=False,enable_neural_rendering=False,
+                    return_type='DiskImage',output_dir=directory,format='jpg')[0]
+            self.assertEqual(converted.format,'jpg')
+            self.assertNotEqual(converted.output_dir,disk.output_dir)
+            self.assertTrue(list(Path(disk.output_dir).glob('*.png')))
+    def test_invalid_disk_settings_fail_before_connect(self):
+        for settings in [dict(format='bmp'),dict(prefix='../escape'),dict(prefix='a/b'),
+                         dict(quality=0),dict(num_workers=17),dict(start_sequence=-1)]:
+            with self.subTest(settings=settings), patch.object(module,'connect',side_effect=AssertionError('network')):
+                with self.assertRaises(ValueError): self.run_node(return_type='DiskImage',**settings)
+    def test_disk_write_failure_cleans_only_own_run(self):
+        original=Image.Image.save
+        def fail_disk(image,target,*args,**kwargs):
+            if isinstance(target,Path): raise OSError('disk full test')
+            return original(image,target,*args,**kwargs)
+        with tempfile.TemporaryDirectory() as directory:
+            keep=Path(directory)/'keep.txt'; keep.write_text('preserve')
+            with patch.object(Image.Image,'save',fail_disk), self.assertRaises(OSError):
+                self.run_node(return_type='DiskImage',output_dir=directory,num_workers=2)
+            self.assertEqual(list(Path(directory).iterdir()),[keep])
     def test_input_controls_have_tooltips_without_outer_iterations_or_hdr(self):
         schema=self.node.INPUT_TYPES(); fields=schema['required']|schema['optional']
         self.assertNotIn('iterations',fields)

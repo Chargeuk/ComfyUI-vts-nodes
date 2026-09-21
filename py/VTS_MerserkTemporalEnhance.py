@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from collections import deque
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -23,7 +24,7 @@ from comfy.utils import ProgressBar
 import_dir = os.path.join(os.path.dirname(__file__), "vtsUtils")
 if import_dir not in sys.path:
     sys.path.append(import_dir)
-from vtsUtils import DiskImage
+from vtsUtils import DiskImage, vtsImageTypes
 from vts_image_sizing import ScaleToMinDimensions
 
 CHUNK_BYTES = 256 * 1024
@@ -68,11 +69,13 @@ class VTSMerserkTemporalEnhance(ScaleToMinDimensions):
             "vsr_quality": (["Low", "Medium", "High", "Ultra"], {"default": "Ultra", "tooltip": "RTX VSR quality for enlargement, whether or not neural enhancement follows. Low is lighter; Ultra requests the highest quality and may take longer. This changes upscaling quality, not output dimensions or neural pass counts. Ignored when no enlargement is needed."}),
             "enable_frame_interpolation": ("BOOLEAN", {"default": False, "tooltip": "Insert intermediate frames after resizing and temporal enhancement, inside the same Merserk stream. Each source is uploaded once. Off preserves the original frame count. A single input frame needs no interpolation."}),
             "interpolation_multiplier": ([2, 3, 4, 8], {"default": 2, "tooltip": "2x adds 1 frame per pair; 4x adds 3; 8x adds 7. 3x adds 2 at 37.5% and 62.5%, not exact thirds, and costs roughly as much as 8x. Output count = (input count - 1) x multiplier + 1. Set downstream video FPS to source FPS x multiplier for the intended playback rate. Scene cuts repeat nearby enhanced originals. Ignored when interpolation is off."}),
-            "format": (["png", "webp", "jpg"], {"default": "png", "tooltip": "DiskImage output only: PNG, lossless WebP or JPEG. JPEG uses Quality and composites transparency onto white, matching other VTS nodes. Network transport always uses lossless PNG."}),
-            "compression_level": ("INT", {"default": 1, "min": 0, "max": 9, "tooltip": "DiskImage PNG only: 0 is uncompressed; 9 gives smaller files but takes longer. Pixel quality is identical. Ignored for WebP, JPEG and Tensor output; network PNG uses fast compression level 1."}),
+            "format": (["png", "webp", "jpg"], {"default": "png", "tooltip": "DiskImage output only: PNG, WebP or JPEG. WebP is lossless by default and can be made lossy. JPEG composites transparency onto white. Network transport always uses lossless PNG."}),
+            "compression_level": ("INT", {"default": 1, "min": 0, "max": 9, "tooltip": "Disk PNG compression 0-9; WebP encoder method 0-6 (values above 6 use 6). Ignored for JPEG and Tensor. Network PNG uses fast compression 1."}),
             "prefix": ("STRING", {"default": "frame", "tooltip": "DiskImage output only: filename prefix, not a folder. The default produces frame_000000.png, frame_000001.png, and so on."}),
             "start_sequence": ("INT", {"default": 0, "min": 0, "tooltip": "DiskImage output only: first filename number. Changes filenames only, without skipping frames or changing interpolation timing."}),
-            "quality": ("INT", {"default": 95, "min": 1, "max": 100, "tooltip": "DiskImage JPEG only: 1-100, default 95. Higher values retain more detail and usually make larger files; JPEG is lossy even at 100. Ignored for PNG, lossless WebP and Tensor output. Does not change network PNG transport."}),
+            "quality": ("INT", {"default": 95, "min": 1, "max": 101, "tooltip": "Disk JPEG or WebP quality 1-100. 101 selects lossless WebP and JPEG uses 100. Ignored for PNG and network transport."}),
+            "webp_lossless": ("BOOLEAN", {"default": True, "tooltip": "Save WebP without losing pixels or alpha by default. Off uses the selected lossy WebP quality; Quality 101 always saves lossless WebP."}),
+            "num_workers": ("INT", {"default": 1, "min": 0, "max": 16, "tooltip": "Parallel disk writers. 0 saves synchronously; queued frames are bounded by this value. More workers can use more RAM. Temporal processing remains ordered."}),
         }}
 
     RETURN_TYPES = ("IMAGE",)
@@ -138,11 +141,25 @@ class VTSMerserkTemporalEnhance(ScaleToMinDimensions):
                 sizing_mode="Scale to Min", smallMaxSize=512, largeMaxSize=512, divisible_by=2,
                 crop="disabled", scale_type="small", vsr_quality="Ultra",
                 enable_frame_interpolation=False, interpolation_multiplier=2,
-                format="png", compression_level=1, prefix="frame", start_sequence=0, quality=95):
+                format="png", quality=95, compression_level=1, prefix="frame",
+                start_sequence=0, num_workers=1, webp_lossless=True):
+        input_storage = return_type == "Input"
         if return_type == "Input":
             return_type = "DiskImage" if isinstance(images, DiskImage) else "Tensor"
         if return_type not in {"Tensor", "DiskImage"}:
             raise ValueError("Return type must be Input, Tensor or DiskImage.")
+        if return_type == "DiskImage":
+            format = str(format).lower()
+            if format == "jpeg":
+                format = "jpg"
+            if format not in vtsImageTypes:
+                raise ValueError("Disk format must be jpg, webp or png.")
+            if not prefix or prefix in {".", ".."} or any(c in prefix for c in '/\\:'):
+                raise ValueError("Disk prefix must be a filename, not a path.")
+            if not 1 <= quality <= 101 or not 0 <= compression_level <= 9:
+                raise ValueError("Invalid disk quality or compression level.")
+            if isinstance(start_sequence, bool) or not isinstance(start_sequence, int) or start_sequence < 0 or isinstance(num_workers, bool) or not isinstance(num_workers, int) or not 0 <= num_workers <= 16:
+                raise ValueError("Invalid start sequence or disk worker count.")
         if len(images.shape) != 4 or images.shape[-1] not in (3, 4) or len(images) < 1:
             raise ValueError("Expected a non-empty, equally sized RGB/RGBA image sequence.")
         count, height, width, channels = images.shape
@@ -154,13 +171,6 @@ class VTSMerserkTemporalEnhance(ScaleToMinDimensions):
         interpolate = enable_frame_interpolation and count > 1
         multiplier = interpolation_multiplier if interpolate else 1
         output_count = (count - 1) * multiplier + 1
-        if return_type == "DiskImage":
-            if format not in {"png", "webp", "jpg"}:
-                raise ValueError("DiskImage format must be png, webp or jpg.")
-            if not prefix or prefix in {".", ".."} or any(c in prefix for c in '/\\:'):
-                raise ValueError("Prefix must be a filename, not a path.")
-            if not isinstance(start_sequence, int) or start_sequence < 0:
-                raise ValueError("Start sequence must be a non-negative integer.")
         original_shape = (height, width, channels)
         tw, th = width, height
         if enable_scaling:
@@ -178,7 +188,7 @@ class VTSMerserkTemporalEnhance(ScaleToMinDimensions):
             if crop not in {"disabled", "center"}:
                 raise ValueError("Crop must be disabled or center.")
         if not enable_neural_rendering and not interpolate and (tw, th) == (width, height):
-            if (return_type == "Tensor" and isinstance(images, torch.Tensor)) or (return_type == "DiskImage" and isinstance(images, DiskImage) and images.format == format):
+            if (return_type == "Tensor" and isinstance(images, torch.Tensor)) or (return_type == "DiskImage" and isinstance(images, DiskImage) and images.format == format and input_storage):
                 return (images,)
         first = images[0]
         sample = self._center_crop_for_aspect(first.unsqueeze(0), tw, th)[0] if enable_scaling and crop == "center" else first
@@ -198,12 +208,16 @@ class VTSMerserkTemporalEnhance(ScaleToMinDimensions):
             if enable_neural_rendering and (min(tw, th) < 64 or max(tw, th) > 7680 or min(tw, th) > 4320):
                 raise ValueError("Neural output must be at least 64 per side and fit within 7680 by 4320 (either orientation).")
         saved_directory = None
+        writer = None
+        pending = deque()
         success = False
         try:
             if return_type == "DiskImage":
                 destination = Path(os.path.expandvars(output_dir)).expanduser() if output_dir.strip() else Path(folder_paths.get_output_directory()) / "merserk_temporal"
                 destination.mkdir(parents=True, exist_ok=True)
                 saved_directory = Path(tempfile.mkdtemp(prefix="sequence-", dir=destination.resolve()))
+                if num_workers:
+                    writer = ThreadPoolExecutor(max_workers=num_workers, thread_name_prefix='vts-temporal-save')
                 output = None
             else:
                 output = torch.empty((output_count, th, tw, channels), dtype=torch.float32, device="cpu")
@@ -224,12 +238,10 @@ class VTSMerserkTemporalEnhance(ScaleToMinDimensions):
                     image = reduced
                 return image
 
-            def emit(index, image):
-                model_management.throw_exception_if_processing_interrupted()
-                if image.size != (tw, th):
-                    raise ValueError("Merserk returned incorrect frame dimensions.")
-                if saved_directory is not None:
-                    path = saved_directory / f"{prefix}_{index + start_sequence:06d}.{format}"
+            def save_frame(index, image):
+                # Only the final disk copy changes codec; transport stays lossless.
+                with image:
+                    path = saved_directory / f"{prefix}_{start_sequence + index:06d}.{format}"
                     if format == "jpg":
                         with Image.new("RGB", image.size, "white") as jpeg:
                             if image.mode == "RGBA":
@@ -237,10 +249,25 @@ class VTSMerserkTemporalEnhance(ScaleToMinDimensions):
                                     jpeg.paste(image, mask=alpha)
                             else:
                                 jpeg.paste(image)
-                            jpeg.save(path, quality=quality, subsampling=0)
+                            jpeg.save(path, format="JPEG", quality=min(quality, 100), subsampling=0)
+                    elif format == "webp":
+                        lossless = webp_lossless or quality == 101
+                        image.save(path, format="WEBP", lossless=lossless, exact=lossless,
+                                   quality=min(quality, 100), method=min(compression_level, 6))
                     else:
-                        save_options = {"compress_level": compression_level} if format == "png" else {"lossless": True, "exact": True}
-                        image.save(path, **save_options)
+                        image.save(path, format="PNG", compress_level=compression_level)
+
+            def emit(index, image):
+                model_management.throw_exception_if_processing_interrupted()
+                if image.size != (tw, th):
+                    raise ValueError("Merserk returned incorrect frame dimensions.")
+                if saved_directory is not None:
+                    if writer is None:
+                        save_frame(index, image.copy())
+                    else:
+                        if len(pending) >= num_workers:
+                            pending.popleft().result()
+                        pending.append(writer.submit(save_frame, index, image.copy()))
                 else:
                     output[index].copy_(torch.from_numpy(np.array(image, dtype=np.float32) / 255))
                 progress.update(1)
@@ -333,12 +360,17 @@ class VTSMerserkTemporalEnhance(ScaleToMinDimensions):
                         socket.close()
                         sending.cancel()
             if saved_directory is not None:
+                for future in pending:
+                    future.result()
                 output = DiskImage(prefix=prefix,start_sequence=start_sequence,number_of_images=output_count,
-                    output_dir=str(saved_directory),format=format,image=None)
+                    output_dir=str(saved_directory),format=format,image=None,
+                    compression_level=compression_level,quality=quality)
                 output.shape, output.dtype, output.ndim = (output_count,th,tw,3 if format == "jpg" else channels),torch.float32,4
             success = True
             return (output,)
         finally:
+            if writer is not None:
+                writer.shutdown(wait=True)
             if saved_directory is not None and not success:
                 shutil.rmtree(saved_directory)
 
