@@ -40,6 +40,9 @@ def _join(existing, extra):
 
 
 def socket_help(kind, output=False, disk_latent=False, disk_image=False):
+    # Wildcard string subclasses can override equality and be unhashable.
+    # Describe the declared type, without changing its connection semantics.
+    kind = str(kind) if isinstance(kind, str) else None
     text = TYPE_HELP.get(kind, "") if isinstance(kind, str) else ""
     if kind == "LATENT" and disk_latent:
         text += (" May be native tensors or a DiskLatent file reference, selected by the latent return-type control. DiskLatent metadata exposes shape, dtype and device without loading tensor data." if output else

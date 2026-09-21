@@ -24,8 +24,8 @@ def audio_ports(cls):
                 [i for i, item in enumerate(schema.outputs) if item.get_io_type() == 'AUDIO'])
     schema = cls.INPUT_TYPES()
     return ([name for group in ('required', 'optional') for name, spec in schema.get(group, {}).items()
-             if spec[0] == 'AUDIO'],
-            [i for i, kind in enumerate(getattr(cls, 'RETURN_TYPES', ())) if kind == 'AUDIO'])
+             if str(spec[0]) == 'AUDIO'],
+            [i for i, kind in enumerate(getattr(cls, 'RETURN_TYPES', ())) if str(kind) == 'AUDIO'])
 
 
 def _disk_values(value):

@@ -284,6 +284,8 @@ def _is_safe_legacy_spec(legacy_spec):
 
     if isinstance(raw_type, (list, tuple)):
         return _is_safe_combo_spec(raw_type, config)
+    if isinstance(raw_type, str):
+        raw_type = str(raw_type)
     if raw_type == "BOOLEAN":
         return _is_safe_boolean_spec(config)
     if raw_type == "INT":
@@ -544,16 +546,16 @@ def _build_common_spec(
     latent_input_names=None,
     audio_input_names=None,
 ):
-    image_output_indexes = [index for index, output_type in enumerate(return_types) if output_type == "IMAGE"]
+    image_output_indexes = [index for index, output_type in enumerate(return_types) if str(output_type) == "IMAGE"]
     if latent_input_names is None:
         latent_input_names = [name for group in ("required", "optional")
                               for name, config in input_config.get(group, {}).items()
-                              if isinstance(config, (tuple, list)) and config and config[0] == "LATENT"]
+                              if isinstance(config, (tuple, list)) and config and str(config[0]) == "LATENT"]
     if audio_input_names is None:
         audio_input_names = [name for group in ("required", "optional")
-                             for name, config in input_config.get(group, {}).items() if config[0] == "AUDIO"]
-    audio_output_indexes = [i for i, kind in enumerate(return_types) if kind == "AUDIO"]
-    latent_output_indexes = [i for i, kind in enumerate(return_types) if kind == "LATENT"]
+                             for name, config in input_config.get(group, {}).items() if str(config[0]) == "AUDIO"]
+    audio_output_indexes = [i for i, kind in enumerate(return_types) if str(kind) == "AUDIO"]
+    latent_output_indexes = [i for i, kind in enumerate(return_types) if str(kind) == "LATENT"]
     if not image_input_names and not image_output_indexes and not latent_input_names and not latent_output_indexes and not audio_input_names and not audio_output_indexes:
         return None
     if any(name.startswith("vts_latent_") for name in all_input_names):
@@ -620,7 +622,7 @@ def _build_legacy_wrapper_spec(node_name, node_cls, display_name_mappings):
                 safe = False
                 break
             raw_type = legacy_spec[0] if isinstance(legacy_spec, (tuple, list)) and legacy_spec else None
-            if raw_type == "IMAGE":
+            if str(raw_type) == "IMAGE":
                 image_input_names.append(input_name)
             all_input_names.append(input_name)
         if not safe:
