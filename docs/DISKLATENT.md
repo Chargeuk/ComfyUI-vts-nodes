@@ -121,3 +121,38 @@ and V3 LATENT schemas, including Autogrow inputs and mixed IMAGE/LATENT outputs.
 Run `python tests/run_disk_latent_tests.py` using the ComfyUI Python environment
 from this node pack. The runner hides GPUs from optional dependency probes and
 checks storage, wrappers and affected native-node regressions without a server.
+
+## H3 loop contexts
+
+`VTS H3 Prepare Loop Context` and `VAE Decode VTS (Tiled + Colour Match)` can return
+context tensors in memory or on disk. Their existing `VTS_H3_CONTEXT` and
+`VTS_H3_VIDEO_CONTEXT` sockets and dictionary keys are unchanged.
+
+Use **context_return_type = DiskLatent** to store the compact video/audio tails in
+one losslessly compressed file. The default **Tensor** preserves existing behavior.
+`context_output_dir` defaults to `./tmp/disklatents`; `context_prefix` follows the
+node-name naming scheme. `context_start_sequence` and `context_compression_level`
+are independent of image and regular latent output controls. Audio in an H3 context
+is encoded latent data, so it always uses exact tensor compression, never audio codecs.
+
+The dictionary retains timing/frame metadata in memory. Its disk-backed `video`
+and `audio` entries expose `.shape`, `.size()`, `.dtype`, `.device`, and `.numel()`
+without loading tensors. Their `.disk_path` identifies the shared DiskLatent file,
+which also stores timing/frame information in `context_metadata`. They do not hold
+a decoded tensor cache or retain the previous clip's full latent buffers.
+
+Prepare accepts a disk-backed or in-memory `corrected_video_context`. Apply accepts
+disk-backed, in-memory, or mixed video/audio entries; individual DiskLatent objects
+with a tensor in `samples` are also accepted. Metadata is validated before loading,
+and video/audio stored in the same file are loaded together once per call.
+
+Consumers expose separate `context_device_policy` and `context_device` inputs:
+Original restores saved devices (or deferred `.to()` overrides), CPU uses RAM,
+and Specified uses the selected device, e.g. `cpu` or `cuda:0`. Existing in-memory
+context tensors pass through unchanged. The normal LATENT input/output continues
+to use its separate `latent_...` controls.
+
+When corrected-context encoding is disabled, the decoder still returns `None` and
+writes no context file. Applying a context materializes the tensors; resulting
+conditioning can retain those tensors for sampling. This feature reduces memory
+between context producer and consumer, not the sampler's working-memory needs.

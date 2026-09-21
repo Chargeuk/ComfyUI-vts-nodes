@@ -31,6 +31,7 @@ _vts_utils = os.path.join(os.path.dirname(__file__), 'vtsUtils')
 if _vts_utils not in sys.path:
     sys.path.append(_vts_utils)
 from vts_latent_nodes import disk_latent_node
+from vts_h3_context import context_controls, store_context
 
 @disk_latent_node(inputs=('samples',), outputs=(), prefix='VAE Decode VTS (Tiled + Colour Match)')
 class VTS_VAEDecodeTiledColourMatch(VTS_VAEDecodeTiled):
@@ -61,10 +62,13 @@ class VTS_VAEDecodeTiledColourMatch(VTS_VAEDecodeTiled):
             "enable_merserk": ("BOOLEAN", {"default": False, "tooltip": "Run Merserk Temporal Enhance after the full sequence is decoded and colour corrected. Scaling, neural rendering and interpolation have separate switches below. Off preserves the existing decoder behavior. Uses lossless 8-bit PNG transport; final files use this decoder's output settings."}),
         })
         inputs["optional"].update({"merserk_" + name: spec for name, spec in _merserk_inputs().items()})
+        inputs['optional'].update(context_controls('VAE Decode VTS (Tiled + Colour Match)'))
         return inputs
 
     RETURN_TYPES = ("IMAGE", "VTS_H3_VIDEO_CONTEXT")
     RETURN_NAMES = ("image", "corrected_video_context")
+    OUTPUT_TOOLTIPS = ("Decoded images, using the independent image output settings.",
+                       "Corrected H3 video latent tail and frame metadata. Tensor or DiskLatent according to context_return_type; None when Encode Corrected Context is off.")
     DESCRIPTION = (
         "Tiled VAE decode with optional reference colour correction. Uses weighted "
         "colour matching, reference white balance, brightness and contrast, in that "
@@ -84,7 +88,9 @@ class VTS_VAEDecodeTiledColourMatch(VTS_VAEDecodeTiled):
                calculation_mode="fixed_per_clip", smoothing=0.9, overall_weight=1.0,
                analysis_size=128, lut_resolution=33, encode_corrected_context=False,
                context_length="22", enable_merserk=False, use_merserk_for_context=False,
-               context_frame_selection="Original", **kwargs):
+               context_frame_selection="Original", context_return_type="Tensor",
+               context_output_dir="./tmp/disklatents", context_prefix="VAE_Decode_VTS_(Tiled_+_Colour_Match)",
+               context_start_sequence=0, context_compression_level=3, **kwargs):
         merserk_options = {name: kwargs.pop("merserk_" + name)
                            for name in _merserk_inputs() if "merserk_" + name in kwargs}
         kwargs = ensure_image_output_defaults(kwargs)
@@ -153,6 +159,9 @@ class VTS_VAEDecodeTiledColourMatch(VTS_VAEDecodeTiled):
             context = {"video": encoded.detach().clone(), "frame_count": frame_count,
                        "source_frames": source_frames}
             del encoded, video, context_images
+
+        context = store_context(context, context_return_type, context_output_dir, context_prefix,
+                                context_start_sequence, context_compression_level)
 
         if kwargs["return_type"] == "Tensor":
             return images, context
