@@ -1,6 +1,7 @@
 torch
 opencv-python>=4.7.0.72
-numpy<2
+# NumPy 2 is supported; avoid forcing a downgrade of current OpenCV installs.
+numpy>=1.26
 webcolors
 matplotlib
 PyOpenGL-accelerate
