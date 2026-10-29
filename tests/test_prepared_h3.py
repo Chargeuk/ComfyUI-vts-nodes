@@ -458,3 +458,12 @@ def test_factory_profile_mismatch_is_clear():
     options = NODE.VTS_PreparedH3RuntimeOptions().execute(factory_defaults="VTS Hybrid")[0]
     with pytest.raises(ValueError, match="Select the H3 SLA factory profile"):
         NODE._apply_common({"sla": NODE.SCHEMA["sla"], "sampling": NODE.SCHEMA["sampling"]}, options)
+
+
+def test_prepared_vdn_rejects_unrelated_compiler_guard(tmp_path):
+    model, _ = with_vdn(tmp_path, tiny_model())
+    from comfy.patcher_extension import WrappersMP
+    model.remove_wrappers_with_key(WrappersMP.APPLY_MODEL, "vdn_h3_compiler")
+    model.add_wrapper_with_key(WrappersMP.APPLY_MODEL, "vdn_h3_compiler", lambda *args: None)
+    with pytest.raises(ValueError, match="Unsupported VDN compiler wrapper"):
+        NODE._check_supported(model)

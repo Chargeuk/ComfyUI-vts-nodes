@@ -236,6 +236,14 @@ def _check_supported(model):
         raise ValueError("This MODEL has unsupported callbacks; export before applying them.")
     allowed = {("diffusion_model", "vdn_h3"), ("diffusion_model", "h3_sla_state"),
                ("diffusion_model", HYBRID_KEY), ("outer_sample", HYBRID_KEY)}
+    compiler_guard = _one_wrapper(model, "apply_model", "vdn_h3_compiler")
+    if compiler_guard:
+        from vdn_h3.hybrid import _without_comfy_compiler
+        # VDN recreates its scoped compiler guard from the saved branch state;
+        # accept only that exact guard, never an unrelated callable under its key.
+        if not _one_wrapper(model, "diffusion_model", "vdn_h3") or compiler_guard is not _without_comfy_compiler:
+            raise ValueError("Unsupported VDN compiler wrapper; export before applying it.")
+        allowed.add(("apply_model", "vdn_h3_compiler"))
     for kind, groups in model.wrappers.items():
         for key, funcs in groups.items():
             if funcs and (kind, key) not in allowed:

@@ -114,9 +114,9 @@ class AudioChunksTest(unittest.TestCase):
         alias.symlink_to(mapped, target_is_directory=True)
         folder_paths.get_output_directory = lambda: str(alias)
         chunks, path = self.save([1, 2, 3])
-        self.assertTrue(Path(path).is_relative_to(mapped))
+        self.assertTrue(Path(path).resolve().is_relative_to(mapped.resolve()))
         assembled, _ = nodes.assemble_audio_chunks(chunks)
-        self.assertTrue(Path(assembled).is_relative_to(mapped))
+        self.assertTrue(Path(assembled).resolve().is_relative_to(mapped.resolve()))
 
     def test_same_prefix_never_overwrites_existing_outputs(self):
         one, first = self.save([1, 2])
