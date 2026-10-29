@@ -538,7 +538,7 @@ def _unpack_branches(path, handle, descriptor):
 def _restore_vdn(model, descriptor, weights, stage_bytes, runtime):
     from vdn_h3 import hybrid
     from vdn_h3.branch import LinearBranch
-    from vdn_h3.nodes import _disable_comfy_compiler_on_broken_builds
+    from vdn_h3.nodes import _needs_comfy_compiler_workaround
     dm = model.get_model_object("diffusion_model")
     if (len(dm.blocks) != len(weights) or dm.blocks[0].attn.heads != descriptor["heads"]
             or dm.blocks[0].attn.head_dim != descriptor["head_dim"]):
@@ -568,7 +568,8 @@ def _restore_vdn(model, descriptor, weights, stage_bytes, runtime):
         branch.compile_scan = runtime["compile_scan"]
         branch.fuse_statistics = runtime["fuse_statistics"]
     state = hybrid.VDNState(descriptor["name"], cfg, branches, descriptor["heads"], descriptor["head_dim"])
-    state.owns_compiler_switch = _disable_comfy_compiler_on_broken_builds()
+    # Current VDN scopes the compiler switch to sampling instead of mutating it while loading.
+    state.owns_compiler_switch = _needs_comfy_compiler_workaround()
     state.retain_buffers = retain
     state.cache_mode = runtime["branch_weights"]
     state.cache_gpu = state.cache_mode == "cache_gpu"
