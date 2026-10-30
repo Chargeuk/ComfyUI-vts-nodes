@@ -48,10 +48,23 @@ def _dual_wan_package_alias(package_name):
     return None
 
 # Upstream nodes can add controls without invalidating existing VTS workflows.
-_MAX_INPUT_COUNT = 32
+_MAX_INPUT_COUNT = 64
 _SAFE_LEGACY_HIDDEN_TYPES = {"PROMPT", "EXTRA_PNGINFO", "UNIQUE_ID", "DYNPROMPT"}
 _MAX_COMBO_OPTIONS = 128
-_MAX_OUTPUT_COUNT = 8
+_MAX_OUTPUT_COUNT = 16
+# These published wrappers now route media through timeline/manifest objects.
+# Preserve their IDs and current upstream calls without adding obsolete AUDIO
+# ports or wrapping unrelated non-media nodes.
+_PUBLISHED_PASSTHROUGH_SOURCES = {
+    ("ComfyUI-MiniMaxH3-Contex-Loop", name)
+    for name in ("MiniMaxH3ChainAssemble", "MiniMaxH3ChainLatentVideoAdapter",
+                 "MiniMaxH3ChainManifestLoad", "MiniMaxH3ChainPreflight")
+}
+
+# This published model-picker wrapper legitimately sees the user's shared LoRA
+# collection. Keep the small default for every other node/input.
+_LARGE_PUBLISHED_COMBOS = {("bfsnodes", "LTXIdentityMultiAngle", "identity_projector"): 8192}
+
 _REGISTRATION_ATTEMPTS = 120
 _REGISTRATION_DELAY_SECONDS = 0.5
 _SAFE_SHARED_CONFIG_KEYS = {"tooltip", "lazy", "advanced", "forceInput"}
@@ -217,10 +230,10 @@ def _is_safe_shared_config(config):
     )
 
 
-def _is_safe_combo_spec(raw_type, config):
+def _is_safe_combo_spec(raw_type, config, *, max_options=_MAX_COMBO_OPTIONS, string_only=False):
     return (
-        len(raw_type) <= _MAX_COMBO_OPTIONS
-        and all(isinstance(option, (str, int)) for option in raw_type)
+        len(raw_type) <= max_options
+        and all(isinstance(option, str if string_only else (str, int)) for option in raw_type)
         and _has_only_known_keys(config, _SAFE_COMBO_CONFIG_KEYS)
         and _is_safe_shared_config(config)
         and (config.get("default") is None or isinstance(config.get("default"), (str, int)))
@@ -265,9 +278,10 @@ def _is_safe_string_spec(config):
 
 def _is_safe_boolean_spec(config):
     return (
-        _has_only_known_keys(config, _SAFE_SHARED_CONFIG_KEYS | {"default"})
+        _has_only_known_keys(config, _SAFE_SHARED_CONFIG_KEYS | {"default", "label", "label_on", "label_off"})
         and _is_safe_shared_config(config)
         and _is_bool_or_none(config.get("default"))
+        and all(_is_string_or_none(config.get(key)) for key in ("label", "label_on", "label_off"))
     )
 
 
@@ -275,7 +289,7 @@ def _is_safe_object_spec(config):
     return _has_only_known_keys(config, _SAFE_SHARED_CONFIG_KEYS) and _is_safe_shared_config(config)
 
 
-def _is_safe_legacy_spec(legacy_spec):
+def _is_safe_legacy_spec(legacy_spec, *, combo_limit=_MAX_COMBO_OPTIONS, string_only=False):
     if not isinstance(legacy_spec, (tuple, list)) or len(legacy_spec) == 0:
         return False
 
@@ -283,7 +297,7 @@ def _is_safe_legacy_spec(legacy_spec):
     config = legacy_spec[1] if len(legacy_spec) > 1 and isinstance(legacy_spec[1], dict) else {}
 
     if isinstance(raw_type, (list, tuple)):
-        return _is_safe_combo_spec(raw_type, config)
+        return _is_safe_combo_spec(raw_type, config, max_options=combo_limit, string_only=string_only)
     if isinstance(raw_type, str):
         raw_type = str(raw_type)
     if raw_type == "BOOLEAN":
@@ -556,7 +570,7 @@ def _build_common_spec(
                              for name, config in input_config.get(group, {}).items() if str(config[0]) == "AUDIO"]
     audio_output_indexes = [i for i, kind in enumerate(return_types) if str(kind) == "AUDIO"]
     latent_output_indexes = [i for i, kind in enumerate(return_types) if str(kind) == "LATENT"]
-    if not image_input_names and not image_output_indexes and not latent_input_names and not latent_output_indexes and not audio_input_names and not audio_output_indexes:
+    if not image_input_names and not image_output_indexes and not latent_input_names and not latent_output_indexes and not audio_input_names and not audio_output_indexes and (package_name, node_name) not in _PUBLISHED_PASSTHROUGH_SOURCES:
         return None
     if any(name.startswith("vts_latent_") for name in all_input_names):
         return None
@@ -583,6 +597,10 @@ def _build_common_spec(
     }
 
 
+def _within_schema_limits(input_count, output_count):
+    return 0 <= input_count <= _MAX_INPUT_COUNT and 0 < output_count <= _MAX_OUTPUT_COUNT
+
+
 def _build_legacy_wrapper_spec(node_name, node_cls, display_name_mappings):
     input_config = _get_legacy_input_config(node_cls)
     if not isinstance(input_config, dict):
@@ -598,7 +616,7 @@ def _build_legacy_wrapper_spec(node_name, node_cls, display_name_mappings):
         return None
 
     return_types = getattr(node_cls, "RETURN_TYPES", None)
-    if not isinstance(return_types, (tuple, list)) or len(return_types) == 0 or len(return_types) > _MAX_OUTPUT_COUNT:
+    if not isinstance(return_types, (tuple, list)) or not _within_schema_limits(0, len(return_types)):
         return None
     if not all(isinstance(output_type, str) and output_type.strip() for output_type in return_types):
         return None
@@ -609,16 +627,18 @@ def _build_legacy_wrapper_spec(node_name, node_cls, display_name_mappings):
     if not all(isinstance(value, str) and value in _SAFE_LEGACY_HIDDEN_TYPES
                for value in hidden_inputs.values()):
         return None
-    if len(required_inputs) + len(optional_inputs) > _MAX_INPUT_COUNT:
+    if not _within_schema_limits(len(required_inputs) + len(optional_inputs), len(return_types)):
         return None
 
     image_input_names = []
     # Pass engine-supplied context through unchanged, including object identity.
     all_input_names = list(hidden_inputs)
     safe = True
+    source_package = _get_custom_node_folder_name(node_cls)
     for group_inputs in (required_inputs, optional_inputs):
         for input_name, legacy_spec in group_inputs.items():
-            if not _is_safe_legacy_spec(legacy_spec):
+            combo_limit = _LARGE_PUBLISHED_COMBOS.get((source_package, node_name, input_name))
+            if not _is_safe_legacy_spec(legacy_spec, combo_limit=combo_limit or _MAX_COMBO_OPTIONS, string_only=combo_limit is not None):
                 safe = False
                 break
             raw_type = legacy_spec[0] if isinstance(legacy_spec, (tuple, list)) and legacy_spec else None
@@ -666,7 +686,7 @@ def _build_v3_wrapper_spec(node_name, node_cls, display_name_mappings):
         return None
     if getattr(schema, "is_input_list", None) not in (False, None):
         return None
-    if len(inputs) > _MAX_INPUT_COUNT or len(outputs) == 0 or len(outputs) > _MAX_OUTPUT_COUNT:
+    if not _within_schema_limits(len(inputs), len(outputs)):
         return None
     if not callable(getattr(node_cls, "execute", None)):
         return None
