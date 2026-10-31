@@ -68,7 +68,7 @@ _LARGE_PUBLISHED_COMBOS = {("bfsnodes", "LTXIdentityMultiAngle", "identity_proje
 _REGISTRATION_ATTEMPTS = 120
 _REGISTRATION_DELAY_SECONDS = 0.5
 _SAFE_SHARED_CONFIG_KEYS = {"tooltip", "lazy", "advanced", "forceInput"}
-_SAFE_COMBO_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default"}
+_SAFE_COMBO_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default", "display_name"}
 _SAFE_INT_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default", "min", "max", "step", "control_after_generate"}
 _SAFE_FLOAT_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default", "min", "max", "step", "round"}
 _SAFE_STRING_CONFIG_KEYS = _SAFE_SHARED_CONFIG_KEYS | {"default", "multiline", "placeholder", "dynamicPrompts"}
@@ -236,6 +236,9 @@ def _is_safe_combo_spec(raw_type, config, *, max_options=_MAX_COMBO_OPTIONS, str
         and all(isinstance(option, str if string_only else (str, int)) for option in raw_type)
         and _has_only_known_keys(config, _SAFE_COMBO_CONFIG_KEYS)
         and _is_safe_shared_config(config)
+        # A legacy combo may name its widget without changing execution. Keep
+        # this presentation-only field string typed rather than accepting code.
+        and ("display_name" not in config or isinstance(config["display_name"], str))
         and (config.get("default") is None or isinstance(config.get("default"), (str, int)))
     )
 
