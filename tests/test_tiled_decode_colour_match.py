@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import gc
 import sys
@@ -234,7 +235,9 @@ class DecodeIntegrationTests(unittest.TestCase):
         self.assertIn("color_ref", new["optional"])
         self.assertEqual(NODE.VTS_VAEDecodeTiledColourMatch.RETURN_TYPES,
                          ("IMAGE", "VTS_H3_VIDEO_CONTEXT"))
-        self.assertFalse(new["optional"]["encode_corrected_context"][1]["default"])
+        self.assertEqual(new["optional"]["context_source"][1]["default"], "None")
+        self.assertIn("context_samples", new["optional"])
+        self.assertNotIn("encode_corrected_context", new["optional"])
 
     def test_nested_latent_decode_matches_base_and_forwards_tiles(self):
         video, audio = torch.zeros(1, 24, 7, 2, 2), torch.zeros(1, 32, 2, 40)
@@ -413,8 +416,9 @@ class MerserkDecodeTests(unittest.TestCase):
         actual = {name: spec for name, spec in schema.items() if name.startswith("merserk_")}
         self.assertEqual(actual, expected)
         self.assertFalse(schema["enable_merserk"][1]["default"])
-        self.assertFalse(schema["use_merserk_for_context"][1]["default"])
-        self.assertEqual(schema["context_frame_selection"][1]["default"], "Original")
+        self.assertNotIn("use_merserk_for_context", schema)
+        self.assertNotIn("context_frame_selection", schema)
+        self.assertEqual(schema["context_source"][0], NODE.CONTEXT_SOURCES)
         self.assertNotIn("merserk_iterations", actual)
 
     def test_master_off_preserves_images_and_context_and_ignores_merserk_settings(self):
@@ -537,6 +541,127 @@ class MerserkDecodeTests(unittest.TestCase):
         self.assertEqual(output.shape, (5, 16, 16, 3))
         self.assertEqual(self.encoded_input.shape, (5, 32, 32, 3))
         self.assertEqual(context["video"].shape, (1, 24, 2, 2, 2))
+
+
+class ContextSourceTests(unittest.TestCase):
+    setUp = MerserkDecodeTests.setUp
+    enhance = MerserkDecodeTests.enhance
+    encoder = MerserkDecodeTests.encoder
+
+    def test_each_generated_stage_keeps_main_output_independent_and_resizes_only_tail(self):
+        target = {"samples": NestedTensor((torch.zeros(1, 24, 7, 1, 3), torch.zeros(1, 32, 2, 40)))}
+        for source in NODE.CONTEXT_SOURCES[2:]:
+            with self.subTest(source=source):
+                encoded = []
+                def encode(images):
+                    encoded.append(images.clone())
+                    return torch.zeros(1, 24, NODE._steps_for_frames(len(images)), 1, 3)
+                self.vae.encode = encode
+                def correction(images, *args, **kwargs):
+                    return images + 0.1
+                with patch.object(NODE, "correct_images", side_effect=correction), \
+                     patch.object(NODE.VTSMerserkTemporalEnhance, "enhance", side_effect=self.enhance):
+                    output, context = self.node.decode(self.vae, self.source,
+                        color_ref=self.image[:1], enable_merserk=True, return_type="Tensor",
+                        context_source=source, context_samples=target,
+                        merserk_enable_frame_interpolation=True, merserk_interpolation_multiplier=2)
+                self.assertEqual(output.shape, (9, 64, 96, 3))
+                self.assertEqual(encoded[0].shape, (5, 16, 48, 3))
+                self.assertEqual(context["video"].shape, (1, 24, 2, 1, 3))
+                self.assertEqual(context["source_frames"], 5)
+                self.assertEqual(context["frame_count"], 5)
+                if source == NODE.CONTEXT_SOURCES[2]:
+                    expected = self.image
+                elif source == "Colour-corrected frames":
+                    expected = self.image + 0.1
+                else:
+                    stride = 2 if source == "Merserk — original frames" else 1
+                    expected = output[::stride][-5:]
+                torch.testing.assert_close(encoded[0][:, 0, 0], expected[:, 0, 0], atol=1/255, rtol=0)
+
+    def test_provided_latent_tail_is_lossless_owned_and_never_vae_encoded(self):
+        for steps, requested, count, start in ((7, "22", 22, 0), (12, "5", 5, 10),
+                                               (17, "22", 22, 10), (22, "56", 56, 5),
+                                               (2, "56", 5, 0), (1, "22", 1, 0)):
+            for nested in (False, True):
+                video = torch.arange(24 * steps * 3).reshape(1, 24, steps, 1, 3).float()
+                sample = {"samples": NestedTensor((video, torch.zeros(1, 32, 2, 40))) if nested else video}
+                self.vae.encode = lambda images: self.fail("Provided context must not encode")
+                output, context = self.node.decode(self.vae, self.source, return_type="Tensor",
+                    context_samples=sample, context_source="Provided context samples", context_length=requested)
+                torch.testing.assert_close(output, self.image, rtol=0, atol=0)
+                torch.testing.assert_close(context["video"], video[:, :, start:], rtol=0, atol=0)
+                self.assertEqual(context["source_frames"], NODE._pixel_frames(steps))
+                self.assertEqual(context["frame_count"], count)
+                self.assertNotEqual(context["video"].untyped_storage().data_ptr(), video.untyped_storage().data_ptr())
+                self.assertEqual(context["video"].untyped_storage().nbytes(), context["video"].numel() * 4)
+
+    def test_provided_disk_latent_input_and_disk_context_output(self):
+        from vts_disk_latent import save_latent
+        from vts_h3_context import DiskContextTensor, materialize_context
+        with tempfile.TemporaryDirectory() as directory:
+            video = torch.rand(1, 24, 12, 1, 3)
+            sample = save_latent({"samples": NestedTensor((video, torch.zeros(1, 32, 2, 40)))}, output_dir=directory)
+            self.vae.encode = lambda images: self.fail("Provided context must not encode")
+            _, context = self.node.decode(self.vae, self.source, return_type="Tensor",
+                context_samples=sample, context_source="Provided context samples", context_return_type="DiskLatent",
+                context_output_dir=directory, latent_device_policy="CPU")
+            self.assertIsInstance(context["video"], DiskContextTensor)
+            self.assertEqual(context["frame_count"], 22)
+            self.assertEqual(context["source_frames"], 39)
+            torch.testing.assert_close(materialize_context(context)["video"], video[:, :, 5:], rtol=0, atol=0)
+
+    def test_invalid_sources_fail_before_context_encoding(self):
+        cases = [
+            ({"context_source": "Provided context samples"}, "requires context_samples"),
+            ({"context_source": "Merserk — original frames"}, "enable_merserk"),
+            ({"context_source": "Merserk — interpolated frames", "enable_merserk": True}, "interpolation"),
+            ({"context_source": "Provided context samples", "context_samples": {"samples": torch.zeros(1, 24, 5, 2, 2)}}, "temporal cycle"),
+            ({"context_source": "Provided context samples", "context_samples": {"samples": torch.zeros(2, 24, 7, 2, 2)}}, "one H3"),
+            ({"context_source": "unknown"}, "Unknown context_source"),
+        ]
+        for options, message in cases:
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, message):
+                self.node.decode(self.vae, self.source, return_type="Tensor", **options)
+
+    def test_explicit_none_wins_over_legacy_flags(self):
+        self.vae.encode = lambda images: self.fail("Explicit None must not encode")
+        output, context = self.node.decode(self.vae, self.source, return_type="Tensor", context_source="None",
+            encode_corrected_context=True, use_merserk_for_context=True)
+        self.assertIsNone(context)
+        torch.testing.assert_close(output, self.image, rtol=0, atol=0)
+
+    def test_legacy_api_constants_survive_comfy_validation_and_input_collection(self):
+        import execution
+        import nodes
+        schema = self.node.INPUT_TYPES()
+        inputs = {name: spec[1].get("default") for name, spec in schema["required"].items()
+                  if len(spec) > 1}
+        # Fake upstream outputs let the real validator verify the original API
+        # graph without loading any model or inspecting a user's prompt.
+        class Source:
+            RETURN_TYPES = ("LATENT", "VAE")
+            @classmethod
+            def INPUT_TYPES(cls):
+                return {"required": {}}
+        inputs.update(samples=["source", 0], vae=["source", 1], encode_corrected_context=True,
+                      use_merserk_for_context=True, context_frame_selection="Interpolated",
+                      enable_merserk=True, merserk_enable_frame_interpolation=True)
+        prompt = {"source": {"class_type": "VTSContextTestSource", "inputs": {}},
+                  "decode": {"class_type": "VTSContextTestDecode", "inputs": inputs}}
+        with patch.dict(nodes.NODE_CLASS_MAPPINGS, {"VTSContextTestSource": Source,
+                                                   "VTSContextTestDecode": type(self.node)}):
+            result = asyncio.run(execution.validate_inputs("vts-context-test", prompt, "decode", {}))
+            self.assertTrue(result[0], result[1])
+            data, missing, _ = execution.get_input_data(inputs, type(self.node), "decode")
+        self.assertEqual(data["encode_corrected_context"], [True])
+        self.assertEqual(data["use_merserk_for_context"], [True])
+        self.assertEqual(data["context_frame_selection"], ["Interpolated"])
+        constants = {name: values[0] for name, values in data.items() if name not in ("samples", "vae")}
+        with patch.object(NODE.VTSMerserkTemporalEnhance, "enhance", side_effect=self.enhance):
+            output, context = self.node.decode(self.vae, self.source, **constants)
+        self.assertEqual(context["frame_count"], 5)
+        torch.testing.assert_close(self.encoded_input[:, 0, 0], output[-5:, 0, 0], atol=1/255, rtol=0)
 
 
 class FakeVAEWithEncode(FakeVAE):
