@@ -2,6 +2,7 @@ import importlib.util
 import gc
 import sys
 import tempfile
+import types
 import unittest
 import weakref
 from pathlib import Path
@@ -542,6 +543,223 @@ class FakeVAEWithEncode(FakeVAE):
     def __init__(self, image, encoder):
         super().__init__(image)
         self.encode = encoder
+
+
+_REAL_FAST_DECODER_CLASS = NODE._fast_decoder_class
+
+
+class FastDecodeTests(unittest.TestCase):
+    def setUp(self):
+        self.node = NODE.VTS_VAEDecodeTiledColourMatch()
+        self.image = torch.rand(5, 32, 32, 3, generator=torch.Generator().manual_seed(17))
+        self.video = torch.zeros(1, 24, 2, 2, 2)
+        self.samples = {"samples": NestedTensor((self.video, torch.zeros(1, 32, 2, 9)))}
+        self.vae = FakeVAE(self.image * 0.5)
+        self.events, self.models, self.cache = [], [], {}
+        self.mode = "success"
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        for name in ("first.safetensors", "second.safetensors"):
+            Path(self.directory.name, name).touch()
+        owner = self
+
+        class Model:
+            def __init__(self):
+                self.device = "cpu"
+
+            def to(self, device):
+                self.device = str(device)
+                owner.events.append(("move", self, self.device))
+                return self
+
+        class Decoder:
+            def decode(self, samples, name, keep_loaded, vae=None):
+                model = load(str(Path(owner.directory.name, name)))
+                owner.events.append(("decode", samples, name, keep_loaded, model))
+                if owner.mode == "estimate":
+                    return self._native(vae, samples, "insufficient memory")
+                model.to("cuda")
+                if owner.mode == "pretry_oom":
+                    raise torch.OutOfMemoryError("output allocation")
+                if owner.mode == "inference_oom":
+                    return self._native(vae, samples, "out of VRAM")
+                if owner.mode == "failure":
+                    raise ValueError("invalid fast decoder state")
+                return (owner.image.clone(),)
+
+        def load(path):
+            key = (path, Path(path).stat().st_mtime)
+            if key not in self.cache:
+                self.cache.clear()
+                self.cache[key] = Model()
+                self.models.append(self.cache[key])
+            return self.cache[key]
+
+        self.module = types.ModuleType("vts_fast_decoder_test_backend")
+        self.module._fast_vae = load
+        Decoder.__module__ = self.module.__name__
+        self.decoder = Decoder
+        patches = (
+            patch.dict(sys.modules, {self.module.__name__: self.module}),
+            patch.object(NODE, "_fast_decoder_class", return_value=Decoder),
+            patch.object(NODE.folder_paths, "get_full_path_or_raise",
+                         side_effect=lambda folder, name: str(Path(self.directory.name, name))),
+        )
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+
+    def decode(self, **options):
+        return self.node.decode(self.vae, self.samples, fast_vae_name="first.safetensors",
+                                return_type="Tensor", **options)
+
+    def test_schema_is_optional_and_lists_current_vae_files(self):
+        with patch.object(NODE.folder_paths, "get_filename_list", return_value=["a", "sub/b"]):
+            schema = self.node.INPUT_TYPES()
+        self.assertNotIn("fast_vae_name", schema["required"])
+        self.assertEqual(schema["optional"]["fast_vae_name"][0], ["None", "a", "sub/b"])
+        self.assertEqual(schema["optional"]["fast_vae_name"][1]["default"], "None")
+        self.assertFalse(schema["optional"]["fast_vae_keep_loaded"][1]["default"])
+        for name in ("fast_vae_name", "fast_vae_keep_loaded"):
+            self.assertIn("tooltip", schema["optional"][name][1])
+
+    def test_none_is_exact_and_does_not_resolve_optional_dependency(self):
+        source = {"samples": torch.zeros(1, 4, 2, 2)}
+        with patch.object(NODE, "_fast_decoder_class", side_effect=AssertionError("optional import")):
+            actual, context = self.node.decode(self.vae, source, return_type="Tensor")
+        torch.testing.assert_close(actual, self.vae.image, rtol=0, atol=0)
+        self.assertIsNone(context)
+        self.assertEqual(len(self.vae.calls), 1)
+        self.assertEqual(self.models, [])
+
+    def test_fast_nested_success_has_no_added_tiling_and_uses_shared_cache(self):
+        first, context = self.decode()
+        second, _ = self.decode()
+        torch.testing.assert_close(first, self.image, rtol=0, atol=0)
+        torch.testing.assert_close(second, first, rtol=0, atol=0)
+        self.assertIsNone(context)
+        self.assertEqual(self.vae.calls, [])
+        self.assertEqual(len(self.models), 1)
+        self.assertIs(self.node._fast_model_ref(), self.models[0])
+        self.assertEqual(self.models[0].device, "cpu")
+        self.assertTrue(all(event[1] is self.samples for event in self.events if event[0] == "decode"))
+
+    def test_keep_loaded_and_switch_or_disable_release_only_owned_model(self):
+        self.decode(fast_vae_keep_loaded=True)
+        first = self.models[0]
+        self.assertEqual(first.device, "cuda")
+        self.node.decode(self.vae, self.samples, fast_vae_name="second.safetensors",
+                         fast_vae_keep_loaded=True, return_type="Tensor")
+        second = self.models[-1]
+        self.assertEqual(first.device, "cpu")
+        self.assertEqual(second.device, "cuda")
+        self.node.decode(self.vae, self.samples, return_type="Tensor")
+        self.assertEqual(second.device, "cpu")
+        self.assertIsNone(self.node._fast_model_ref)
+        # A node that never selected fast weights must not sweep another node's cache.
+        second.to("cuda")
+        NODE.VTS_VAEDecodeTiledColourMatch().decode(self.vae, self.samples, return_type="Tensor")
+        self.assertEqual(second.device, "cuda")
+
+    def test_mtime_change_offloads_obsolete_shared_cache_entry(self):
+        self.decode(fast_vae_keep_loaded=True)
+        first = self.models[0]
+        path = Path(self.directory.name, "first.safetensors")
+        stamp = path.stat().st_mtime
+        import os
+        os.utime(path, (stamp + 10, stamp + 10))
+        self.decode(fast_vae_keep_loaded=True)
+        self.assertEqual(first.device, "cpu")
+        self.assertEqual(len(self.models), 2)
+        self.assertEqual(self.models[1].device, "cuda")
+
+    def test_memory_fallback_offloads_before_original_vae_and_preserves_all_tiles(self):
+        original = self.vae.decode_tiled
+        for mode in ("estimate", "inference_oom", "pretry_oom"):
+            for keep in (False, True):
+                with self.subTest(mode=mode, keep_loaded=keep):
+                    self.mode = mode
+                    def tiled(video, **tiles):
+                        self.assertEqual(self.models[-1].device, "cpu")
+                        return original(video, **tiles)
+                    with patch.object(self.vae, "decode_tiled", side_effect=tiled):
+                        output, _ = self.decode(fast_vae_keep_loaded=keep, tile_size_x=256,
+                            tile_size_y=384, overlap=0, temporal_size=32, temporal_overlap=0)
+                    self.assertIs(self.vae.calls[-1][0], self.video)
+                    self.assertEqual(self.vae.calls[-1][1],
+                                     dict(tile_x=32, tile_y=48, overlap=0, tile_t=8, overlap_t=0))
+                    torch.testing.assert_close(output, self.vae.image, rtol=0, atol=0)
+
+    def test_fallback_failure_is_not_retried_or_hidden(self):
+        self.mode = "estimate"
+        with patch.object(self.vae, "decode_tiled", side_effect=torch.OutOfMemoryError("tiled too")) as tiled:
+            with self.assertRaisesRegex(torch.OutOfMemoryError, "tiled too"):
+                self.decode(fast_vae_keep_loaded=True)
+        self.assertEqual(tiled.call_count, 1)
+
+    def test_invalid_latents_weights_and_non_memory_failures_do_not_fallback(self):
+        for video in (torch.zeros(1, 4, 2, 2), torch.zeros(1, 4, 2, 2, 2),
+                      torch.zeros(1, 24, 0, 2, 2)):
+            with self.assertRaisesRegex(ValueError, "Fast VAE requires an H3"):
+                self.node.decode(self.vae, {"samples": video}, fast_vae_name="first.safetensors")
+        self.assertEqual(self.models, [])
+        with patch.object(self.module, "_fast_vae", side_effect=RuntimeError("invalid weights")):
+            with self.assertRaisesRegex(RuntimeError, "invalid weights"):
+                self.decode()
+        self.mode = "failure"
+        with self.assertRaisesRegex(ValueError, "invalid fast decoder state"):
+            self.decode()
+        self.assertEqual(self.models[0].device, "cpu")
+        self.assertEqual(self.vae.calls, [])
+
+    def test_missing_registered_dependency_has_actionable_error(self):
+        import nodes
+        with patch.dict(nodes.NODE_CLASS_MAPPINGS, {}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "select fast_vae_name=None"):
+                _REAL_FAST_DECODER_CLASS()
+        self.assertEqual(self.vae.calls, [])
+
+    def test_fast_correction_merserk_context_and_disk_order_use_original_encoder(self):
+        events, encoded = [], []
+        def encode(images):
+            events.append("encode")
+            encoded.append(images.clone())
+            return torch.zeros(1, 24, 2, 2, 2)
+        self.vae.encode = encode
+        def enhance(images, **kwargs):
+            events.append("enhance")
+            return (images * 0.5,)
+        real_save = NODE.save_images
+        def save(**kwargs):
+            events.append("save")
+            return real_save(**kwargs)
+        reference = self.image[:1] * 0.6
+        corrected = correct(self.image, reference)
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(NODE.VTSMerserkTemporalEnhance, "enhance", side_effect=enhance), \
+             patch.object(NODE, "save_images", side_effect=save):
+            disk, context = self.node.decode(self.vae, self.samples, fast_vae_name="first.safetensors",
+                color_ref=reference, enable_merserk=True, encode_corrected_context=True,
+                use_merserk_for_context=True, return_type="DiskImage", output_dir=directory,
+                prefix="fast", start_sequence=7, format="png", num_workers=1)
+            self.assertEqual(len(list(Path(directory).glob("fast_*.png"))), 5)
+            torch.testing.assert_close(disk.materialize(), corrected * 0.5, atol=1/255, rtol=0)
+        torch.testing.assert_close(encoded[0], corrected * 0.5, rtol=0, atol=0)
+        self.assertEqual(events, ["enhance", "encode", "save"])
+        self.assertEqual(context["frame_count"], 5)
+        self.assertEqual(self.vae.calls, [])
+
+    def test_fast_early_bypass_disk_output_saves_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            disk, context = self.node.decode(self.vae, self.samples, fast_vae_name="first.safetensors",
+                return_type="DiskImage", output_dir=directory, prefix="fast", start_sequence=11,
+                format="png", num_workers=1)
+            self.assertEqual(disk.number_of_images, 5)
+            self.assertEqual(sorted(path.name for path in Path(directory).glob("*.png")),
+                             ["fast_%06d.png" % index for index in range(11, 16)])
+            torch.testing.assert_close(disk.materialize(), self.image, atol=1/255, rtol=0)
+        self.assertIsNone(context)
+        self.assertEqual(self.vae.calls, [])
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,9 @@
+import logging
 import os
 import sys
+import weakref
+
+import folder_paths
 
 import torch
 
@@ -14,6 +18,69 @@ from VTS_MiniMaxH3MotionContext import _context_length, _pixel_frames, _resize, 
 from VTS_MerserkTemporalEnhance import VTSMerserkTemporalEnhance
 from vtsUtils import DiskImage, ensure_image_output_defaults, resolve_list_mapped_output_identity, save_images
 from vts_color_correction import METHODS, MODES, correct_images
+
+
+LOG = logging.getLogger(__name__)
+
+
+def _fast_decoder_class():
+    # Resolve the registered node lazily: importing another package would create
+    # a second decoder cache, and normal VTS workflows do not need this package.
+    import nodes
+    decoder = nodes.NODE_CLASS_MAPPINGS.get("OpenH3RegenFastVAEDecode")
+    if decoder is None:
+        raise RuntimeError("Fast VAE requires the installed ComfyUI-Open-H3-Regenerate Fast VAE Decode node. "
+                           "Enable that package or select fast_vae_name=None.")
+    return decoder
+
+
+def _offload_fast_model(model):
+    model.to(torch.device("cpu"))
+    model_management.soft_empty_cache()
+
+
+class _FastDecodeVAE:
+    def __init__(self, vae, samples, decoder_class, model, name, keep_loaded):
+        self.vae, self.samples = vae, samples
+        self.decoder_class, self.model = decoder_class, model
+        self.name, self.keep_loaded = name, keep_loaded
+
+    def temporal_compression_decode(self):
+        return self.vae.temporal_compression_decode()
+
+    def spacial_compression_decode(self):
+        return self.vae.spacial_compression_decode()
+
+    def decode_tiled(self, video, **tiles):
+        vae, model = self.vae, self.model
+        used_fallback = False
+
+        class TiledFallback(self.decoder_class):
+            def _native(self, unused_vae, samples, why):
+                nonlocal used_fallback
+                used_fallback = True
+                # The upstream fallback uses vae.decode and can retain GPU weights.
+                # Release those weights first, then honor VTS spatial/temporal tiles.
+                _offload_fast_model(model)
+                LOG.warning("VTS fast VAE: %s; using connected VAE with VTS tile settings", why)
+                return (vae.decode_tiled(video, **tiles),)
+
+        decoder = TiledFallback()
+        LOG.info("VTS fast VAE: %s (keep_loaded=%s)", self.name, self.keep_loaded)
+        try:
+            result = decoder.decode(self.samples, self.name, self.keep_loaded, vae=vae)
+        except torch.OutOfMemoryError:
+            if used_fallback:
+                raise
+            # Upstream allocates its output/normalization buffers before its OOM
+            # handler. Leave the exception scope so those buffers can be released.
+            result = None
+        finally:
+            if not self.keep_loaded:
+                _offload_fast_model(model)
+        if result is None:
+            result = decoder._native(vae, self.samples, "out of VRAM")
+        return result[0]
 
 
 def _merserk_inputs():
@@ -39,6 +106,8 @@ class VTS_VAEDecodeTiledColourMatch(VTS_VAEDecodeTiled):
     def INPUT_TYPES(cls):
         inputs = super().INPUT_TYPES()
         inputs["optional"] = {
+            "fast_vae_name": (["None", *folder_paths.get_filename_list("vae")], {"default": "None", "tooltip": "None keeps the original tiled VAE decode. Select installed fast H3 decoder weights (for example vae_fast/fast_h3_vae_noncausal_24l.safetensors) to use Open-H3-Regenerate windowed decoding without extra tiling. H3 video/AV latents only; insufficient VRAM falls back to the connected VAE with the tile settings above. Other VAE weights are not compatible."}),
+            "fast_vae_keep_loaded": ("BOOLEAN", {"default": False, "tooltip": "Fast decoder only. Off keeps cached weights on CPU between decodes; on retains them on GPU for faster reuse (about 6.5 GB). Switching fast weights or selecting None releases this node's previous fast GPU weights. Memory fallback always releases fast GPU weights before tiled decoding."}),
             "color_ref": ("IMAGE", {"tooltip": "Tensor or DiskImage reference. One image is reused; fixed mode samples a reference sequence. Other modes pair frames, repeating the last reference if shorter."}),
             "color_match_method": (METHODS, {"default": "reinhard_lab_gpu"}),
             "color_match_weight": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05}),
@@ -80,6 +149,36 @@ class VTS_VAEDecodeTiledColourMatch(VTS_VAEDecodeTiled):
         "colour correction. Context can include or exclude Merserk, with automatic "
         "resizing back to the original latent resolution before encoding.")
 
+    def _decode_vae(self, vae, samples, name, keep_loaded):
+        previous_ref = getattr(self, "_fast_model_ref", None)
+        previous = previous_ref() if previous_ref is not None else None
+        if name == "None":
+            if previous is not None:
+                _offload_fast_model(previous)
+            self._fast_model_ref = None
+            self._fast_model_key = None
+            return vae
+
+        video = samples["samples"]
+        if getattr(video, "is_nested", False):
+            parts = video.unbind()
+            video = parts[0] if parts else None
+        if (not isinstance(video, torch.Tensor) or video.ndim != 5
+                or video.shape[1] != 24 or any(size == 0 for size in video.shape)):
+            raise ValueError("Fast VAE requires an H3 video latent [B,24,T,H,W] or an H3 AV latent containing it.")
+
+        decoder_class = _fast_decoder_class()
+        path = folder_paths.get_full_path_or_raise("vae", name)
+        key = (path, os.path.getmtime(path))
+        if previous is not None and key != self._fast_model_key:
+            _offload_fast_model(previous)
+        # Use the external node's existing path/mtime cache, never a second loader.
+        module = sys.modules[decoder_class.__module__]
+        model = module._fast_vae(path)
+        self._fast_model_ref = weakref.ref(model)
+        self._fast_model_key = key
+        return _FastDecodeVAE(vae, samples, decoder_class, model, name, keep_loaded)
+
     def decode(self, vae, samples, tile_size_x=512, tile_size_y=512, overlap=64,
                temporal_size=64, temporal_overlap=8, color_ref=None,
                color_match_method="reinhard_lab_gpu", color_match_weight=0.5,
@@ -90,17 +189,19 @@ class VTS_VAEDecodeTiledColourMatch(VTS_VAEDecodeTiled):
                context_length="22", enable_merserk=False, use_merserk_for_context=False,
                context_frame_selection="Original", context_return_type="Tensor",
                context_output_dir="./tmp/disklatents", context_prefix="VAE_Decode_VTS_(Tiled_+_Colour_Match)",
-               context_start_sequence=0, context_compression_level=3, **kwargs):
+               context_start_sequence=0, context_compression_level=3,
+               fast_vae_name="None", fast_vae_keep_loaded=False, **kwargs):
         merserk_options = {name: kwargs.pop("merserk_" + name)
                            for name in _merserk_inputs() if "merserk_" + name in kwargs}
         kwargs = ensure_image_output_defaults(kwargs)
         decode_args = dict(tile_size_x=tile_size_x, tile_size_y=tile_size_y,
                            overlap=overlap, temporal_size=temporal_size,
                            temporal_overlap=temporal_overlap)
+        decode_vae = self._decode_vae(vae, samples, fast_vae_name, fast_vae_keep_loaded)
         bypass_correction = color_ref is None or overall_weight == 0 or not any(
             (color_match_weight, white_balance_weight, brightness_weight, contrast_weight))
         if bypass_correction and not encode_corrected_context and not enable_merserk:
-            return (*super().decode(vae, samples, **decode_args, **kwargs), None)
+            return (*super().decode(decode_vae, samples, **decode_args, **kwargs), None)
 
         if encode_corrected_context:
             if str(context_length) not in ("5", "22", "39", "56"):
@@ -118,7 +219,7 @@ class VTS_VAEDecodeTiledColourMatch(VTS_VAEDecodeTiled):
             raise ValueError("Context frame selection must be Original or Interpolated.")
 
         tensor_options = dict(kwargs, return_type="Tensor")
-        images, = super().decode(vae, samples, **decode_args, **tensor_options)
+        images, = super().decode(decode_vae, samples, **decode_args, **tensor_options)
         if not bypass_correction:
             corrected = correct_images(
                 images, color_ref, method=color_match_method, color_weight=color_match_weight,
